@@ -64,7 +64,7 @@ pub fn updateFrame(
     app_state.viewer.last_win_dims = input.logicalWinDims();
 
     const was_hidden = app_state.display.isHidden();
-    if (!was_hidden) {
+    if (!was_hidden and !app_state.display.isSuspended()) {
         const is_slider_active =
             (app_state.viewer.drag_state == .slider) or
             (app_state.viewer.ui.overlays.edit_panel.active_slider != null);
@@ -101,6 +101,11 @@ pub fn updateFrame(
         },
         .visible => {},
     }
+    if (app_state.display.isSuspended() and
+        app_state.viewer.ui.screenshot_mode == .idle)
+    {
+        return;
+    }
 
     const ui_model = app_state.buildUiViewModel(input.now_ms);
 
@@ -109,7 +114,10 @@ pub fn updateFrame(
         .idle => null,
         .capturing => |s| s.path,
     };
-    const target_window = app_state.display.visibleWindow();
+    const target_window = if (app_state.display.isSuspended())
+        null
+    else
+        app_state.display.visibleWindow();
     const frame_target: FrameTarget = if (target_window) |win|
         .{ .window = win }
     else

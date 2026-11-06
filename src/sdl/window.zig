@@ -2,13 +2,25 @@ const std = @import("std");
 const c = @import("c.zig").c;
 const gpu = @import("gpu.zig");
 
-/// Bitflags controlling window creation and behavior (hidden, resizable, high-DPI, borderless).
+/// Bitflags controlling window creation and behavior (hidden, resizable,
+/// high-DPI, borderless).
 pub const window_flags = struct {
     pub const hidden: u64 = c.SDL_WINDOW_HIDDEN;
     pub const resizable: u64 = c.SDL_WINDOW_RESIZABLE;
     pub const high_pixel_density: u64 = c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
     pub const borderless: u64 = c.SDL_WINDOW_BORDERLESS;
 };
+
+/// Allows the screen to be blanked by a screensaver or OS power management.
+pub fn enableScreenSaver() bool {
+    return c.SDL_EnableScreenSaver();
+}
+
+/// Prevents the screen from being blanked by a screensaver or OS power
+/// management.
+pub fn disableScreenSaver() bool {
+    return c.SDL_DisableScreenSaver();
+}
 
 /// Safe typed wrapper handle around an underlying `SDL_Window`.
 pub const Window = extern struct {
@@ -68,6 +80,12 @@ pub const Window = extern struct {
     /// input focus.
     pub fn raise(self: Window) bool {
         return c.SDL_RaiseWindow(self.ptr);
+    }
+
+    /// Restores a minimized or maximized window to its normal size and
+    /// position.
+    pub fn restore(self: Window) bool {
+        return c.SDL_RestoreWindow(self.ptr);
     }
 
     /// Claims this window for rendering with the specified SDL GPU device.

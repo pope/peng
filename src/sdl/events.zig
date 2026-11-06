@@ -30,9 +30,18 @@ pub const mouse = struct {
 /// Event type constants corresponding to SDL3 window, keyboard, touch, and input events.
 pub const event_type = struct {
     pub const quit = c.SDL_EVENT_QUIT;
-    pub const window_close_requested = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+    pub const window_shown = c.SDL_EVENT_WINDOW_SHOWN;
+    pub const window_exposed = c.SDL_EVENT_WINDOW_EXPOSED;
+    pub const window_resized = c.SDL_EVENT_WINDOW_RESIZED;
+    pub const window_pixel_size_changed = c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
+    pub const window_minimized = c.SDL_EVENT_WINDOW_MINIMIZED;
+    pub const window_maximized = c.SDL_EVENT_WINDOW_MAXIMIZED;
+    pub const window_restored = c.SDL_EVENT_WINDOW_RESTORED;
     pub const mouse_enter = c.SDL_EVENT_WINDOW_MOUSE_ENTER;
     pub const mouse_leave = c.SDL_EVENT_WINDOW_MOUSE_LEAVE;
+    pub const window_close_requested = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+    pub const window_occluded = c.SDL_EVENT_WINDOW_OCCLUDED;
+    pub const window_enter_fullscreen = c.SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
     pub const key_down = c.SDL_EVENT_KEY_DOWN;
     pub const text_input = c.SDL_EVENT_TEXT_INPUT;
     pub const drop_file = c.SDL_EVENT_DROP_FILE;
@@ -44,9 +53,6 @@ pub const event_type = struct {
     pub const pinch_begin = c.SDL_EVENT_PINCH_BEGIN;
     pub const pinch_update = c.SDL_EVENT_PINCH_UPDATE;
     pub const pinch_end = c.SDL_EVENT_PINCH_END;
-    pub const window_pixel_size_changed = c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
-    pub const window_resized = c.SDL_EVENT_WINDOW_RESIZED;
-    pub const window_exposed = c.SDL_EVENT_WINDOW_EXPOSED;
 };
 
 /// SDL configuration hints interface.

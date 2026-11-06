@@ -29,6 +29,8 @@ pub fn reclaimProcessHeap() void {
 }
 
 pub const Color = font.Color;
+pub const disableScreenSaver = window.disableScreenSaver;
+pub const enableScreenSaver = window.enableScreenSaver;
 pub const Event = events.Event;
 pub const event_type = events.event_type;
 pub const Font = font.Font;

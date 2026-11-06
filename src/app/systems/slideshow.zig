@@ -146,9 +146,28 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     try std.testing.expect(state.isSlideshowPaused());
     try sysUpdateSlideshow(ctx_2s);
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
-
-    // 4. Resume -> advances
     state.viewer.navigation.slideshow.unpause();
+
+    // 4. Window minimized or occluded -> paused and wait strategy sleeps
+    // indefinitely
+    state.display = .{
+        .visible = .{
+            .windowed = .{
+                .handle = undefined,
+                .is_occluded = true,
+            },
+        },
+    };
+    try std.testing.expect(state.isSlideshowPaused());
+    try std.testing.expectEqual(
+        .wait_indefinite,
+        state.computeFrameWaitStrategy(800, 600, false, false, 1000),
+    );
+    try sysUpdateSlideshow(ctx_2s);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
+
+    // 5. Window exposed -> resumes and advances
+    state.display.setOccluded(false);
     try std.testing.expect(!state.isSlideshowPaused());
     try sysUpdateSlideshow(ctx_2s);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);

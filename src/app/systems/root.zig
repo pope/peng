@@ -28,6 +28,7 @@ pub const sysProcessPaletteInput = palette_input.sysProcessPaletteInput;
 pub const sysProcessUiInteractions = ui_interactions.sysProcessUiInteractions;
 pub const sysSyncMetrics = metrics.sysSyncMetrics;
 pub const sysSyncWindow = window.sysSyncWindow;
+pub const sysSyncWindowVisibility = window.sysSyncWindowVisibility;
 pub const sysUpdateAnimations = animation.sysUpdateAnimations;
 pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysUpdateSlideshow = slideshow.sysUpdateSlideshow;
@@ -50,13 +51,18 @@ pub fn runUpdatePhase(
         .now_ms = input_frame.now_ms,
     };
 
+    // Synchronize window minimize/occlude state before animation and
+    // slideshow passes
+    sysSyncWindowVisibility(ctx);
+
     // Data-Oriented Animation System (ticks active SoA animation channels)
     sysUpdateAnimations(ctx);
 
     // Socket Command Ingestion System (parses IPC commands -> pending_intents)
     sysExecuteIpcCommands(ctx);
 
-    const is_visible = !app_state.display.isHidden();
+    const is_visible = !app_state.display.isHidden() and
+        !app_state.display.isSuspended();
 
     // Command Palette Input System (typing query updates, selection, clicks)
     const palette_closed_this_frame =
@@ -94,9 +100,38 @@ pub fn runUpdatePhase(
     // Metrics & Telemetry System
     sysSyncMetrics(ctx);
 
-    if (parsed_test_mode) {
+    const is_suspended = app_state.display.isSuspended();
+    if (parsed_test_mode or is_suspended) {
         app_state.viewer.animations.settleAll();
         app_state.viewer.zoom_controller.reset();
+    }
+    if (is_suspended) {
+        app_state.viewer.animations.setImmediate(.image_crossfade, 1.0);
+        app_state.viewer.image_transition = .none;
+        app_state.viewer.pan_controller.reset();
+        app_state.viewer.drag_state = .none;
+        app_state.viewer.ui.overlays.edit_panel.active_slider = null;
+        if (app_state.viewer.ui.palette.is_closing) {
+            app_state.viewer.ui.palette.reset();
+        }
+        switch (app_state.viewer.ui.overlays.title_display) {
+            .transient => {
+                app_state.viewer.ui.overlays.title_display = .hidden;
+                app_state.viewer.animations.setImmediate(.title_overlay, 0.0);
+            },
+            .hidden, .pinned => {},
+        }
+        switch (app_state.viewer.ui.snackbar.notification) {
+            .active => |active| {
+                if (active.timeout_ms > 0 or
+                    app_state.viewer.animations.get(.snackbar) <= 0.001)
+                {
+                    app_state.viewer.ui.snackbar.clear();
+                    app_state.viewer.animations.setImmediate(.snackbar, 0.0);
+                }
+            },
+            .none => {},
+        }
     }
 }
 

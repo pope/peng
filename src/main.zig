@@ -332,7 +332,8 @@ const AppGraphicsAndState = struct {
     }
 };
 
-/// Handles SDL quit and window close events in the hot-reload fallback loop.
+/// Handles SDL quit, window close, and window visibility events in the
+/// hot-reload fallback loop.
 fn handleFallbackHotReloadEvent(
     state: *app.state.AppState,
     event: sdl.Event,
@@ -346,6 +347,17 @@ fn handleFallbackHotReloadEvent(
                 state.viewer.running = false;
             }
         },
+        sdl.event_type.window_minimized => state.display.setMinimized(true),
+        sdl.event_type.window_restored,
+        sdl.event_type.window_maximized,
+        sdl.event_type.window_enter_fullscreen,
+        => state.display.setMinimized(false),
+        sdl.event_type.window_shown => {
+            state.display.setMinimized(false);
+            state.display.setOccluded(false);
+        },
+        sdl.event_type.window_occluded => state.display.setOccluded(true),
+        sdl.event_type.window_exposed => state.display.setOccluded(false),
         else => {},
     }
 }

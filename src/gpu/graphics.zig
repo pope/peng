@@ -649,6 +649,15 @@ pub fn initSdlCore(headless: bool) !void {
     // hides the window on close while exiting cleanly on termination signals.
     _ = sdl.hint.set("SDL_QUIT_ON_LAST_WINDOW_CLOSE", "0");
 
+    // Allow the OS screensaver and power management by default; we dynamically
+    // inhibit it only while an active slideshow is playing in a visible window.
+    _ = sdl.hint.set("SDL_VIDEO_ALLOW_SCREENSAVER", "1");
+    _ = sdl.hint.set(
+        "SDL_SCREENSAVER_INHIBIT_ACTIVITY_NAME",
+        "Viewing a slideshow",
+    );
+    _ = sdl.hint.set("SDL_APP_NAME", "Peng");
+
     if (!sdl.init(sdl.init_flags.video | sdl.init_flags.events)) {
         std.log.err("SDL_Init Error: {s}", .{sdl.getError()});
         return error.SDLInitFailed;

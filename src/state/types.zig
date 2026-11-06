@@ -63,6 +63,8 @@ pub const FrameInput = struct {
     mouse_left_down: bool,
     mouse_left_clicked: bool,
     mouse_inside: bool,
+    window_minimized: ?bool = null,
+    window_occluded: ?bool = null,
     quit_request: QuitRequest = .none,
     scroll_delta_x: f32,
     scroll_delta_y: f32,

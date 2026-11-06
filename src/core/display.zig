@@ -13,9 +13,22 @@ pub const ActiveWindow = struct {
     cached_title: ?[]const u8 = null,
     is_fullscreen: bool = false,
     is_borderless: bool = false,
+    is_minimized: bool = false,
+    is_occluded: bool = false,
+    screensaver_inhibited: bool = false,
 
-    /// Frees the cached window title string allocation if present.
+    /// Frees the cached window title string allocation if present and releases
+    /// any active OS screensaver inhibition.
     pub fn deinit(self: *ActiveWindow, gpa: std.mem.Allocator) void {
+        if (self.screensaver_inhibited) {
+            self.screensaver_inhibited = false;
+            if (!sdl.enableScreenSaver()) {
+                std.log.warn(
+                    "SDL_EnableScreenSaver failed: {s}",
+                    .{sdl.getError()},
+                );
+            }
+        }
         if (self.cached_title) |t| {
             gpa.free(t);
             self.cached_title = null;
@@ -78,6 +91,43 @@ pub const DisplayState = union(enum) {
             .visible => false,
             .hidden => true,
         };
+    }
+
+    /// Returns `true` if the visible window is currently minimized or occluded
+    /// by the compositor (e.g. covered by another window, on an inactive
+    /// virtual desktop, or while the screen is locked).
+    pub inline fn isSuspended(self: DisplayState) bool {
+        return switch (self) {
+            .hidden => false,
+            .visible => |b| switch (b) {
+                .headless => false,
+                .windowed => |w| w.is_minimized or w.is_occluded,
+            },
+        };
+    }
+
+    /// Updates the minimized state of a visible windowed backend; no-op when
+    /// hidden or headless.
+    pub fn setMinimized(self: *DisplayState, minimized: bool) void {
+        switch (self.*) {
+            .hidden => {},
+            .visible => |*b| switch (b.*) {
+                .headless => {},
+                .windowed => |*w| w.is_minimized = minimized,
+            },
+        }
+    }
+
+    /// Updates the compositor occlusion state of a visible windowed backend;
+    /// no-op when hidden or headless.
+    pub fn setOccluded(self: *DisplayState, occluded: bool) void {
+        switch (self.*) {
+            .hidden => {},
+            .visible => |*b| switch (b.*) {
+                .headless => {},
+                .windowed => |*w| w.is_occluded = occluded,
+            },
+        }
     }
 
     /// Returns the active SDL window handle if the display is currently visible
@@ -160,6 +210,7 @@ test "DisplayState lifecycle and properties" {
     };
 
     try testing.expect(!display.isHidden());
+    try testing.expect(!display.isSuspended());
     try testing.expect(display.isFullscreen());
     try testing.expectEqual(
         @as(u32, sdl.PixelFormat.rgba32),
@@ -167,6 +218,13 @@ test "DisplayState lifecycle and properties" {
     );
 
     const backend_ptr = display.backendPtr();
+    display.setOccluded(true);
+    try testing.expect(display.isSuspended());
+    display.setOccluded(false);
+    display.setMinimized(true);
+    try testing.expect(display.isSuspended());
+    display.setMinimized(false);
+    try testing.expect(!display.isSuspended());
     try testing.expectEqual(
         true,
         switch (backend_ptr.*) {

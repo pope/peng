@@ -114,6 +114,8 @@ pub const FrameInputState = struct {
     pinch_center_y: f32 = 0,
     mouse_left_clicked: bool = false,
     mouse_inside: bool = false,
+    window_minimized: ?bool = null,
+    window_occluded: ?bool = null,
     quit_request: state.QuitRequest = .none,
     win_w: f32 = 0,
     win_h: f32 = 0,
@@ -127,6 +129,25 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
             if (frame_input.quit_request == .none) {
                 frame_input.quit_request = .window_close;
             }
+        },
+        sdl.event_type.window_minimized => {
+            frame_input.window_minimized = true;
+        },
+        sdl.event_type.window_restored,
+        sdl.event_type.window_maximized,
+        sdl.event_type.window_enter_fullscreen,
+        => {
+            frame_input.window_minimized = false;
+        },
+        sdl.event_type.window_shown => {
+            frame_input.window_minimized = false;
+            frame_input.window_occluded = false;
+        },
+        sdl.event_type.window_occluded => {
+            frame_input.window_occluded = true;
+        },
+        sdl.event_type.window_exposed => {
+            frame_input.window_occluded = false;
         },
         sdl.event_type.mouse_enter => {
             frame_input.mouse_inside = true;
@@ -448,6 +469,8 @@ pub fn pollFrameInput(
         .mouse_left_down = mouse_left_down,
         .mouse_left_clicked = frame_input_state.mouse_left_clicked,
         .mouse_inside = frame_input_state.mouse_inside,
+        .window_minimized = frame_input_state.window_minimized,
+        .window_occluded = frame_input_state.window_occluded,
         .quit_request = frame_input_state.quit_request,
         .scroll_delta_x = frame_input_state.scroll_delta_x,
         .scroll_delta_y = frame_input_state.scroll_delta_y,
@@ -651,4 +674,31 @@ test "processSDLEvent concatenates multiple text_input events per frame" {
     try processSDLEvent(evt2, &fis);
 
     try std.testing.expectEqualStrings("abcd", fis.text_input_opt.?);
+}
+
+test "processSDLEvent tracks window minimize and occlusion transitions" {
+    const allocator = std.testing.allocator;
+    var fis = FrameInputState{
+        .frame_allocator = allocator,
+        .keys_pressed = .empty,
+    };
+    defer fis.keys_pressed.deinit(allocator);
+
+    try std.testing.expectEqual(@as(?bool, null), fis.window_minimized);
+    try std.testing.expectEqual(@as(?bool, null), fis.window_occluded);
+
+    try processSDLEvent(.{ .type = sdl.event_type.window_minimized }, &fis);
+    try std.testing.expectEqual(@as(?bool, true), fis.window_minimized);
+
+    try processSDLEvent(.{ .type = sdl.event_type.window_occluded }, &fis);
+    try std.testing.expectEqual(@as(?bool, true), fis.window_occluded);
+
+    // window_restored clears minimized without clearing occluded
+    try processSDLEvent(.{ .type = sdl.event_type.window_restored }, &fis);
+    try std.testing.expectEqual(@as(?bool, false), fis.window_minimized);
+    try std.testing.expectEqual(@as(?bool, true), fis.window_occluded);
+
+    try processSDLEvent(.{ .type = sdl.event_type.window_exposed }, &fis);
+    try std.testing.expectEqual(@as(?bool, false), fis.window_occluded);
+    try std.testing.expectEqual(@as(?bool, false), fis.window_minimized);
 }

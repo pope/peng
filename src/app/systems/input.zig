@@ -104,6 +104,12 @@ pub fn sysProcessInput(
         };
     }
 
+    if (state.display.isSuspended()) {
+        state.viewer.pan_controller.suppress(input.directional_held);
+        state.viewer.zoom_controller.suppress(input.zoom_held);
+        return;
+    }
+
     if (state.viewer.ui.palette.isAcceptingInput() or
         palette_closed_this_frame)
     {

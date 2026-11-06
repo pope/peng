@@ -719,6 +719,22 @@ pub const ImageCache = struct {
         }
         return false;
     }
+
+    /// Returns `true` when a GPU device is present and any cache slot holds a
+    /// CPU-decoded surface (`.loaded_cpu`) awaiting GPU texture upload.
+    pub fn hasPendingCpuUploads(
+        self: *const ImageCache,
+        has_gpu: bool,
+    ) bool {
+        if (!has_gpu) return false;
+        for (self.slots.items(.entry)) |entry| {
+            switch (entry.resident.asset) {
+                .loaded_cpu => return true,
+                .none, .loaded_gpu, .failed => {},
+            }
+        }
+        return false;
+    }
 };
 
 /// Synchronously probes container headers for image dimensions, EXIF rotation,

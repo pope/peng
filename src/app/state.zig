@@ -258,10 +258,13 @@ pub const AppState = struct {
     }
 
     /// Returns `true` if slideshow mode is active but paused due to explicit
-    /// pause, active modal, user dragging, or slide loading.
+    /// pause, hidden/suspended window, active modal, user dragging, or slide
+    /// loading.
     pub fn isSlideshowPaused(self: *const AppState) bool {
         if (!self.viewer.isSlideshowActive()) return false;
-        return self.viewer.navigation.slideshow.isPaused() or
+        return self.display.isHidden() or
+            self.display.isSuspended() or
+            self.viewer.navigation.slideshow.isPaused() or
             self.viewer.ui.palette.isOpen() or
             self.viewer.drag_state != .none or
             self.isCurrentSlideLoading();
@@ -325,6 +328,19 @@ pub const AppState = struct {
             .visible => {},
         }
         const is_current_loading = self.isCurrentSlideLoading();
+        const has_gpu = self.gpu_device != null;
+        if (self.display.isSuspended()) {
+            const has_pending_work = is_current_loading or
+                self.cache.hasPendingCpuUploads(has_gpu) or
+                self.viewer.navigation.isLoadingFiles() or
+                self.workers.isBusy() or
+                (self.pending_wait_load_streams.items.len > 0) or
+                (self.viewer.ui.screenshot_mode == .capturing);
+            return if (has_pending_work)
+                .{ .wait_timeout_ms = 8 }
+            else
+                .wait_indefinite;
+        }
         const has_unpopulated_cache = blk: {
             if (self.viewer.navigation.getVisibleCount() <= 1) {
                 break :blk false;
@@ -332,7 +348,6 @@ pub const AppState = struct {
             const neighbors =
                 self.viewer.navigation.getVisibleNeighbors() orelse
                 break :blk false;
-            const has_gpu = self.gpu_device != null;
             break :blk self.cache.hasUnreadyPrefetchSlots(
                 &self.viewer.navigation,
                 neighbors,
@@ -546,30 +561,33 @@ pub const AppState = struct {
     /// Ensures the application window is visible and raises it to the
     /// foreground.
     pub fn showAndRaiseWindow(self: *AppState) void {
+        const was_hidden = self.display.isHidden();
+        if (was_hidden) {
+            self.display = .{ .visible = self.display.backend() };
+        }
         switch (self.display) {
-            .hidden => |b| {
-                switch (b) {
-                    .headless => {},
-                    .windowed => |win| {
+            .hidden => unreachable,
+            .visible => |*b| switch (b.*) {
+                .headless => {},
+                .windowed => |*win| {
+                    if (was_hidden) {
                         if (!win.handle.show()) {
                             std.log.err(
                                 "SDL_ShowWindow failed: {s}",
                                 .{sdl.getError()},
                             );
                         }
-                        if (!win.handle.raise()) {
+                    }
+                    win.is_occluded = false;
+                    if (win.is_minimized) {
+                        win.is_minimized = false;
+                        if (!win.handle.restore()) {
                             std.log.warn(
-                                "SDL_RaiseWindow failed: {s}",
+                                "SDL_RestoreWindow failed: {s}",
                                 .{sdl.getError()},
                             );
                         }
-                    },
-                }
-                self.display = .{ .visible = b };
-            },
-            .visible => |b| switch (b) {
-                .headless => {},
-                .windowed => |win| {
+                    }
                     if (!win.handle.raise()) {
                         std.log.warn(
                             "SDL_RaiseWindow failed: {s}",
@@ -634,6 +652,17 @@ pub const AppState = struct {
                     if (!win.handle.setBordered(!win.is_borderless)) {
                         std.log.err(
                             "SDL_SetWindowBordered failed: {s}",
+                            .{sdl.getError()},
+                        );
+                    }
+                }
+                win.is_minimized = false;
+                win.is_occluded = false;
+                if (win.screensaver_inhibited) {
+                    win.screensaver_inhibited = false;
+                    if (!sdl.enableScreenSaver()) {
+                        std.log.warn(
+                            "SDL_EnableScreenSaver failed: {s}",
                             .{sdl.getError()},
                         );
                     }
