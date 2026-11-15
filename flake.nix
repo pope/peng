@@ -32,6 +32,20 @@
         peng = final.callPackage ./nix/peng.nix {
           sdl3-image = final.sdl3-image.override { enableSTB = false; };
         };
+        peng-static =
+          let
+            staticDeps = final.callPackage ./nix/static-deps.nix { };
+          in
+          final.peng.override {
+            static = true;
+            inherit (staticDeps)
+              linuxDlopenLibraryPath
+              sdl3
+              sdl3-image
+              sdl3-ttf
+              zigTarget
+              ;
+          };
       };
       sys-config =
         system:
@@ -63,7 +77,6 @@
             };
             settings.global.excludes = [ ".envrc" ];
           });
-          inherit (pkgs) peng;
           updateNixDeps = pkgs.writeShellApplication {
             name = "update-nix-deps";
             runtimeInputs = with pkgs; [
@@ -80,12 +93,15 @@
           };
         in
         {
-          packages.${system} = {
-            inherit peng;
+          packages.${system} = rec {
+            inherit (pkgs) peng;
             default = peng;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            inherit (pkgs) peng-static;
           };
           devShells.${system}.default = pkgs.mkShell {
-            inputsFrom = [ peng ];
+            inputsFrom = [ pkgs.peng ];
             packages =
               with pkgs;
               [

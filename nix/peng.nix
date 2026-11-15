@@ -14,12 +14,31 @@
   stdenv,
   wayland,
   wayland-scanner,
+  writeShellApplication,
   zig,
   # CPU target: "baseline", "x86_64_v2", "x86_64_v3", "native", etc.
   cpu ? (if stdenv.hostPlatform.isx86_64 then "x86_64_v3" else "baseline"),
   # Optimization mode: "ReleaseSafe", "ReleaseFast", "ReleaseSmall", "Debug"
   optimize ? "ReleaseSafe",
+  # Statically link SDL libs and emit a portable Linux binary with zero /nix/store paths
+  static ? false,
+  # Zig target triple when building with static = true
+  zigTarget ? (
+    if stdenv.hostPlatform.isx86_64 then "x86_64-linux-gnu.2.28" else "aarch64-linux-gnu.2.28"
+  ),
+  # Optional runtime library path exposed via passthru for running portable static builds on NixOS
+  linuxDlopenLibraryPath ? "",
 }:
+let
+  useStaticLinux = static && stdenv.hostPlatform.isLinux;
+  pkgConfigStatic = writeShellApplication {
+    name = "pkg-config-static";
+    runtimeInputs = [ pkg-config ];
+    text = ''
+      exec pkg-config --static "$@"
+    '';
+  };
+in
 stdenv.mkDerivation (_finalAttrs: {
   pname = "peng";
   version = "0.1.0";
@@ -68,7 +87,7 @@ stdenv.mkDerivation (_finalAttrs: {
         "Photography"
       ];
     in
-    lib.optionals stdenv.hostPlatform.isLinux [
+    lib.optionals (stdenv.hostPlatform.isLinux && !static) [
       (makeDesktopItem {
         name = "peng";
         desktopName = "Peng";
@@ -104,11 +123,22 @@ stdenv.mkDerivation (_finalAttrs: {
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache
   '';
 
+  dontPatchELF = useStaticLinux;
+  dontPatchShebangs = useStaticLinux;
+
+  preBuild = lib.optionalString useStaticLinux ''
+    export PKG_CONFIG="${lib.getExe pkgConfigStatic}"
+  '';
+
   zigBuildFlags = [
     "--system"
     ".zig-cache/p"
     "-Dcpu=${cpu}"
     "-Doptimize=${optimize}"
+  ]
+  ++ lib.optionals useStaticLinux [
+    "-Dstatic_sdl=true"
+    "-Dtarget=${zigTarget}"
   ];
 
   nativeBuildInputs = [
@@ -119,19 +149,25 @@ stdenv.mkDerivation (_finalAttrs: {
     zig
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [
-    copyDesktopItems
     wayland-scanner
+  ]
+  ++ lib.optionals (stdenv.hostPlatform.isLinux && !static) [
+    copyDesktopItems
   ];
 
   buildInputs = [
-    sdl3.dev
+    (lib.getDev sdl3)
     sdl3-ttf
     sdl3-image
   ]
-  ++ lib.optionals stdenv.hostPlatform.isLinux [
+  ++ lib.optionals (stdenv.hostPlatform.isLinux && !static) [
     libxkbcommon
     wayland
   ];
+
+  passthru = lib.optionalAttrs (useStaticLinux && linuxDlopenLibraryPath != "") {
+    inherit linuxDlopenLibraryPath;
+  };
 
   meta = {
     description = "GPU-accelerated image viewer built in Zig";

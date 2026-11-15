@@ -9,6 +9,16 @@ pub fn build(b: *std.Build) void {
         "Build viewer as dynamic lib for automatic hot-reload of code",
     ) orelse false;
 
+    const static_sdl = b.option(
+        bool,
+        "static_sdl",
+        "Statically link SDL3, SDL3_ttf, and SDL3_image",
+    ) orelse false;
+
+    if (hot_reload and static_sdl) {
+        @panic("-Dhot_reload=true cannot be combined with -Dstatic_sdl=true");
+    }
+
     var options = b.addOptions();
     options.addOption(bool, "hot_reload", hot_reload);
 
@@ -144,7 +154,12 @@ pub fn build(b: *std.Build) void {
         const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
         inline for (sys_libs) |lib| {
             translate_sdl.linkSystemLibrary(lib, .{});
-            sdl_module.linkSystemLibrary(lib, .{});
+            sdl_module.linkSystemLibrary(lib, .{
+                .preferred_link_mode = if (static_sdl) .static else .dynamic,
+            });
+        }
+        if (static_sdl) {
+            sdl_module.link_libcpp = true;
         }
     }
     sdl_module.addImport("sdl_c", translate_sdl.createModule());
