@@ -151,11 +151,14 @@ pub fn build(b: *std.Build) void {
             "libwebpmux-3.dll",
         );
     } else {
+        const link_mode: std.builtin.LinkMode = if (static_sdl)
+            .static
+        else
+            .dynamic;
         const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
         inline for (sys_libs) |lib| {
-            translate_sdl.linkSystemLibrary(lib, .{});
-            sdl_module.linkSystemLibrary(lib, .{
-                .preferred_link_mode = if (static_sdl) .static else .dynamic,
+            translate_sdl.linkSystemLibrary(lib, .{
+                .preferred_link_mode = link_mode,
             });
         }
         if (static_sdl) {
@@ -328,7 +331,10 @@ pub fn build(b: *std.Build) void {
     viewer_lib.root_module.addImport("sdl", sdl_module);
     viewer_lib.root_module.addImport("ui", ui_module);
 
+    const is_darwin = target.result.os.tag.isDarwin();
+
     if (hot_reload) {
+        viewer_lib.dead_strip_dylibs = is_darwin;
         b.installArtifact(viewer_lib);
     }
 
@@ -341,6 +347,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    exe.dead_strip_dylibs = is_darwin;
     exe.root_module.addOptions("build_options", options);
 
     // Import internal and external modules into executable module
@@ -382,6 +389,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    msg_exe.dead_strip_dylibs = is_darwin;
     msg_exe.root_module.addImport("config", config_module);
     msg_exe.root_module.addImport("ipc", ipc_module);
     b.installArtifact(msg_exe);
@@ -395,6 +403,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    test_runner_exe.dead_strip_dylibs = is_darwin;
     test_runner_exe.root_module.addImport("sdl", sdl_module);
     test_runner_exe.root_module.addImport("ipc", ipc_module);
     b.installArtifact(test_runner_exe);
@@ -404,93 +413,61 @@ pub fn build(b: *std.Build) void {
     run_integration_tests.step.dependOn(b.getInstallStep());
     run_integration_tests.addPassthruArgs();
 
-    const sdl_tests = b.addTest(.{
-        .root_module = sdl_module,
-    });
+    const sdl_tests = addModuleTest(b, sdl_module);
     const run_sdl_tests = b.addRunArtifact(sdl_tests);
 
-    const intents_tests = b.addTest(.{
-        .root_module = intents_module,
-    });
+    const intents_tests = addModuleTest(b, intents_module);
     const run_intents_tests = b.addRunArtifact(intents_tests);
 
-    const config_tests = b.addTest(.{
-        .root_module = config_module,
-    });
+    const config_tests = addModuleTest(b, config_module);
     const run_config_tests = b.addRunArtifact(config_tests);
 
-    const state_tests = b.addTest(.{
-        .root_module = state_module,
-    });
+    const state_tests = addModuleTest(b, state_module);
     const run_state_tests = b.addRunArtifact(state_tests);
 
-    const input_tests = b.addTest(.{
-        .root_module = input_module,
-    });
+    const input_tests = addModuleTest(b, input_module);
     const run_input_tests = b.addRunArtifact(input_tests);
 
-    const ipc_tests = b.addTest(.{
-        .root_module = ipc_module,
-    });
+    const ipc_tests = addModuleTest(b, ipc_module);
     const run_ipc_tests = b.addRunArtifact(ipc_tests);
 
-    const app_tests = b.addTest(.{
-        .root_module = app_module,
-    });
+    const app_tests = addModuleTest(b, app_module);
     const run_app_tests = b.addRunArtifact(app_tests);
     run_app_tests.setCwd(b.path("."));
 
-    const ui_tests = b.addTest(.{
-        .root_module = ui_module,
-    });
+    const ui_tests = addModuleTest(b, ui_module);
     ui_tests.step.dependOn(compile_shaders);
     const run_ui_tests = b.addRunArtifact(ui_tests);
 
-    const core_tests = b.addTest(.{
-        .root_module = core_module,
-    });
+    const core_tests = addModuleTest(b, core_module);
     const run_core_tests = b.addRunArtifact(core_tests);
     run_core_tests.setCwd(b.path("."));
 
-    const geom_tests = b.addTest(.{
-        .root_module = geom_module,
-    });
+    const geom_tests = addModuleTest(b, geom_module);
     const run_geom_tests = b.addRunArtifact(geom_tests);
     run_geom_tests.setCwd(b.path("."));
 
-    const probe_tests = b.addTest(.{
-        .root_module = probe_module,
-    });
+    const probe_tests = addModuleTest(b, probe_module);
     const run_probe_tests = b.addRunArtifact(probe_tests);
     run_probe_tests.setCwd(b.path("."));
 
-    const vfs_tests = b.addTest(.{
-        .root_module = vfs_module,
-    });
+    const vfs_tests = addModuleTest(b, vfs_module);
     const run_vfs_tests = b.addRunArtifact(vfs_tests);
     run_vfs_tests.setCwd(b.path("."));
 
-    const triage_tests = b.addTest(.{
-        .root_module = triage_module,
-    });
+    const triage_tests = addModuleTest(b, triage_module);
     const run_triage_tests = b.addRunArtifact(triage_tests);
     run_triage_tests.setCwd(b.path("."));
 
-    const palette_tests = b.addTest(.{
-        .root_module = palette_module,
-    });
+    const palette_tests = addModuleTest(b, palette_module);
     const run_palette_tests = b.addRunArtifact(palette_tests);
     run_palette_tests.setCwd(b.path("."));
 
-    const thumbcache_tests = b.addTest(.{
-        .root_module = thumbcache_module,
-    });
+    const thumbcache_tests = addModuleTest(b, thumbcache_module);
     const run_thumbcache_tests = b.addRunArtifact(thumbcache_tests);
     run_thumbcache_tests.setCwd(b.path("."));
 
-    const gpu_tests = b.addTest(.{
-        .root_module = gpu_module,
-    });
+    const gpu_tests = addModuleTest(b, gpu_module);
     gpu_tests.step.dependOn(compile_shaders);
     const run_gpu_tests = b.addRunArtifact(gpu_tests);
     run_gpu_tests.setCwd(b.path("."));
@@ -694,4 +671,15 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
 
     compile_shaders.dependOn(&update_shaders.step);
     return compile_shaders;
+}
+
+/// Creates a module unit test binary, enabling `-dead_strip_dylibs` on Darwin
+/// so Zig's Mach-O linker prunes duplicate or unused `LC_LOAD_DYLIB` entries.
+fn addModuleTest(
+    b: *std.Build,
+    root_module: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const t = b.addTest(.{ .root_module = root_module });
+    t.dead_strip_dylibs = t.rootModuleTarget().os.tag.isDarwin();
+    return t;
 }

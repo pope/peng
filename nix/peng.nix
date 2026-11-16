@@ -45,6 +45,7 @@ stdenv.mkDerivation (_finalAttrs: {
   src = ../.;
 
   __structuredAttrs = true;
+  strictDeps = true;
 
   dontSetZigDefaultFlags = true;
 
