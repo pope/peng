@@ -2,15 +2,34 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
+// SDL3 GPU requires SPIR-V compute shaders to place readonly storage buffers
+// in set 0 and uniform buffers in set 2, whereas Metal compute shaders bind
+// uniform buffers first ([[buffer(0)]]) followed by readonly storage buffers
+// ([[buffer(1)]]).
+#ifdef TARGET_MSL
+#define SRC_BUF_SET 0
+#define SRC_BUF_BINDING 1
+#define PARAMS_SET 0
+#define PARAMS_BINDING 0
+#else
+#define SRC_BUF_SET 0
+#define SRC_BUF_BINDING 0
+#define PARAMS_SET 2
+#define PARAMS_BINDING 0
+#endif
+
 // Output 2D Storage Texture
 layout(set = 1, binding = 0, rgba8) writeonly uniform image2D outImage;
 
 // Input Storage Buffer (packed bytes read as 32-bit uints)
-layout(std430, set = 0, binding = 0) readonly buffer SrcBuffer { uint data[]; }
+layout(std430, set = SRC_BUF_SET,
+       binding = SRC_BUF_BINDING) readonly buffer SrcBuffer {
+    uint data[];
+}
 src_buf;
 
 // Uniform parameters pushed per dispatch
-layout(std140, set = 2, binding = 0) uniform Params {
+layout(std140, set = PARAMS_SET, binding = PARAMS_BINDING) uniform Params {
     uint width;
     uint height;
     uint is_bgr;    // 0 = RGB24, 1 = BGR24

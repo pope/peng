@@ -25,12 +25,14 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       overlay = final: _prev: {
         peng = final.callPackage ./nix/peng.nix {
-          sdl3-image = final.sdl3-image.override { enableSTB = false; };
+          sdl3-image = final.sdl3-image.override {
+            enableImageIO = false;
+            enableSTB = false;
+          };
         };
         peng-static =
           let
@@ -94,11 +96,8 @@
         in
         {
           packages.${system} = rec {
-            inherit (pkgs) peng;
+            inherit (pkgs) peng peng-static;
             default = peng;
-          }
-          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-            inherit (pkgs) peng-static;
           };
           devShells.${system}.default = pkgs.mkShell {
             inputsFrom = [ pkgs.peng ];

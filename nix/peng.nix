@@ -17,20 +17,20 @@
   writeShellApplication,
   zig,
   # CPU target: "baseline", "x86_64_v2", "x86_64_v3", "native", etc.
-  cpu ? (if stdenv.hostPlatform.isx86_64 then "x86_64_v3" else "baseline"),
+  cpu ? (
+    if stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isx86_64 then "x86_64_v3" else "baseline"
+  ),
   # Optimization mode: "ReleaseSafe", "ReleaseFast", "ReleaseSmall", "Debug"
   optimize ? "ReleaseSafe",
-  # Statically link SDL libs and emit a portable Linux binary with zero /nix/store paths
+  # Statically link SDL libs and emit a portable binary with zero /nix/store paths
   static ? false,
-  # Zig target triple when building with static = true
-  zigTarget ? (
-    if stdenv.hostPlatform.isx86_64 then "x86_64-linux-gnu.2.28" else "aarch64-linux-gnu.2.28"
-  ),
+  # Zig target triple when building with static = true (supplied by static-deps.nix)
+  zigTarget ? null,
   # Optional runtime library path exposed via passthru for running portable static builds on NixOS
   linuxDlopenLibraryPath ? "",
 }:
+assert lib.assertMsg (static -> zigTarget != null) "zigTarget must be set when static = true";
 let
-  useStaticLinux = static && stdenv.hostPlatform.isLinux;
   pkgConfigStatic = writeShellApplication {
     name = "pkg-config-static";
     runtimeInputs = [ pkg-config ];
@@ -124,10 +124,10 @@ stdenv.mkDerivation (_finalAttrs: {
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache
   '';
 
-  dontPatchELF = useStaticLinux;
-  dontPatchShebangs = useStaticLinux;
+  dontPatchELF = static;
+  dontPatchShebangs = static;
 
-  preBuild = lib.optionalString useStaticLinux ''
+  preBuild = lib.optionalString static ''
     export PKG_CONFIG="${lib.getExe pkgConfigStatic}"
   '';
 
@@ -137,7 +137,7 @@ stdenv.mkDerivation (_finalAttrs: {
     "-Dcpu=${cpu}"
     "-Doptimize=${optimize}"
   ]
-  ++ lib.optionals useStaticLinux [
+  ++ lib.optionals static [
     "-Dstatic_sdl=true"
     "-Dtarget=${zigTarget}"
   ];
@@ -166,9 +166,15 @@ stdenv.mkDerivation (_finalAttrs: {
     wayland
   ];
 
-  passthru = lib.optionalAttrs (useStaticLinux && linuxDlopenLibraryPath != "") {
-    inherit linuxDlopenLibraryPath;
+  outputChecks = lib.optionalAttrs static {
+    out.allowedReferences = [ ];
   };
+
+  passthru =
+    lib.optionalAttrs (static && stdenv.hostPlatform.isLinux && linuxDlopenLibraryPath != "")
+      {
+        inherit linuxDlopenLibraryPath;
+      };
 
   meta = {
     description = "GPU-accelerated image viewer built in Zig";

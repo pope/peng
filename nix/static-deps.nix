@@ -1,20 +1,34 @@
 {
   pkgs,
   zigTarget ? (
-    if pkgs.stdenv.hostPlatform.isx86_64 then
-      "x86_64-linux-gnu.2.28"
-    else if pkgs.stdenv.hostPlatform.isAarch64 then
-      "aarch64-linux-gnu.2.28"
+    if pkgs.stdenv.hostPlatform.isLinux then
+      if pkgs.stdenv.hostPlatform.isx86_64 then
+        "x86_64-linux-gnu.2.28"
+      else if pkgs.stdenv.hostPlatform.isAarch64 then
+        "aarch64-linux-gnu.2.28"
+      else
+        throw "Unsupported Linux architecture: ${pkgs.stdenv.hostPlatform.system}"
+    else if pkgs.stdenv.hostPlatform.isDarwin then
+      let
+        minVer = pkgs.stdenv.hostPlatform.darwinMinVersion;
+      in
+      if pkgs.stdenv.hostPlatform.isx86_64 then
+        "x86_64-macos.${minVer}"
+      else if pkgs.stdenv.hostPlatform.isAarch64 then
+        "aarch64-macos.${minVer}"
+      else
+        throw "Unsupported Darwin architecture: ${pkgs.stdenv.hostPlatform.system}"
     else
-      throw "Unsupported Linux architecture: ${pkgs.stdenv.hostPlatform.system}"
+      throw "Unsupported platform: ${pkgs.stdenv.hostPlatform.system}"
   ),
 }:
 let
   inherit (pkgs) lib;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 
-  # Wrapper scripts around `zig cc` / `zig c++` / `zig ar` / `zig ranlib`
-  # so all static C/C++ archives use Zig's libc++ ABI and baseline glibc.
+  # On Linux, wrapper scripts around `zig cc` / `zig c++` / `zig ar` / `zig ranlib`
+  # ensure all static C/C++ archives use Zig's libc++ ABI and baseline glibc.
   mkZigCompiler =
     name: subcmd:
     pkgs.writeShellApplication {
@@ -175,10 +189,15 @@ let
     "--host=${pkgs.stdenv.hostPlatform.config}"
   ];
 
-  zlib = mkStatic pkgs.zlib {
-    shared = false;
-    splitStaticOutput = false;
-  } { };
+  zlib =
+    mkStatic pkgs.zlib
+      {
+        shared = false;
+        splitStaticOutput = false;
+      }
+      {
+        postInstall = "";
+      };
 
   bzip2 =
     mkStatic pkgs.bzip2
@@ -233,7 +252,16 @@ let
         inherit zlib;
       }
       (old: {
-        configureFlags = (old.configureFlags or [ ]) ++ autotoolsCrossFlags;
+        # On Darwin, nixpkgs' libpng hardcodes darwin.bootstrapStdenv instead of
+        # its stdenv argument, bypassing makeStaticLibraries' default flags.
+        dontDisableStatic = true;
+        configureFlags =
+          (old.configureFlags or [ ])
+          ++ [
+            "--enable-static"
+            "--disable-shared"
+          ]
+          ++ autotoolsCrossFlags;
       });
 
   libjpeg = mkStatic pkgs.libjpeg_turbo {
@@ -243,11 +271,13 @@ let
 
   giflib = mkStatic pkgs.giflib { } (old: {
     configureFlags = (old.configureFlags or [ ]) ++ autotoolsCrossFlags;
-    postInstall =
-      (old.postInstall or "")
+    postPatch =
+      (old.postPatch or "")
       + "\n"
       + ''
-        rm -f "$out"/lib/*.so*
+        substituteInPlace Makefile \
+          --replace-fail 'all: shared-lib static-lib $(UTILS)' 'all: static-lib $(UTILS)' \
+          --replace-fail 'install-lib: install-static-lib install-shared-lib' 'install-lib: install-static-lib'
       '';
   });
 
@@ -331,12 +361,18 @@ let
         inherit freetype graphite2;
         withIntrospection = false;
         withCairo = false;
+        withCoreText = false;
         withIcu = false;
       }
       (old: {
-        nativeBuildInputs = lib.filter (p: (p.pname or "") != "glib" && (p.pname or "") != "gtk-doc") (
-          old.nativeBuildInputs or [ ]
-        );
+        nativeBuildInputs = lib.filter (
+          p:
+          !(builtins.elem (p.pname or "") [
+            "gettext"
+            "glib"
+            "gtk-doc"
+          ])
+        ) (old.nativeBuildInputs or [ ]);
         buildInputs = [ freetype ];
         mesonFlags =
           (lib.filter (f: !(lib.hasPrefix "-Dglib=" f)) (old.mesonFlags or [ ]))
@@ -518,35 +554,43 @@ let
         '';
       });
 
-  sdl3 = pkgs.sdl3.overrideAttrs (
-    old:
-    let
-      z = useZigFlags old;
-    in
-    z
-    // {
-      pname = "sdl3-static";
-      # Clear Nixpkgs' postPatch so SDL3 dlopen()s generic system SONAMEs instead of /nix/store paths.
-      postPatch = "";
-      cmakeFlags =
-        (lib.filter (
-          flag:
-          !(lib.hasPrefix "-DSDL_DEPS_SHARED=" flag)
-          && !(lib.hasPrefix "-DSDL_TESTS=" flag)
-          && !(lib.hasPrefix "-DSDL_INSTALL_TESTS=" flag)
-        ) (z.cmakeFlags or [ ]))
-        ++ [
-          (lib.cmakeBool "SDL_SHARED" false)
-          (lib.cmakeBool "SDL_STATIC" true)
-          (lib.cmakeBool "SDL_DEPS_SHARED" true)
-          (lib.cmakeBool "SDL_TESTS" false)
-          (lib.cmakeBool "SDL_INSTALL_TESTS" false)
-        ];
-      postInstall = (old.postInstall or "") + ''
-        mkdir -p "$installedTests"
-      '';
-    }
-  );
+  sdl3 =
+    (pkgs.sdl3.override (
+      lib.optionalAttrs isDarwin {
+        openglSupport = false;
+        vulkanSupport = false;
+        x11Support = false;
+      }
+    )).overrideAttrs
+      (
+        old:
+        let
+          z = useZigFlags old;
+        in
+        z
+        // {
+          pname = "sdl3-static";
+          # Clear Nixpkgs' postPatch so SDL3 dlopen()s generic system SONAMEs instead of /nix/store paths.
+          postPatch = "";
+          cmakeFlags =
+            (lib.filter (
+              flag:
+              !(lib.hasPrefix "-DSDL_DEPS_SHARED=" flag)
+              && !(lib.hasPrefix "-DSDL_TESTS=" flag)
+              && !(lib.hasPrefix "-DSDL_INSTALL_TESTS=" flag)
+            ) (z.cmakeFlags or [ ]))
+            ++ [
+              (lib.cmakeBool "SDL_SHARED" false)
+              (lib.cmakeBool "SDL_STATIC" true)
+              (lib.cmakeBool "SDL_DEPS_SHARED" true)
+              (lib.cmakeBool "SDL_TESTS" false)
+              (lib.cmakeBool "SDL_INSTALL_TESTS" false)
+            ];
+          postInstall = (old.postInstall or "") + ''
+            mkdir -p "$installedTests"
+          '';
+        }
+      );
 
   sdl3-ttf =
     mkStatic pkgs.sdl3-ttf
@@ -597,11 +641,13 @@ let
           libavif
           libjpeg
           ;
+        enableImageIO = false;
         enableSTB = false;
         enableTests = false;
       }
       (old: {
         pname = "sdl3-image-static";
+        buildInputs = (old.buildInputs or [ ]) ++ lib.optional isDarwin libavif;
         propagatedBuildInputs = lib.concatMap pkgOutputs [
           sdl3
           libtiff
@@ -624,9 +670,12 @@ let
           brotli
         ];
         cmakeFlags =
-          (lib.filter (f: !(lib.hasPrefix "-DSDLIMAGE_DEPS_SHARED=" f)) (old.cmakeFlags or [ ]))
+          (lib.filter (
+            f: !(lib.hasPrefix "-DSDLIMAGE_DEPS_SHARED=" f) && !(lib.hasPrefix "-DSDLIMAGE_AVIF=" f)
+          ) (old.cmakeFlags or [ ]))
           ++ [
             "-DBUILD_SHARED_LIBS=OFF"
+            "-DSDLIMAGE_AVIF=ON"
             "-DSDLIMAGE_DEPS_SHARED=OFF"
             "-DSDLIMAGE_SAMPLES=OFF"
           ];
@@ -642,27 +691,32 @@ let
       ++ lib.optional (p ? static) p.static
     );
 
-  linuxDlopenLibs = with pkgs; [
-    vulkan-loader
-    wayland
-    libxkbcommon
-    libx11
-    libxcb
-    libGL
-    libglvnd
-    libdecor
-    libdrm
-    libgbm
-    libxcursor
-    libxext
-    libxfixes
-    libxi
-    libxrandr
-    libxscrnsaver
-    libxtst
-  ];
+  linuxDlopenLibs = lib.optionals isLinux (
+    with pkgs;
+    [
+      vulkan-loader
+      wayland
+      libxkbcommon
+      libx11
+      libxcb
+      libGL
+      libglvnd
+      libdecor
+      libdrm
+      libgbm
+      libxcursor
+      libxext
+      libxfixes
+      libxi
+      libxrandr
+      libxscrnsaver
+      libxtst
+    ]
+  );
 
-  linuxDlopenLibraryPath = "/run/opengl-driver/lib:" + lib.makeLibraryPath linuxDlopenLibs;
+  linuxDlopenLibraryPath = lib.optionalString isLinux (
+    "/run/opengl-driver/lib:" + lib.makeLibraryPath linuxDlopenLibs
+  );
 in
 {
   inherit

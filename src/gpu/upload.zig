@@ -780,3 +780,123 @@ test "computeTextureVramBytes - reports 4bpp RGBA8 footprint with mipmaps" {
         computeTextureVramBytes(100, 50, 8),
     );
 }
+
+test "uploadSurfaceToGpu - compute pipeline unpacks RGB24 and BGR24 pixels" {
+    if (!sdl.init(sdl.init_flags.video)) return;
+    defer sdl.quit();
+
+    const dev = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        false,
+    ) orelse return;
+    defer dev.destroy();
+
+    const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
+    const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
+    const shader_formats = dev.getShaderFormats();
+    const is_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
+    const comp_code = if (is_spirv) comp_code_spv else comp_code_msl;
+
+    const comp_info = sdl.gpu.ComputePipelineCreateInfo{
+        .code_size = comp_code.len,
+        .code = comp_code.ptr,
+        .entrypoint = if (is_spirv) "main" else "main0",
+        .format = if (is_spirv)
+            sdl.gpu.ShaderFormat.spirv
+        else
+            sdl.gpu.ShaderFormat.msl,
+        .num_readonly_storage_buffers = 1,
+        .num_readwrite_storage_textures = 1,
+        .num_uniform_buffers = 1,
+        .threadcount_x = 16,
+        .threadcount_y = 16,
+        .threadcount_z = 1,
+    };
+    const comp_pipeline = dev.createComputePipeline(&comp_info) orelse
+        return error.ComputePipelineCreationFailed;
+    defer dev.releaseComputePipeline(comp_pipeline);
+
+    var staging = UploadStagingBuffer{};
+    defer staging.deinit(dev);
+
+    const Case = struct { fmt: u32, src: [3]u8, expected: [4]u8 };
+    const cases = [_]Case{
+        .{
+            .fmt = sdl.PixelFormat.rgb24,
+            .src = .{ 0x12, 0x7A, 0xE4 },
+            .expected = .{ 0x12, 0x7A, 0xE4, 0xFF },
+        },
+        .{
+            .fmt = sdl.PixelFormat.bgr24,
+            .src = .{ 0xE4, 0x7A, 0x12 },
+            .expected = .{ 0x12, 0x7A, 0xE4, 0xFF },
+        },
+    };
+
+    for (cases) |tc| {
+        const surf = sdl.Surface.create(5, 3, tc.fmt) orelse
+            return error.SurfaceCreateFailed;
+        defer surf.destroy();
+
+        const pitch: usize = @intCast(surf.pitch());
+        const pixels = surf.pixels()[0 .. pitch * 3];
+        @memset(pixels, 0);
+        for (0..3) |y| {
+            for (0..5) |x| {
+                const off = y * pitch + x * 3;
+                pixels[off + 0] = tc.src[0];
+                pixels[off + 1] = tc.src[1];
+                pixels[off + 2] = tc.src[2];
+            }
+        }
+
+        const uploaded = uploadSurfaceToGpu(
+            dev,
+            surf,
+            comp_pipeline,
+            &staging,
+        ) orelse return error.UploadFailed;
+        defer dev.releaseTexture(uploaded.gpu_texture);
+
+        const dl_size: u32 = 5 * 3 * 4;
+        const dl_buf = dev.createTransferBuffer(&.{
+            .usage = .download,
+            .size = dl_size,
+        }) orelse return error.TransferBufferCreateFailed;
+        defer dev.releaseTransferBuffer(dl_buf);
+
+        const cmd = dev.acquireCommandBuffer() orelse
+            return error.CommandBufferFailed;
+        const copy_pass = cmd.beginCopyPass() orelse
+            return error.CopyPassFailed;
+        copy_pass.downloadFromTexture(&.{
+            .texture = uploaded.gpu_texture,
+            .w = 5,
+            .h = 3,
+            .d = 1,
+        }, &.{
+            .transfer_buffer = dl_buf,
+            .offset = 0,
+            .pixels_per_row = 5,
+            .rows_per_layer = 3,
+        });
+        copy_pass.end();
+
+        const fence = cmd.submitAndAcquireFence() orelse
+            return error.SubmitFailed;
+        defer dev.releaseFence(fence);
+        try std.testing.expect(dev.waitForFence(fence));
+
+        const mapped = dev.mapTransferBuffer(dl_buf, false) orelse
+            return error.MapFailed;
+        defer dev.unmapTransferBuffer(dl_buf);
+
+        for (0..15) |px| {
+            try std.testing.expectEqualSlices(
+                u8,
+                &tc.expected,
+                mapped[px * 4 .. px * 4 + 4],
+            );
+        }
+    }
+}

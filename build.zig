@@ -83,78 +83,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    if (target.result.os.tag == .windows) {
-        const sdl3_dep = b.dependency("sdl3_devel", .{});
-        const ttf_dep = b.dependency("sdl3_ttf_devel", .{});
-        const img_dep = b.dependency("sdl3_image_devel", .{});
+    const is_darwin = target.result.os.tag.isDarwin();
+    const is_windows = target.result.os.tag == .windows;
 
-        const deps = [_]*std.Build.Dependency{ sdl3_dep, ttf_dep, img_dep };
-        inline for (deps) |dep| {
-            translate_sdl.addIncludePath(dep.path("include"));
-            sdl_module.addIncludePath(dep.path("include"));
-            sdl_module.addLibraryPath(dep.path("lib/x64"));
-        }
-        const sys_libs = [_][]const u8{ "SDL3", "SDL3_ttf", "SDL3_image" };
-        inline for (sys_libs) |lib| {
-            sdl_module.linkSystemLibrary(lib, .{});
-        }
-
-        const install_bin = struct {
-            fn run(
-                builder: *std.Build,
-                lazy_path: std.Build.LazyPath,
-                filename: []const u8,
-            ) void {
-                const install_step = builder.addInstallBinFile(
-                    lazy_path,
-                    filename,
-                );
-                builder.getInstallStep().dependOn(&install_step.step);
-            }
-        }.run;
-
-        install_bin(b, sdl3_dep.path("lib/x64/SDL3.dll"), "SDL3.dll");
-        install_bin(b, ttf_dep.path("lib/x64/SDL3_ttf.dll"), "SDL3_ttf.dll");
-        install_bin(
-            b,
-            img_dep.path("lib/x64/SDL3_image.dll"),
-            "SDL3_image.dll",
-        );
-        install_bin(
-            b,
-            img_dep.path("lib/x64/optional/libavif-16.dll"),
-            "libavif-16.dll",
-        );
-        install_bin(
-            b,
-            img_dep.path("lib/x64/optional/libpng16-16.dll"),
-            "libpng16-16.dll",
-        );
-        install_bin(
-            b,
-            img_dep.path("lib/x64/optional/libtiff-6.dll"),
-            "libtiff-6.dll",
-        );
-        install_bin(
-            b,
-            img_dep.path("lib/x64/optional/libwebp-7.dll"),
-            "libwebp-7.dll",
-        );
-        install_bin(
-            b,
-            img_dep.path("lib/x64/optional/libwebpdemux-2.dll"),
-            "libwebpdemux-2.dll",
-        );
-        install_bin(
-            b,
-            img_dep.path("lib/x64/optional/libwebpmux-3.dll"),
-            "libwebpmux-3.dll",
-        );
+    if (is_windows) {
+        linkWindowsSdl(b, translate_sdl, sdl_module);
     } else {
         const link_mode: std.builtin.LinkMode = if (static_sdl)
             .static
         else
             .dynamic;
+        // translate_sdl.createModule() forwards system_libs into sdl_c; static
+        // codecs (libjxl, harfbuzz, libyuv) also need C++ runtime linkage.
         const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
         inline for (sys_libs) |lib| {
             translate_sdl.linkSystemLibrary(lib, .{
@@ -163,157 +103,191 @@ pub fn build(b: *std.Build) void {
         }
         if (static_sdl) {
             sdl_module.link_libcpp = true;
+            if (is_darwin) {
+                linkDarwinStaticSdl(
+                    b,
+                    target.result,
+                    translate_sdl,
+                    sdl_module,
+                );
+            }
         }
     }
     sdl_module.addImport("sdl_c", translate_sdl.createModule());
 
-    const geom_module = b.createModule(.{
-        .root_source_file = b.path("src/geom/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const probe_module = b.createModule(.{
-        .root_source_file = b.path("src/probe/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    probe_module.addImport("geom", geom_module);
-
-    const vfs_module = b.createModule(.{
-        .root_source_file = b.path("src/vfs/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const triage_module = b.createModule(.{
-        .root_source_file = b.path("src/triage/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    triage_module.addImport("vfs", vfs_module);
-
-    const intents_module = b.createModule(.{
-        .root_source_file = b.path("src/intents/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    intents_module.addImport("geom", geom_module);
-    intents_module.addImport("triage", triage_module);
-
-    const thumbcache_module = b.createModule(.{
-        .root_source_file = b.path("src/thumbcache/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    thumbcache_module.addImport("geom", geom_module);
-    thumbcache_module.addImport("probe", probe_module);
-    thumbcache_module.addImport("vfs", vfs_module);
-
-    const app_module = b.createModule(.{
-        .root_source_file = b.path("src/app/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const ui_module = b.createModule(.{
-        .root_source_file = b.path("src/ui/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const config_module = b.createModule(.{
-        .root_source_file = b.path("src/config/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const palette_module = b.createModule(.{
-        .root_source_file = b.path("src/palette/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    palette_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
-    palette_module.addImport("intents", intents_module);
-    palette_module.addImport("vfs", vfs_module);
-
-    const state_module = b.createModule(.{
-        .root_source_file = b.path("src/state/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    state_module.addImport("geom", geom_module);
-    state_module.addImport("intents", intents_module);
-    state_module.addImport("palette", palette_module);
-    state_module.addImport("triage", triage_module);
-    state_module.addImport("vfs", vfs_module);
-
-    const input_module = b.createModule(.{
-        .root_source_file = b.path("src/input/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    input_module.addImport("sdl", sdl_module);
-    input_module.addImport("state", state_module);
-    input_module.addImport("intents", intents_module);
-
-    const ipc_module = b.createModule(.{
-        .root_source_file = b.path("src/ipc/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    ipc_module.addImport("geom", geom_module);
-    ipc_module.addImport("intents", intents_module);
-    ipc_module.addImport("triage", triage_module);
-
-    const core_module = b.createModule(.{
-        .root_source_file = b.path("src/core/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    core_module.addImport("geom", geom_module);
-    core_module.addImport("ipc", ipc_module);
-    core_module.addImport("probe", probe_module);
-    core_module.addImport("sdl", sdl_module);
-    core_module.addImport("state", state_module);
-    core_module.addImport("thumbcache", thumbcache_module);
-    core_module.addImport("triage", triage_module);
-    core_module.addImport("vfs", vfs_module);
-
-    const gpu_module = b.createModule(.{
-        .root_source_file = b.path("src/gpu/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    gpu_module.addImport("geom", geom_module);
-    gpu_module.addImport("sdl", sdl_module);
-    gpu_module.addImport("state", state_module);
-
-    app_module.addImport("core", core_module);
-    app_module.addImport("geom", geom_module);
-    app_module.addImport("gpu", gpu_module);
-    app_module.addImport("input", input_module);
-    app_module.addImport("intents", intents_module);
-    app_module.addImport("ipc", ipc_module);
-    app_module.addImport("probe", probe_module);
-    app_module.addImport("sdl", sdl_module);
-    app_module.addImport("state", state_module);
-    app_module.addImport("thumbcache", thumbcache_module);
-    app_module.addImport("triage", triage_module);
-    app_module.addImport("ui", ui_module);
-    app_module.addImport("vfs", vfs_module);
-
-    ui_module.addImport("core", core_module);
-    ui_module.addImport("geom", geom_module);
-    ui_module.addImport("gpu", gpu_module);
-    ui_module.addImport("intents", intents_module);
-    ui_module.addImport("palette", palette_module);
-    ui_module.addImport("state", state_module);
-    ui_module.addImport("triage", triage_module);
-    ui_module.addImport("vfs", vfs_module);
-
-    config_module.addImport("intents", intents_module);
-    config_module.addImport("thumbcache", thumbcache_module);
+    const geom_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/geom/root.zig",
+        &.{},
+    );
+    const probe_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/probe/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+        },
+    );
+    const vfs_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/vfs/root.zig",
+        &.{},
+    );
+    const triage_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/triage/root.zig",
+        &.{
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
+    const intents_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/intents/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "triage", .module = triage_module },
+        },
+    );
+    const thumbcache_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/thumbcache/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "probe", .module = probe_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
+    const config_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/config/root.zig",
+        &.{
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "thumbcache", .module = thumbcache_module },
+        },
+    );
+    const palette_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/palette/root.zig",
+        &.{
+            .{ .name = "fuzzig", .module = fuzzig_mod },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
+    const state_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/state/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "palette", .module = palette_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
+    const input_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/input/root.zig",
+        &.{
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "sdl", .module = sdl_module },
+            .{ .name = "state", .module = state_module },
+        },
+    );
+    const ipc_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/ipc/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "triage", .module = triage_module },
+        },
+    );
+    const core_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/core/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "ipc", .module = ipc_module },
+            .{ .name = "probe", .module = probe_module },
+            .{ .name = "sdl", .module = sdl_module },
+            .{ .name = "state", .module = state_module },
+            .{ .name = "thumbcache", .module = thumbcache_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
+    const gpu_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/gpu/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "sdl", .module = sdl_module },
+            .{ .name = "state", .module = state_module },
+        },
+    );
+    const ui_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/ui/root.zig",
+        &.{
+            .{ .name = "core", .module = core_module },
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "palette", .module = palette_module },
+            .{ .name = "state", .module = state_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
+    const app_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/app/root.zig",
+        &.{
+            .{ .name = "core", .module = core_module },
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "input", .module = input_module },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "ipc", .module = ipc_module },
+            .{ .name = "probe", .module = probe_module },
+            .{ .name = "sdl", .module = sdl_module },
+            .{ .name = "state", .module = state_module },
+            .{ .name = "thumbcache", .module = thumbcache_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "ui", .module = ui_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
 
     const viewer_lib = b.addLibrary(.{
         .name = "viewer",
@@ -322,16 +296,16 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "app", .module = app_module },
+                .{ .name = "gpu", .module = gpu_module },
+                .{ .name = "input", .module = input_module },
+                .{ .name = "sdl", .module = sdl_module },
+                .{ .name = "ui", .module = ui_module },
+            },
         }),
         .linkage = if (hot_reload) .dynamic else .static,
     });
-    viewer_lib.root_module.addImport("app", app_module);
-    viewer_lib.root_module.addImport("gpu", gpu_module);
-    viewer_lib.root_module.addImport("input", input_module);
-    viewer_lib.root_module.addImport("sdl", sdl_module);
-    viewer_lib.root_module.addImport("ui", ui_module);
-
-    const is_darwin = target.result.os.tag.isDarwin();
 
     if (hot_reload) {
         viewer_lib.dead_strip_dylibs = is_darwin;
@@ -345,23 +319,27 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "app", .module = app_module },
+                .{ .name = "config", .module = config_module },
+                .{ .name = "core", .module = core_module },
+                .{ .name = "gpu", .module = gpu_module },
+                .{ .name = "ipc", .module = ipc_module },
+                .{ .name = "sdl", .module = sdl_module },
+                .{ .name = "state", .module = state_module },
+                .{ .name = "thumbcache", .module = thumbcache_module },
+                .{ .name = "ui", .module = ui_module },
+            },
         }),
     });
+    // Prune duplicate -lSDL3 LC_LOAD_DYLIBs from transitive pkg-config files;
+    // -ObjC keeps Cocoa/Metal categories in libSDL3.a from being dead-stripped.
     exe.dead_strip_dylibs = is_darwin;
+    exe.force_load_objc = is_darwin and static_sdl;
     exe.root_module.addOptions("build_options", options);
 
-    // Import internal and external modules into executable module
-    exe.root_module.addImport("app", app_module);
-    exe.root_module.addImport("config", config_module);
-    exe.root_module.addImport("core", core_module);
-    exe.root_module.addImport("gpu", gpu_module);
-    exe.root_module.addImport("ipc", ipc_module);
-    exe.root_module.addImport("sdl", sdl_module);
-    exe.root_module.addImport("state", state_module);
-    exe.root_module.addImport("thumbcache", thumbcache_module);
-    exe.root_module.addImport("ui", ui_module);
-
     if (hot_reload) {
+        // Export host symbols so dlopen'd libviewer resolves shared globals.
         exe.rdynamic = true;
     } else {
         exe.root_module.addImport("viewer", viewer_lib.root_module);
@@ -387,11 +365,13 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "config", .module = config_module },
+                .{ .name = "ipc", .module = ipc_module },
+            },
         }),
     });
     msg_exe.dead_strip_dylibs = is_darwin;
-    msg_exe.root_module.addImport("config", config_module);
-    msg_exe.root_module.addImport("ipc", ipc_module);
     b.installArtifact(msg_exe);
 
     const test_runner_exe = b.addExecutable(.{
@@ -401,11 +381,14 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "ipc", .module = ipc_module },
+                .{ .name = "sdl", .module = sdl_module },
+            },
         }),
     });
     test_runner_exe.dead_strip_dylibs = is_darwin;
-    test_runner_exe.root_module.addImport("sdl", sdl_module);
-    test_runner_exe.root_module.addImport("ipc", ipc_module);
+    test_runner_exe.force_load_objc = is_darwin and static_sdl;
     b.installArtifact(test_runner_exe);
 
     const run_integration_tests = b.addRunArtifact(test_runner_exe);
@@ -413,155 +396,125 @@ pub fn build(b: *std.Build) void {
     run_integration_tests.step.dependOn(b.getInstallStep());
     run_integration_tests.addPassthruArgs();
 
-    const sdl_tests = addModuleTest(b, sdl_module);
-    const run_sdl_tests = b.addRunArtifact(sdl_tests);
-
-    const intents_tests = addModuleTest(b, intents_module);
-    const run_intents_tests = b.addRunArtifact(intents_tests);
-
-    const config_tests = addModuleTest(b, config_module);
-    const run_config_tests = b.addRunArtifact(config_tests);
-
-    const state_tests = addModuleTest(b, state_module);
-    const run_state_tests = b.addRunArtifact(state_tests);
-
-    const input_tests = addModuleTest(b, input_module);
-    const run_input_tests = b.addRunArtifact(input_tests);
-
-    const ipc_tests = addModuleTest(b, ipc_module);
-    const run_ipc_tests = b.addRunArtifact(ipc_tests);
-
-    const app_tests = addModuleTest(b, app_module);
-    const run_app_tests = b.addRunArtifact(app_tests);
-    run_app_tests.setCwd(b.path("."));
-
-    const ui_tests = addModuleTest(b, ui_module);
-    ui_tests.step.dependOn(compile_shaders);
-    const run_ui_tests = b.addRunArtifact(ui_tests);
-
-    const core_tests = addModuleTest(b, core_module);
-    const run_core_tests = b.addRunArtifact(core_tests);
-    run_core_tests.setCwd(b.path("."));
-
-    const geom_tests = addModuleTest(b, geom_module);
-    const run_geom_tests = b.addRunArtifact(geom_tests);
-    run_geom_tests.setCwd(b.path("."));
-
-    const probe_tests = addModuleTest(b, probe_module);
-    const run_probe_tests = b.addRunArtifact(probe_tests);
-    run_probe_tests.setCwd(b.path("."));
-
-    const vfs_tests = addModuleTest(b, vfs_module);
-    const run_vfs_tests = b.addRunArtifact(vfs_tests);
-    run_vfs_tests.setCwd(b.path("."));
-
-    const triage_tests = addModuleTest(b, triage_module);
-    const run_triage_tests = b.addRunArtifact(triage_tests);
-    run_triage_tests.setCwd(b.path("."));
-
-    const palette_tests = addModuleTest(b, palette_module);
-    const run_palette_tests = b.addRunArtifact(palette_tests);
-    run_palette_tests.setCwd(b.path("."));
-
-    const thumbcache_tests = addModuleTest(b, thumbcache_module);
-    const run_thumbcache_tests = b.addRunArtifact(thumbcache_tests);
-    run_thumbcache_tests.setCwd(b.path("."));
-
-    const gpu_tests = addModuleTest(b, gpu_module);
-    gpu_tests.step.dependOn(compile_shaders);
-    const run_gpu_tests = b.addRunArtifact(gpu_tests);
-    run_gpu_tests.setCwd(b.path("."));
-
-    if (target.result.os.tag == .windows) {
-        const win_runs = [_]*std.Build.Step.Run{
-            run_sdl_tests,
-            run_gpu_tests,
-            run_state_tests,
-            run_core_tests,
-            run_probe_tests,
-            run_geom_tests,
-            run_thumbcache_tests,
-            run_triage_tests,
-            run_palette_tests,
-            run_vfs_tests,
-            run_app_tests,
-            run_ui_tests,
-            run_intents_tests,
-            run_config_tests,
-            run_input_tests,
-            run_ipc_tests,
-            run_integration_tests,
-        };
+    // Windows PE lacks rpath, and addRunArtifact executes directly out of
+    // .zig-cache/o/<hash>/; prepend zig-out\bin so tests find installed DLLs.
+    const win_test_path: ?[]const u8 = if (is_windows) blk: {
         const prev_path = b.graph.environ_map.get("PATH") orelse "";
-        const new_path = if (prev_path.len > 0)
+        break :blk if (prev_path.len > 0)
             b.fmt("zig-out\\bin;{s}", .{prev_path})
         else
             "zig-out\\bin";
-        for (win_runs) |win_run| {
-            win_run.step.dependOn(b.getInstallStep());
-            win_run.setEnvironmentVariable("PATH", new_path);
-        }
+    } else null;
+
+    if (win_test_path) |new_path| {
+        run_integration_tests.setEnvironmentVariable("PATH", new_path);
     }
 
-    const test_gpu_step = b.step("test-gpu", "Run gpu tests");
-    test_gpu_step.dependOn(&run_gpu_tests.step);
+    const UnitTestSpec = struct {
+        module: *std.Build.Module,
+        step_name: ?[]const u8 = null,
+        step_desc: []const u8 = "",
+        needs_cwd: bool = false,
+        needs_shaders: bool = false,
+    };
 
-    const test_geom_step = b.step(
-        "test-geom",
-        "Run geom module unit tests",
-    );
-    test_geom_step.dependOn(&run_geom_tests.step);
-
-    const test_probe_step = b.step("test-probe", "Run probe tests");
-    test_probe_step.dependOn(&run_probe_tests.step);
-
-    const test_state_step = b.step(
-        "test-state",
-        "Run state module unit tests",
-    );
-    test_state_step.dependOn(&run_state_tests.step);
-
-    const test_core_step = b.step("test-core", "Run core tests");
-    test_core_step.dependOn(&run_core_tests.step);
-
-    const test_palette_step = b.step("test-palette", "Run palette tests");
-    test_palette_step.dependOn(&run_palette_tests.step);
-
-    const test_triage_step = b.step("test-triage", "Run triage tests");
-    test_triage_step.dependOn(&run_triage_tests.step);
-
-    const test_vfs_step = b.step("test-vfs", "Run vfs tests");
-    test_vfs_step.dependOn(&run_vfs_tests.step);
-
-    const test_thumbcache_step = b.step(
-        "test-thumbcache",
-        "Run thumbcache tests",
-    );
-    test_thumbcache_step.dependOn(&run_thumbcache_tests.step);
-
-    const test_ui_step = b.step("test-ui", "Run ui tests");
-    test_ui_step.dependOn(&run_ui_tests.step);
-
-    const test_ipc_step = b.step("test-ipc", "Run ipc tests");
-    test_ipc_step.dependOn(&run_ipc_tests.step);
+    const unit_test_specs = [_]UnitTestSpec{
+        .{ .module = sdl_module },
+        .{
+            .module = gpu_module,
+            .step_name = "test-gpu",
+            .step_desc = "Run gpu tests",
+            .needs_cwd = true,
+            .needs_shaders = true,
+        },
+        .{
+            .module = state_module,
+            .step_name = "test-state",
+            .step_desc = "Run state module unit tests",
+        },
+        .{
+            .module = core_module,
+            .step_name = "test-core",
+            .step_desc = "Run core tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = geom_module,
+            .step_name = "test-geom",
+            .step_desc = "Run geom module unit tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = probe_module,
+            .step_name = "test-probe",
+            .step_desc = "Run probe tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = thumbcache_module,
+            .step_name = "test-thumbcache",
+            .step_desc = "Run thumbcache tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = palette_module,
+            .step_name = "test-palette",
+            .step_desc = "Run palette tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = triage_module,
+            .step_name = "test-triage",
+            .step_desc = "Run triage tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = vfs_module,
+            .step_name = "test-vfs",
+            .step_desc = "Run vfs tests",
+            .needs_cwd = true,
+        },
+        .{
+            .module = app_module,
+            .needs_cwd = true,
+            .needs_shaders = true,
+        },
+        .{
+            .module = ui_module,
+            .step_name = "test-ui",
+            .step_desc = "Run ui tests",
+            .needs_shaders = true,
+        },
+        .{ .module = intents_module },
+        .{ .module = config_module },
+        .{ .module = input_module },
+        .{
+            .module = ipc_module,
+            .step_name = "test-ipc",
+            .step_desc = "Run ipc tests",
+        },
+    };
 
     const test_unit_step = b.step("test-unit", "Run all unit tests");
-    test_unit_step.dependOn(&run_sdl_tests.step);
-    test_unit_step.dependOn(&run_gpu_tests.step);
-    test_unit_step.dependOn(&run_state_tests.step);
-    test_unit_step.dependOn(&run_core_tests.step);
-    test_unit_step.dependOn(&run_geom_tests.step);
-    test_unit_step.dependOn(&run_probe_tests.step);
-    test_unit_step.dependOn(&run_thumbcache_tests.step);
-    test_unit_step.dependOn(&run_palette_tests.step);
-    test_unit_step.dependOn(&run_triage_tests.step);
-    test_unit_step.dependOn(&run_vfs_tests.step);
-    test_unit_step.dependOn(&run_app_tests.step);
-    test_unit_step.dependOn(&run_ui_tests.step);
-    test_unit_step.dependOn(&run_intents_tests.step);
-    test_unit_step.dependOn(&run_config_tests.step);
-    test_unit_step.dependOn(&run_input_tests.step);
-    test_unit_step.dependOn(&run_ipc_tests.step);
+    for (unit_test_specs) |spec| {
+        const mod_tests = addModuleTest(b, spec.module);
+        if (spec.needs_shaders) {
+            mod_tests.step.dependOn(compile_shaders);
+        }
+        const run_mod_tests = b.addRunArtifact(mod_tests);
+        if (spec.needs_cwd) {
+            run_mod_tests.setCwd(b.path("."));
+        }
+        if (win_test_path) |new_path| {
+            run_mod_tests.step.dependOn(b.getInstallStep());
+            run_mod_tests.setEnvironmentVariable("PATH", new_path);
+        }
+        if (spec.step_name) |step_name| {
+            const named_step = b.step(step_name, spec.step_desc);
+            named_step.dependOn(&run_mod_tests.step);
+        }
+        test_unit_step.dependOn(&run_mod_tests.step);
+    }
 
     const test_integration_step = b.step(
         "test-integration",
@@ -570,22 +523,7 @@ pub fn build(b: *std.Build) void {
     test_integration_step.dependOn(&run_integration_tests.step);
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_sdl_tests.step);
-    test_step.dependOn(&run_gpu_tests.step);
-    test_step.dependOn(&run_state_tests.step);
-    test_step.dependOn(&run_core_tests.step);
-    test_step.dependOn(&run_geom_tests.step);
-    test_step.dependOn(&run_probe_tests.step);
-    test_step.dependOn(&run_thumbcache_tests.step);
-    test_step.dependOn(&run_palette_tests.step);
-    test_step.dependOn(&run_triage_tests.step);
-    test_step.dependOn(&run_vfs_tests.step);
-    test_step.dependOn(&run_app_tests.step);
-    test_step.dependOn(&run_ui_tests.step);
-    test_step.dependOn(&run_intents_tests.step);
-    test_step.dependOn(&run_config_tests.step);
-    test_step.dependOn(&run_input_tests.step);
-    test_step.dependOn(&run_ipc_tests.step);
+    test_step.dependOn(test_unit_step);
     test_step.dependOn(&run_integration_tests.step);
 }
 
@@ -655,10 +593,33 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
             .{},
         );
 
+        // SDL3 GPU's Metal compute ABI binds uniforms ([[buffer(0)]]) before
+        // storage buffers ([[buffer(1)]]), opposite of SPIR-V's set 0 vs set 2.
+        const is_comp = std.mem.eql(u8, def.stage, "comp");
+        const msl_spv_in = if (is_comp) blk: {
+            const msl_spv_cmd = b.addSystemCommand(&.{
+                "glslangValidator",
+                "-V",
+                "-Os",
+                "-DTARGET_MSL",
+                "-S",
+                def.stage,
+            });
+            msl_spv_cmd.addFileArg2(b.path(src_rel), .{});
+            msl_spv_cmd.addArg("-o");
+            break :blk msl_spv_cmd.addOutputFileArg2(
+                b.fmt("{s}.msl.spv", .{def.out_name}),
+                .{},
+            );
+        } else spv_out;
+
         const msl_cmd = b.addSystemCommand(&.{
             "spirv-cross",
         });
-        msl_cmd.addFileArg2(spv_out, .{});
+        msl_cmd.addFileArg2(msl_spv_in, .{});
+        if (is_comp) {
+            msl_cmd.addArg("--msl-decoration-binding");
+        }
         msl_cmd.addArgs(&.{ "--msl", "--output" });
         const msl_out = msl_cmd.addOutputFileArg2(
             b.fmt("{s}.msl", .{def.out_name}),
@@ -673,6 +634,69 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
     return compile_shaders;
 }
 
+fn createInternalModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    root_path: []const u8,
+    imports: []const std.Build.Module.Import,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path(root_path),
+        .target = target,
+        .optimize = optimize,
+        .imports = imports,
+    });
+}
+
+fn linkWindowsSdl(
+    b: *std.Build,
+    translate_sdl: *std.Build.Step.TranslateC,
+    sdl_module: *std.Build.Module,
+) void {
+    // Query all 3 lazy deps before returning so Zig fetches them in parallel.
+    const sdl3_opt = b.lazyDependency("sdl3_devel", .{});
+    const ttf_opt = b.lazyDependency("sdl3_ttf_devel", .{});
+    const img_opt = b.lazyDependency("sdl3_image_devel", .{});
+    const sdl3_dep = sdl3_opt orelse return;
+    const ttf_dep = ttf_opt orelse return;
+    const img_dep = img_opt orelse return;
+
+    const deps = [_]*std.Build.Dependency{ sdl3_dep, ttf_dep, img_dep };
+    for (deps) |dep| {
+        translate_sdl.addIncludePath(dep.path("include"));
+        sdl_module.addIncludePath(dep.path("include"));
+        sdl_module.addLibraryPath(dep.path("lib/x64"));
+    }
+    const sys_libs = [_][]const u8{ "SDL3", "SDL3_ttf", "SDL3_image" };
+    for (sys_libs) |lib| {
+        sdl_module.linkSystemLibrary(lib, .{});
+    }
+
+    const DllSpec = struct {
+        dep: *std.Build.Dependency,
+        sub_path: []const u8,
+    };
+    const dlls = [_]DllSpec{
+        .{ .dep = sdl3_dep, .sub_path = "lib/x64/SDL3.dll" },
+        .{ .dep = ttf_dep, .sub_path = "lib/x64/SDL3_ttf.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/SDL3_image.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/optional/libavif-16.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/optional/libpng16-16.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/optional/libtiff-6.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/optional/libwebp-7.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/optional/libwebpdemux-2.dll" },
+        .{ .dep = img_dep, .sub_path = "lib/x64/optional/libwebpmux-3.dll" },
+    };
+    for (dlls) |dll| {
+        const install_dll = b.addInstallBinFile(
+            dll.dep.path(dll.sub_path),
+            std.Io.Dir.path.basename(dll.sub_path),
+        );
+        b.getInstallStep().dependOn(&install_dll.step);
+    }
+}
+
 /// Creates a module unit test binary, enabling `-dead_strip_dylibs` on Darwin
 /// so Zig's Mach-O linker prunes duplicate or unused `LC_LOAD_DYLIB` entries.
 fn addModuleTest(
@@ -680,6 +704,86 @@ fn addModuleTest(
     root_module: *std.Build.Module,
 ) *std.Build.Step.Compile {
     const t = b.addTest(.{ .root_module = root_module });
-    t.dead_strip_dylibs = t.rootModuleTarget().os.tag.isDarwin();
+    const is_darwin = t.rootModuleTarget().os.tag.isDarwin();
+    t.dead_strip_dylibs = is_darwin;
+    t.force_load_objc = is_darwin and t.dependsOnSystemLibrary("objc");
     return t;
+}
+
+/// Links Apple system frameworks and Objective-C runtime stubs required when
+/// `libSDL3.a` is statically linked on macOS (`PkgConfig` ignores
+/// `-Wl,-framework,...` flags in `sdl3.pc`'s `Libs.private`).
+fn linkDarwinStaticSdl(
+    b: *std.Build,
+    target: std.Target,
+    translate_sdl: *std.Build.Step.TranslateC,
+    sdl_module: *std.Build.Module,
+) void {
+    // Explicit macOS target versions skip NativePaths.detect; resolve SDK stub
+    // search paths from Nix's SDKROOT or Xcode/CLT's xcrun.
+    b.graph.poisonCache();
+    const sdk_opt: ?[]const u8 = blk: {
+        if (b.graph.environ_map.get("SDKROOT")) |s| {
+            if (s.len > 0) break :blk s;
+        }
+        if (b.graph.host.result.os.tag.isDarwin() and
+            std.zig.system.darwin.isSdkInstalled(b.allocator, b.graph.io))
+        {
+            break :blk std.zig.system.darwin.getSdk(
+                b.allocator,
+                b.graph.io,
+                &target,
+            );
+        }
+        break :blk null;
+    };
+    if (sdk_opt) |sdk| {
+        const fw_path = b.graph.cwdRelativePath(
+            b.pathJoin(&.{ sdk, "System/Library/Frameworks" }),
+        );
+        const inc_path = b.graph.cwdRelativePath(
+            b.pathJoin(&.{ sdk, "usr/include" }),
+        );
+        const lib_path = b.graph.cwdRelativePath(
+            b.pathJoin(&.{ sdk, "usr/lib" }),
+        );
+        translate_sdl.addSystemFrameworkPath(fw_path);
+        translate_sdl.addSystemIncludePath(inc_path);
+        sdl_module.addSystemFrameworkPath(fw_path);
+        sdl_module.addLibraryPath(lib_path);
+    }
+
+    sdl_module.linkSystemLibrary("objc", .{ .use_pkg_config = .no });
+
+    const frameworks = [_][]const u8{
+        "AVFoundation",
+        "AudioToolbox",
+        "Carbon",
+        "Cocoa",
+        "CoreAudio",
+        "CoreFoundation",
+        "CoreGraphics",
+        "CoreMedia",
+        "CoreServices",
+        "CoreVideo",
+        "ForceFeedback",
+        "Foundation",
+        "GameController",
+        "IOKit",
+        "Metal",
+    };
+    for (frameworks) |fw| {
+        sdl_module.linkFramework(fw, .{});
+    }
+    // Retained via -needed_framework because SDL3 looks up CAMetalLayer via
+    // NSClassFromString(@"CAMetalLayer") without a direct symbol reference.
+    sdl_module.linkFramework("QuartzCore", .{ .needed = true });
+
+    const weak_frameworks = [_][]const u8{
+        "CoreHaptics",
+        "UniformTypeIdentifiers",
+    };
+    for (weak_frameworks) |fw| {
+        sdl_module.linkFramework(fw, .{ .weak = true });
+    }
 }
