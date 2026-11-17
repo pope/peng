@@ -92,8 +92,10 @@
     `has_unpopulated_cache`, or `window_resized` is true.
   - When idle, `getWaitTimeoutMs` schedules a bounded `waitEventTimeout` for
     active transient overlay deadlines (`title_display == .transient` or
-    `snackbar.notification == .active`), and otherwise enters 0% CPU blocking
-    `wait_indefinite` (including when the command palette is open and idle).
+    `snackbar.notification == .active`) and active `ScrollCadence` settle
+    windows (`navigation.cadence.settleTimeoutMs(now)`), and otherwise enters
+    0% CPU blocking `wait_indefinite` (including when the command palette is
+    open and idle).
 - **Modal Dismissal Input Decoupling & Held-Key Suppression**:
   - Animated overlays (such as `PaletteState`) MUST decouple input focus from
     close animations via `isAcceptingInput()`
@@ -112,9 +114,10 @@
     or `active_slider != null`) to prevent container jitter.
 - **Image Crossfade & Scrubbing Invariants**:
   - **Snap-and-Cut on Scrubbing/Interruption**: Never retarget duration across
-    three textures. If navigation steps occur within $< 200\\text{ms}$ or
-    interrupt an in-flight crossfade, immediately snap
-    (`setImmediate(.image_crossfade, 1.0)`, `image_transition = .none`) and cut.
+    three textures. If navigation steps occur within $< 200\\text{ms}$
+    (`ScrollCadence.shouldBypassCrossfade`) or interrupt an in-flight
+    crossfade, immediately snap (`setImmediate(.image_crossfade, 1.0)`,
+    `image_transition = .none`) and cut.
   - **GPU Residency & Mutual Exclusion**: Only start a crossfade if the outgoing
     slide is `.loaded_gpu` and the incoming slide did not fail. Never run a
     thumbnail crossfade concurrently with an active `image_transition` or during

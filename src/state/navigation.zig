@@ -6,6 +6,7 @@ const vfs = @import("vfs");
 const Classification = triage.Classification;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
+const ScrollCadence = types.ScrollCadence;
 const SlideshowMode = types.SlideshowMode;
 const TriageMap = triage.TriageMap;
 const ViewMode = triage.ViewMode;
@@ -42,7 +43,7 @@ pub const NavigationState = struct {
     crossfade: bool = true,
     stack_raw_jpeg: bool = true,
     active_file_scans: std.atomic.Value(usize) = .init(0),
-    last_nav_time_ms: u64 = 0,
+    cadence: ScrollCadence = .idle,
     direction: NavDirection = .forward,
     last_scanned_dir: std.ArrayList(u8) = .empty,
     directory_arena: std.heap.ArenaAllocator,
@@ -145,13 +146,13 @@ pub const NavigationState = struct {
     }
 
     /// Returns the effective navigation prefetch direction. If no user
-    /// navigation has occurred yet (`last_nav_time_ms == 0`), respects
+    /// navigation has occurred yet (`cadence == .idle`), respects
     /// `manga_mode` (.backward for RTL reading order, .forward otherwise).
     pub fn getEffectiveDirection(self: *const NavigationState) NavDirection {
-        if (self.last_nav_time_ms == 0) {
-            return if (self.manga_mode) .backward else .forward;
-        }
-        return self.direction;
+        return switch (self.cadence) {
+            .idle => if (self.manga_mode) .backward else .forward,
+            .active => self.direction,
+        };
     }
 
     /// Returns `true` if any background directory or stdin file scan is active.
@@ -453,13 +454,12 @@ pub const NavigationState = struct {
     }
 
     /// Advances selection to the next visible image using circular SIMD scan.
-    /// Updates `last_nav_time_ms` to `@max(1, now_ms)` for fast-scroll
-    /// throttling.
+    /// Records navigation cadence at `now_ms` for fast-scroll throttling.
     pub fn nextIndex(self: *NavigationState, now_ms: u64) ?usize {
         const cur = self.current_index orelse self.anchor_index;
         const idx = self.peekNextVisible(cur) orelse return null;
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, now_ms);
+        self.cadence.recordNavigation(now_ms);
         self.direction = .forward;
         self.current_index = idx;
         self.anchor_index = idx;
@@ -467,13 +467,12 @@ pub const NavigationState = struct {
     }
 
     /// Moves selection to the previous visible image using circular SIMD scan.
-    /// Updates `last_nav_time_ms` to `@max(1, now_ms)` for fast-scroll
-    /// throttling.
+    /// Records navigation cadence at `now_ms` for fast-scroll throttling.
     pub fn prevIndex(self: *NavigationState, now_ms: u64) ?usize {
         const cur = self.current_index orelse self.anchor_index;
         const idx = self.peekPrevVisible(cur) orelse return null;
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, now_ms);
+        self.cadence.recordNavigation(now_ms);
         self.direction = .backward;
         self.current_index = idx;
         self.anchor_index = idx;
@@ -481,7 +480,7 @@ pub const NavigationState = struct {
     }
 
     /// Directly sets the image selection to `idx` (or closest visible), clamped
-    /// to valid bounds. Updates `last_nav_time_ms` to `@max(1, now_ms)`.
+    /// to valid bounds. Records navigation cadence at `now_ms`.
     pub fn goToIndex(self: *NavigationState, idx: usize, now_ms: u64) ?usize {
         const len = self.items.len;
         if (len == 0 or self.getVisibleCount() == 0) return null;
@@ -495,7 +494,7 @@ pub const NavigationState = struct {
             }
         }
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, now_ms);
+        self.cadence.recordNavigation(now_ms);
         self.current_index = target;
         self.anchor_index = target;
         return self.current_index;
@@ -518,22 +517,22 @@ test "NavigationState - direction tracking" {
     _ = nav.nextIndex(5500);
     try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
-    try std.testing.expectEqual(@as(u64, 5500), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 5500 }, nav.cadence);
 
     _ = nav.prevIndex(6200);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
     try std.testing.expectEqual(NavDirection.backward, nav.direction);
-    try std.testing.expectEqual(@as(u64, 6200), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 6200 }, nav.cadence);
 
     _ = nav.goToIndex(2, 7000);
     try std.testing.expectEqual(@as(?usize, 2), nav.current_index);
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
-    try std.testing.expectEqual(@as(u64, 7000), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 7000 }, nav.cadence);
 
     _ = nav.goToIndex(0, 0);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
     try std.testing.expectEqual(NavDirection.backward, nav.direction);
-    try std.testing.expectEqual(@as(u64, 1), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 0 }, nav.cadence);
 }
 
 test "NavigationState - triage mutations and visibility filtering" {
@@ -809,28 +808,28 @@ test "NavigationState - getEffectiveDirection respects initial manga_mode" {
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
 
-    // Initial state: last_nav_time_ms == 0, manga_mode == false -> forward
+    // Initial state: cadence == .idle, manga_mode == false -> forward
     try std.testing.expectEqual(
         NavDirection.forward,
         nav.getEffectiveDirection(),
     );
 
-    // Manga mode enabled at startup: last_nav_time_ms == 0 -> backward
+    // Manga mode enabled at startup: cadence == .idle -> backward
     nav.manga_mode = true;
     try std.testing.expectEqual(
         NavDirection.backward,
         nav.getEffectiveDirection(),
     );
 
-    // Navigating forward: last_nav_time_ms > 0 -> tracks user direction
-    nav.last_nav_time_ms = 100;
+    // Navigating forward: cadence == .active -> tracks user direction
+    nav.cadence.recordNavigation(100);
     nav.direction = .forward;
     try std.testing.expectEqual(
         NavDirection.forward,
         nav.getEffectiveDirection(),
     );
 
-    // Navigating backward: last_nav_time_ms > 0 -> tracks user direction
+    // Navigating backward: cadence == .active -> tracks user direction
     nav.direction = .backward;
     try std.testing.expectEqual(
         NavDirection.backward,
@@ -991,14 +990,14 @@ test "NavigationState - nextIndex and prevIndex record explicit now_ms" {
 
     _ = nav.nextIndex(5500);
     try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
-    try std.testing.expectEqual(@as(u64, 5500), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 5500 }, nav.cadence);
 
     _ = nav.prevIndex(6200);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
-    try std.testing.expectEqual(@as(u64, 6200), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 6200 }, nav.cadence);
 }
 
-test "NavigationState - goToIndex now_ms zero clamp" {
+test "NavigationState - goToIndex records zero timestamp without sentinel" {
     const allocator = std.testing.allocator;
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
@@ -1009,22 +1008,22 @@ test "NavigationState - goToIndex now_ms zero clamp" {
 
     _ = nav.goToIndex(0, 0);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
-    try std.testing.expectEqual(@as(u64, 1), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence{ .active = 0 }, nav.cadence);
 }
 
-test "NavigationState - empty playlist returns null, keeps last_nav_time_ms 0" {
+test "NavigationState - empty playlist returns null and stays idle" {
     const allocator = std.testing.allocator;
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
 
     try std.testing.expectEqual(@as(?usize, null), nav.nextIndex(5500));
-    try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence.idle, nav.cadence);
 
     try std.testing.expectEqual(@as(?usize, null), nav.prevIndex(6200));
-    try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence.idle, nav.cadence);
 
     try std.testing.expectEqual(@as(?usize, null), nav.goToIndex(0, 7000));
-    try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
+    try std.testing.expectEqual(ScrollCadence.idle, nav.cadence);
 }
 
 test "NavigationState resetDirectoryArena bounds page retention" {

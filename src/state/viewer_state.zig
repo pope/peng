@@ -88,7 +88,7 @@ pub const ViewerState = struct {
         self.navigation.manga_mode = false;
         self.navigation.crossfade = self.defaults.crossfade;
         self.navigation.stack_raw_jpeg = self.defaults.stack_raw_jpeg;
-        self.navigation.last_nav_time_ms = 0;
+        self.navigation.cadence = .idle;
         self.navigation.direction = .forward;
         self.navigation.triage.view_mode = .default;
 
@@ -226,6 +226,7 @@ test "ViewerState.resetToDefaults restores configured startup defaults" {
     viewer.navigation.manga_mode = true;
     viewer.navigation.crossfade = true;
     viewer.navigation.stack_raw_jpeg = true;
+    viewer.navigation.cadence.recordNavigation(500);
     viewer.navigation.triage.view_mode = .picks;
     viewer.touch_tracker.count = 2;
     viewer.touch_tracker.last_dist = 50.0;
@@ -268,6 +269,10 @@ test "ViewerState.resetToDefaults restores configured startup defaults" {
     try std.testing.expect(!viewer.navigation.manga_mode);
     try std.testing.expect(!viewer.navigation.crossfade);
     try std.testing.expect(!viewer.navigation.stack_raw_jpeg);
+    try std.testing.expectEqual(
+        types.ScrollCadence.idle,
+        viewer.navigation.cadence,
+    );
     try std.testing.expectEqual(
         .default,
         viewer.navigation.triage.view_mode,

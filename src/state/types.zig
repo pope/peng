@@ -313,6 +313,76 @@ pub const ImageTransition = union(enum) {
 /// fast-decoding formats (~2 frames at 60Hz).
 pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
 
+/// Navigation cadence tracking whether the user is idle or actively stepping
+/// between images, encapsulating fast-scroll, crossfade-bypass, and settle
+/// promotion timing thresholds without in-band zero sentinels.
+pub const ScrollCadence = union(enum) {
+    idle,
+    active: u64,
+
+    pub const FAST_SCROLL_MS: u64 = LOADING_GRACE_PERIOD_MS;
+    pub const CROSSFADE_BYPASS_MS: u64 = 200;
+    pub const SETTLED_PROMOTE_MS: u64 = 250;
+
+    /// Records a navigation step at `now_ms`.
+    pub fn recordNavigation(self: *ScrollCadence, now_ms: u64) void {
+        self.* = .{ .active = now_ms };
+    }
+
+    fn isWithinWindow(
+        self: ScrollCadence,
+        now_ms: u64,
+        window_ms: u64,
+    ) bool {
+        return switch (self) {
+            .idle => false,
+            .active => |last_ms| (now_ms -| last_ms) < window_ms,
+        };
+    }
+
+    /// Returns `true` when navigation occurred within `FAST_SCROLL_MS` of
+    /// `now_ms`.
+    pub fn isFastScrolling(self: ScrollCadence, now_ms: u64) bool {
+        return self.isWithinWindow(now_ms, FAST_SCROLL_MS);
+    }
+
+    /// Returns `true` when navigation occurred within the 200ms rapid-scrub
+    /// window so image crossfade animations are bypassed.
+    pub fn shouldBypassCrossfade(self: ScrollCadence, now_ms: u64) bool {
+        return self.isWithinWindow(now_ms, CROSSFADE_BYPASS_MS);
+    }
+
+    /// Returns `true` when navigation is idle or more than `250ms` has elapsed
+    /// since the last navigation step, allowing Fit-mode pair promotion.
+    pub fn isSettledForPromotion(self: ScrollCadence, now_ms: u64) bool {
+        return switch (self) {
+            .idle => true,
+            .active => |last_ms| (now_ms -| last_ms) > SETTLED_PROMOTE_MS,
+        };
+    }
+
+    /// Returns remaining milliseconds until the next cadence settle boundary
+    /// expires (`FAST_SCROLL_MS` or `SETTLED_PROMOTE_MS + 1`), or `null` when
+    /// idle or fully settled.
+    pub fn settleTimeoutMs(self: ScrollCadence, now_ms: u64) ?u32 {
+        return switch (self) {
+            .idle => null,
+            .active => |last_ms| {
+                const elapsed = now_ms -| last_ms;
+                if (elapsed < FAST_SCROLL_MS) {
+                    const rem = FAST_SCROLL_MS - elapsed;
+                    return @intCast(@min(rem, std.math.maxInt(u32)));
+                }
+                if (elapsed <= SETTLED_PROMOTE_MS) {
+                    const rem = (SETTLED_PROMOTE_MS + 1) - elapsed;
+                    return @intCast(@min(rem, std.math.maxInt(u32)));
+                }
+                return null;
+            },
+        };
+    }
+};
+
 /// Pending asynchronous screenshot request with target destination path and
 /// IPC stream.
 pub const ActiveScreenshot = struct {
@@ -605,4 +675,44 @@ test "TouchTracker.reset clears active finger count and last distance" {
     tracker.reset();
     try std.testing.expectEqual(@as(u4, 0), tracker.count);
     try std.testing.expectEqual(@as(f32, 0.0), tracker.last_dist);
+}
+
+test "ScrollCadence thresholds, settleTimeoutMs, and zero timestamp" {
+    var cadence: ScrollCadence = .idle;
+
+    try std.testing.expect(!cadence.isFastScrolling(1000));
+    try std.testing.expect(!cadence.shouldBypassCrossfade(1000));
+    try std.testing.expect(cadence.isSettledForPromotion(1000));
+    try std.testing.expectEqual(@as(?u32, null), cadence.settleTimeoutMs(1000));
+
+    // Recording timestamp 0 stays distinct from .idle
+    cadence.recordNavigation(0);
+    try std.testing.expectEqual(ScrollCadence{ .active = 0 }, cadence);
+    try std.testing.expect(cadence.isFastScrolling(10));
+    try std.testing.expect(cadence.shouldBypassCrossfade(100));
+    try std.testing.expect(!cadence.isSettledForPromotion(250));
+    try std.testing.expect(cadence.isSettledForPromotion(251));
+
+    // Boundary progression from active timestamp 1000
+    cadence.recordNavigation(1000);
+    try std.testing.expectEqual(@as(?u32, 35), cadence.settleTimeoutMs(1000));
+    try std.testing.expect(cadence.isFastScrolling(1034));
+    try std.testing.expectEqual(@as(?u32, 1), cadence.settleTimeoutMs(1034));
+
+    try std.testing.expect(!cadence.isFastScrolling(1035));
+    try std.testing.expect(cadence.shouldBypassCrossfade(1035));
+    try std.testing.expect(!cadence.isSettledForPromotion(1035));
+    try std.testing.expectEqual(@as(?u32, 216), cadence.settleTimeoutMs(1035));
+
+    try std.testing.expect(cadence.shouldBypassCrossfade(1199));
+    try std.testing.expect(!cadence.shouldBypassCrossfade(1200));
+    try std.testing.expect(!cadence.isSettledForPromotion(1250));
+    try std.testing.expectEqual(@as(?u32, 1), cadence.settleTimeoutMs(1250));
+
+    try std.testing.expect(cadence.isSettledForPromotion(1251));
+    try std.testing.expectEqual(@as(?u32, null), cadence.settleTimeoutMs(1251));
+
+    // Non-monotonic timestamp saturates cleanly without underflow
+    try std.testing.expect(cadence.isFastScrolling(900));
+    try std.testing.expectEqual(@as(?u32, 35), cadence.settleTimeoutMs(900));
 }

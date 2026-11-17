@@ -280,7 +280,8 @@ pub const AppState = struct {
     }
 
     /// Returns the remaining millisecond deadline for transient holding timers
-    /// (e.g. title auto-hide, snackbar), or null if none active.
+    /// (e.g. title auto-hide, snackbar, navigation settle), or null if none
+    /// active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
         var min_rem: ?u64 = null;
         switch (self.viewer.ui.overlays.title_display) {
@@ -297,6 +298,10 @@ pub const AppState = struct {
                 }
             },
             .none => {},
+        }
+        if (self.viewer.navigation.cadence.settleTimeoutMs(now)) |cadence_rem| {
+            const rem: u64 = cadence_rem;
+            min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
         }
         if (min_rem) |rem| {
             return @intCast(@min(rem, 2000));
@@ -1245,6 +1250,39 @@ test "AppState.computeFrameWaitStrategy returns poll when bg events drained" {
     try std.testing.expectEqual(
         input.EventWaitStrategy.poll,
         state.computeFrameWaitStrategy(1024.0, 768.0, true, false, 1000),
+    );
+}
+
+test "AppState.computeFrameWaitStrategy schedules cadence settle timeout" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Idle cadence enters indefinite 0% CPU wait
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+
+    // Within 35ms fast-scroll window -> wakes at 35ms settle boundary
+    state.viewer.navigation.cadence.recordNavigation(1000);
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 25 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1010),
+    );
+
+    // Between 35ms and 250ms -> wakes after 250ms promotion settle window
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 151 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1100),
+    );
+
+    // Past 250ms -> settled, enters indefinite 0% CPU wait
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1251),
     );
 }
 

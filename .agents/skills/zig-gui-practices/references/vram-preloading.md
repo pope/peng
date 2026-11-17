@@ -124,12 +124,26 @@ ______________________________________________________________________
 
 ## 3. Throttled Navigation, Telemetry & Settled Preloading
 
-- **Navigation Throttling Thresholds**:
-  - **`FAST_SCROLL_THRESHOLD_MS = 35` (`LOADING_GRACE_PERIOD_MS` in `src/app/systems/cache.zig`)**: When the interval since `last_nav_time_ms` is $< 35\\text{ms}$, `is_fast_scrolling` is true:
+- **Navigation Throttling (`ScrollCadence` in `src/state/types.zig`)**:
+  - **`ScrollCadence.FAST_SCROLL_MS = 35` (`LOADING_GRACE_PERIOD_MS`)**:
+    When `NavigationState.cadence.isFastScrolling(now)` is true (elapsed since
+    `.active` timestamp is $< 35\text{ms}$), `is_fast_scrolling` is true:
     1. *Embedded Thumbnails Available*: Workers run with `thumb_only = true` (~0.17ms). Once the active thumbnail is ready (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the next single thumbnail (`speculative_idx`) along `direction` (`NavDirection`: `.forward` / `.backward`).
-    2. *Non-Thumbnail Formats*: If `entry.resident.thumbnail == .not_available` (e.g. PNG), `sysUpdateCache` spawns a full decode (`thumb_only = false`) for the active slot immediately while withholding neighbor decodes until navigation settles ($\\ge 35\\text{ms}$).
-  - **`200ms` Rapid Scrubbing Threshold (`src/app/systems/intents.zig`)**: Navigation steps within $< 200\\text{ms}$ bypass image crossfade animations (snapping immediately) and trigger the transient auto-title overlay.
-  - **`250ms` Settled Fit Promotion (`src/app/systems/cache.zig`)**: Companion JPEG Tier-4 promotion in Fit mode waits until $elapsed \\ge 250\\text{ms}$ to avoid 200MB decodes while stepping through a folder.
+    2. *Non-Thumbnail Formats*: If `entry.resident.thumbnail == .not_available`
+       (e.g. PNG), `sysUpdateCache` spawns a full decode (`thumb_only = false`)
+       for the active slot immediately while withholding neighbor decodes until
+       navigation settles ($\ge 35\text{ms}$).
+  - **`ScrollCadence.CROSSFADE_BYPASS_MS = 200` (`shouldBypassCrossfade`)**:
+    Navigation steps within $< 200\text{ms}$ (`src/app/systems/intents.zig`)
+    bypass image crossfade animations (snapping immediately) and trigger the
+    transient auto-title overlay.
+  - **`ScrollCadence.SETTLED_PROMOTE_MS = 250` (`isSettledForPromotion`)**:
+    Companion JPEG Tier-4 promotion in Fit mode (`src/app/systems/cache.zig`)
+    waits until `cadence` is `.idle` or elapsed $> 250\text{ms}$ to avoid 200MB
+    decodes while stepping through a folder. `AppState.getWaitTimeoutMs`
+    incorporates `cadence.settleTimeoutMs(now)` so fast-scroll and promotion
+    settle boundaries reliably wake the event loop before dropping to
+    `.wait_indefinite`.
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` for disk I/O
   and worker decode timing, and `sdl.timer.getTicksNs()` for GPU texture

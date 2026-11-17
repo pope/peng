@@ -18,10 +18,6 @@ const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
 const RawMetadata = probe.RawMetadata;
 
-/// Fast-scrolling threshold: when navigation events occur faster than this interval,
-/// worker spawning is throttled exclusively to the active slot `idx`.
-const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
-
 /// Spawns an asynchronous worker task to decode an image file from disk into RAM.
 ///
 /// Pre-conditions: `entry_item` is cloned into a duplicated heap instance owned by the decode task.
@@ -177,7 +173,7 @@ fn checkPairPromotion(
         (state.viewer.viewport.mode != .fit or state.isImageOverflowing()) and
         (tex_demand > 1.05);
     const is_settled_fit = (state.viewer.viewport.mode == .fit) and
-        (now -| state.viewer.navigation.last_nav_time_ms > 250) and
+        state.viewer.navigation.cadence.isSettledForPromotion(now) and
         (tex_demand > 1.15);
 
     if ((is_inspecting or is_settled_fit) and state.workers.canSpawnDecode()) {
@@ -274,14 +270,11 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
     }
 
-    // Fast-scrolling check: only active if navigation has actually occurred
-    // and no IPC `wait_load` barrier is actively waiting for full resolution.
-    const now = ctx.now_ms;
+    // Fast-scrolling check: only active while navigation is active within the
+    // fast-scroll window and no IPC `wait_load` barrier is awaiting full res.
     const is_fast_scrolling =
         state.pending_wait_load_streams.items.len == 0 and
-        state.viewer.navigation.last_nav_time_ms > 0 and
-        (now -| state.viewer.navigation.last_nav_time_ms <
-            FAST_SCROLL_THRESHOLD_MS);
+        state.viewer.navigation.cadence.isFastScrolling(ctx.now_ms);
 
     state.viewer.stats.max_decode_threads =
         state.workers.getMaxConcurrentDecodes();
@@ -357,7 +350,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 .{
                     .inflight = .{
                         .stage = .decoding,
-                        .start_time_ms = now,
+                        .start_time_ms = ctx.now_ms,
                     },
                 },
             );
@@ -420,7 +413,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             }
 
             if (is_active_slot) {
-                checkPairPromotion(state, key, now);
+                checkPairPromotion(state, key, ctx.now_ms);
             }
         }
     }
@@ -451,7 +444,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             req.entry,
             thumb_only,
             inf.target,
-            now,
+            ctx.now_ms,
         ) catch |err| {
             std.log.err(
                 "Failed to spawn decode worker for media {}: {}",
@@ -667,8 +660,8 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     const id1 = state.viewer.navigation.getIdAt(1).?;
     const id4 = state.viewer.navigation.getIdAt(4).?;
     state.viewer.navigation.direction = .forward;
-    // Set last_nav_time_ms to non-zero recent timestamp for fast scrolling
-    state.viewer.navigation.last_nav_time_ms = 1000;
+    // Record recent navigation timestamp for fast-scrolling throttling
+    state.viewer.navigation.cadence.recordNavigation(1000);
 
     // Pre-populate active slot 0 as decoding without thumbnail yet
     _ = try state.cache.appendSlot(allocator, id0, .{
@@ -702,7 +695,7 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
 
     // Case 3: Reverse direction to .backward.
     state.viewer.navigation.direction = .backward;
-    state.viewer.navigation.last_nav_time_ms = 1000;
+    state.viewer.navigation.cadence.recordNavigation(1000);
 
     // Run sysUpdateCache: speculative_idx is now 4 (wrap around from 0).
     // Slot 4 should be populated for speculative preloading!
@@ -759,7 +752,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
     // Fast scrolling is active
-    state.viewer.navigation.last_nav_time_ms = 1000;
+    state.viewer.navigation.cadence.recordNavigation(1000);
 
     const ctx = FrameContext{
         .state = &state,
@@ -1170,7 +1163,7 @@ test "sysUpdateCache fast-scroll throttling deterministic with ctx.now_ms" {
     });
 
     // 1. diff 20ms < 35ms threshold: fast-scrolling active, only speculative
-    state.viewer.navigation.last_nav_time_ms = 980;
+    state.viewer.navigation.cadence.recordNavigation(980);
     const ctx_fast = FrameContext{
         .state = &state,
         .frame_allocator = allocator,
@@ -1221,4 +1214,51 @@ test "spawnCacheDecodeSlot stamps now_ms on inflight entry" {
     const entry = state.cache.get(key0).?;
     try std.testing.expect(entry.inflight != null);
     try std.testing.expectEqual(@as(u64, 4200), entry.inflight.?.start_time_ms);
+}
+
+test "checkPairPromotion - Fit mode waits until cadence settles past 250ms" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const img_path = "testfiles/golden-screenshots/init.png";
+    const raw_p = try dir_alloc.dupe(u8, img_path);
+    const jpg_p = try dir_alloc.dupe(u8, img_path);
+    _ = try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
+    );
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+
+    const key0 = try state.cache.appendSlot(
+        allocator,
+        id0,
+        image.CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 400.0, .h = 267.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        ),
+    );
+    if (state.cache.get(key0)) |entry| {
+        entry.metadata.full_dims = .{ .w = 400.0, .h = 267.0 };
+        entry.metadata.raw_metadata =
+            RawMetadata.init(6000.0, 4000.0);
+    }
+    state.viewer.viewport.mode = .fit;
+
+    // At elapsed == 250ms, Fit-mode promotion is still throttled
+    state.viewer.navigation.cadence.recordNavigation(1000);
+    checkPairPromotion(&state, key0, 1250);
+    try std.testing.expect(state.cache.get(key0).?.inflight == null);
+
+    // At elapsed == 251ms (> 250ms), Fit-mode promotion spawns
+    checkPairPromotion(&state, key0, 1251);
+    const promoted = state.cache.get(key0).?;
+    try std.testing.expect(promoted.inflight != null);
+    try std.testing.expectEqual(
+        PairStreamTarget.standalone_jpeg,
+        promoted.inflight.?.target,
+    );
 }

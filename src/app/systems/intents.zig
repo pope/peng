@@ -387,17 +387,14 @@ fn executeIntent(
         },
 
         .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
-            const now = now_ms;
-            const prev_nav_time_ms = nav.last_nav_time_ms;
-            const elapsed = now -| prev_nav_time_ms;
+            const prev_cadence = nav.cadence;
             const should_show_auto_title = ui.overlays.auto_title and
                 nav.count() > 0 and
-                prev_nav_time_ms > 0 and
-                elapsed < 200;
+                prev_cadence.shouldBypassCrossfade(now_ms);
             if (should_show_auto_title) {
                 if (!ui.overlays.title_display.isPinned()) {
                     ui.overlays.title_display = .{
-                        .transient = .{ .timeout_ms = now + 1500 },
+                        .transient = .{ .timeout_ms = now_ms + 1500 },
                     };
                     const progress = self.viewer.animations.get(.title_overlay);
                     const dur = @max(
@@ -425,15 +422,15 @@ fn executeIntent(
             vp.reset();
             _ = switch (intent) {
                 .next_image => if (nav.manga_mode)
-                    nav.prevIndex(now)
+                    nav.prevIndex(now_ms)
                 else
-                    nav.nextIndex(now),
+                    nav.nextIndex(now_ms),
                 .prev_image => if (nav.manga_mode)
-                    nav.nextIndex(now)
+                    nav.nextIndex(now_ms)
                 else
-                    nav.prevIndex(now),
+                    nav.prevIndex(now_ms),
                 .first_image => blk: {
-                    const res = nav.goToIndex(0, now);
+                    const res = nav.goToIndex(0, now_ms);
                     nav.direction = .forward;
                     break :blk res;
                 },
@@ -442,11 +439,11 @@ fn executeIntent(
                         nav.count() - 1
                     else
                         0;
-                    const res = nav.goToIndex(last_idx, now);
+                    const res = nav.goToIndex(last_idx, now_ms);
                     nav.direction = .backward;
                     break :blk res;
                 },
-                .go_to_image => |idx| nav.goToIndex(idx, now),
+                .go_to_image => |idx| nav.goToIndex(idx, now_ms),
                 else => unreachable,
             };
             self.updateCurrentRotation();
@@ -489,7 +486,7 @@ fn executeIntent(
                     }
                 else
                     (nav.crossfade and
-                        (prev_nav_time_ms == 0 or elapsed >= 200) and
+                        !prev_cadence.shouldBypassCrossfade(now_ms) and
                         !is_animating and old_entry_loaded and target_decoded);
 
                 if (should_crossfade) {
@@ -1113,7 +1110,7 @@ test "fast scrubbing triggers title overlay auto-hide" {
 
     // Simulate recent navigation within 200ms
     const now: u64 = 5000;
-    app_st.viewer.navigation.last_nav_time_ms = @max(1, now -| 50);
+    app_st.viewer.navigation.cadence.recordNavigation(now -| 50);
 
     try executeIntent(&app_st, .next_image, now);
 
@@ -1269,7 +1266,7 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     );
     app_st.viewer.navigation.current_index = 0;
     app_st.viewer.navigation.crossfade = true;
-    app_st.viewer.navigation.last_nav_time_ms = 0; // elapsed >= 200
+    app_st.viewer.navigation.cadence = .idle;
 
     // 1. Normal manual navigation with crossfade enabled
     try app_st.pushIntent(.next_image);
@@ -1284,8 +1281,8 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
 
     // 2. Navigation while previous transition is still pending at 0.0
     // (isActive(.image_crossfade) == false, image_transition != .none),
-    // even when elapsed >= 200ms: cuts immediately to .none / 1.0
-    app_st.viewer.navigation.last_nav_time_ms = 0;
+    // even when settled: cuts immediately to .none / 1.0
+    app_st.viewer.navigation.cadence = .idle;
     try testing.expect(!app_st.viewer.animations.isActive(.image_crossfade));
     try testing.expect(app_st.viewer.image_transition != .none);
     try app_st.pushIntent(.next_image);
@@ -1312,7 +1309,7 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     // preventing a flash of the previous slide when full decode completes.
     app_st.viewer.navigation.crossfade = true;
     app_st.viewer.navigation.current_index = 0;
-    app_st.viewer.navigation.last_nav_time_ms = 0;
+    app_st.viewer.navigation.cadence = .idle;
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
     const id1 = app_st.viewer.navigation.getIdAt(1).?;
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
