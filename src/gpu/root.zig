@@ -26,9 +26,8 @@ pub const upload = @import("upload.zig");
 /// ingestion telemetry.
 pub const GpuUploadResult = upload.GpuUploadResult;
 
-/// Reusable GPU staging buffers for texture uploads, eliminating allocation
-/// and deallocation churn on every frame by retaining and geometrically
-/// growing transfer and storage buffers.
+/// Reusable GPU staging buffers for texture uploads, retaining buffers up to
+/// 32 MiB warm across frames and decaying oversized buffers after 5s idle.
 pub const UploadStagingBuffer = upload.UploadStagingBuffer;
 
 /// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid

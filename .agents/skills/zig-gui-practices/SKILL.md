@@ -37,12 +37,12 @@ ______________________________________________________________________
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
 
   - Unified `1024x1024` UI + per-glyph font atlas (`TextCache`, `FontSizePage`, `ShelfPacker`) and zero-allocation glyph metrics measurement (`TTF_GetGlyphMetrics`).
-  - GPU compute RGB24/BGR24 unpack pipeline (`unpack_rgb.comp.glsl` & `UploadStagingBuffer`) with hardware mipmap generation.
+  - GPU compute RGB24/BGR24 unpack pipeline (`unpack_rgb.comp.glsl` & `UploadStagingBuffer` with 32 MiB warm cap and 5s idle decay) with hardware mipmap generation.
   - 2-pass quarter-resolution Dual Kawase backdrop blur pipeline (`blur_down.frag.glsl`, `blur_up.frag.glsl`) for glassmorphic overlays.
 
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
 
-  - VRAM cache memory footprint math (+33% mipmap overhead) and active/transition/neighbor slot protection.
+  - VRAM cache memory footprint math (+33% mipmap overhead), active/transition/neighbor slot protection, and 32 MiB staging buffer warm cap with 5s idle decay + `getWaitTimeoutMs` wake scheduling.
   - Off-main-thread Stage-1 header probing (`DecodeMode`, 256KB bounded read) & single-pass `std.Io` in-memory decoding.
   - Camera RAW format quirks table (Adobe DNG / Ricoh GR III, Canon CR2 IFD0/2/3 disambiguation, Fujifilm RAF 12MP ceiling, Sony ARW Bayer CFA exclusion) and 4-tier RAW+JPEG progressive streaming.
   - `ScrollCadence` navigation throttling (`35ms` fast-scroll `DecodeMode.active_fast_scroll` / `.speculative_thumb`,

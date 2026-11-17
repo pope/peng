@@ -78,8 +78,10 @@
     08. `sysSyncWindow(ctx)`: Synchronizes OS window title and display
         properties with the active image immediately following intent
         execution.
-    09. `sysProcessAssetUploads(ctx)`: Handles EXIF orientation and paced
-        CPU-to-GPU texture uploads (`src/app/systems/asset_upload.zig`).
+    09. `sysProcessAssetUploads(ctx)`: Handles EXIF orientation, paced
+        CPU-to-GPU texture uploads, and 5s idle decay of oversized
+        `UploadStagingBuffer` buffers (> 32 MiB)
+        (`src/app/systems/asset_upload.zig`).
     10. `sysUpdateCache(ctx)`: Enforces VRAM budget, spawns decode workers,
         schedules settled neighbor preloading, and flushes satisfied IPC
         `wait_load` barrier streams
@@ -213,9 +215,13 @@
      `ThumbnailState.staged_cpu` via narrowed `uploadActivePendingThumb` (when
      not superseded by a loaded/staged full image), pace full image uploads
      (`.loaded_cpu` / `.promoting_gpu`) at a maximum rate of **1 texture per
-     frame** (active slot first, then closest neighbor), and transfer
+     frame** (active slot first, then closest neighbor), transfer
      `surface` ownership directly to `enqueueDecodedThumbWrite` after
-     `enforceVramBudget`.
+     `enforceVramBudget`, and invoke
+     `upload_staging.maybeShrinkIdle(gpu_dev, ctx.now_ms, is_idle)` so
+     staging buffers exceeding `WARM_STAGING_CAP_BYTES` (32 MiB) decay back to
+     `.unallocated` after `IDLE_DECAY_MS` (5000 ms) of upload/decode
+     inactivity.
 
 [sys-arch]: ../skills/zig-gui-practices/references/systems-architecture.md
 [vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md

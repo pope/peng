@@ -20,25 +20,37 @@ const PhysicalDims = geom.PhysicalDims;
 const ThumbnailState = cache_pkg.ThumbnailState;
 const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 
-/// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures.
+/// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures
+/// and decays oversized staging buffers after idle cooldown.
 pub fn sysProcessAssetUploads(ctx: FrameContext) void {
     const state = ctx.state;
     state.updateCurrentRotation();
-    prepareCacheTextures(state, ctx.now_ms);
+    const did_upload = prepareCacheTextures(state, ctx.now_ms);
+    if (state.gpu_device) |gpu_dev| {
+        const is_idle = !did_upload and
+            !state.cache.hasPendingCpuUploads(true) and
+            state.workers.active_decode_threads.load(.acquire) == 0;
+        _ = state.upload_staging.maybeShrinkIdle(
+            gpu_dev,
+            ctx.now_ms,
+            is_idle,
+        );
+    }
 }
 
-fn ensureCurrentThumbnailLoaded(state: *AppState) void {
-    const cur_id = state.viewer.navigation.getCurrentMediaId() orelse return;
+fn ensureCurrentThumbnailLoaded(state: *AppState) bool {
+    const cur_id = state.viewer.navigation.getCurrentMediaId() orelse
+        return false;
     const key = state.cache.activeKey(cur_id);
-    const cur = state.cache.getEntry(key) orelse return;
+    const cur = state.cache.getEntry(key) orelse return false;
     switch (cur.resident.thumbnail) {
-        .loaded, .not_available => return,
+        .loaded, .not_available => return false,
         .none, .pending, .staged_cpu, .unloaded => {},
     }
 
     const media = state.viewer.navigation.getCurrentImageEntry() orelse {
         if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
-        return;
+        return false;
     };
     const extracted = loadThumbnailSurface(
         state.io,
@@ -46,11 +58,11 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) void {
         media,
     ) orelse {
         if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
-        return;
+        return false;
     };
     defer extracted.surface.destroy();
 
-    const dev = state.gpu_device orelse return;
+    const dev = state.gpu_device orelse return false;
     const upload_res = uploadSurfaceToGpu(
         dev,
         extracted.surface,
@@ -58,13 +70,13 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) void {
         &state.upload_staging,
     ) orelse {
         if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
-        return;
+        return false;
     };
 
     {
         const e = state.cache.get(key) orelse {
             dev.releaseTexture(upload_res.gpu_texture);
-            return;
+            return true;
         };
         e.resident.thumbnail.deinit(dev);
 
@@ -87,6 +99,7 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) void {
         };
     }
     state.updateCurrentRotation();
+    return true;
 }
 
 fn uploadActivePendingThumb(
@@ -169,7 +182,7 @@ fn takeStagedCpuAsset(
     }
 }
 
-fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
+fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
     {
         const entries = state.cache.slots.items(.entry);
         const keys = state.cache.slots.items(.key);
@@ -213,7 +226,8 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
         }
     }
 
-    const gpu_dev = state.gpu_device orelse return;
+    const gpu_dev = state.gpu_device orelse return false;
+    var did_upload = false;
 
     const cur_id_opt = state.viewer.navigation.getCurrentMediaId();
     const cur_key_opt = if (cur_id_opt) |ci|
@@ -231,6 +245,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
             cur_key,
         )) {
             state.updateCurrentRotation();
+            did_upload = true;
         }
     }
 
@@ -239,7 +254,9 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
             switch (cur_e.resident.thumbnail) {
                 .loaded, .not_available => {},
                 .none, .pending, .staged_cpu, .unloaded => {
-                    ensureCurrentThumbnailLoaded(state);
+                    if (ensureCurrentThumbnailLoaded(state)) {
+                        did_upload = true;
+                    }
                 },
             }
         }
@@ -333,6 +350,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
             state.unpack_compute_pipeline,
             &state.upload_staging,
         )) |res| {
+            did_upload = true;
             completeGpuUpload(
                 state,
                 target.key,
@@ -346,6 +364,8 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
             handleGpuUploadFailure(state, target.key);
         }
     }
+
+    return did_upload;
 }
 
 fn enqueueDecodedThumbWrite(
@@ -548,7 +568,7 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
         120.0,
         .ease_out_quad,
     );
-    prepareCacheTextures(&state, 1000);
+    _ = prepareCacheTextures(&state, 1000);
     var entry = state.cache.get(state.cache.activeKey(id0)).?;
     switch (entry.resident.thumbnail) {
         .loaded => {},
@@ -559,7 +579,7 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
 
     // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
     state.viewer.animations.settle(.thumb_crossfade);
-    prepareCacheTextures(&state, 1000);
+    _ = prepareCacheTextures(&state, 1000);
     entry = state.cache.get(state.cache.activeKey(id0)).?;
     switch (entry.resident.thumbnail) {
         .unloaded => {},
@@ -610,7 +630,7 @@ test "prepareCacheTextures - uploads loaded_cpu without double free" {
         },
     });
 
-    prepareCacheTextures(&state, 1000);
+    _ = prepareCacheTextures(&state, 1000);
 
     // Verify upload transitioned to loaded_gpu and inflight is cleared
     const entry = state.cache.get(key).?;
@@ -834,7 +854,7 @@ test "prepareCacheTextures - uploads staged_cpu and paces pending uploads" {
     });
 
     // Frame 1: active thumbnail uploads, neighbors wait while active is .none
-    prepareCacheTextures(&state, 1000);
+    _ = prepareCacheTextures(&state, 1000);
     switch (state.cache.get(k0).?.resident.thumbnail) {
         .loaded => {},
         .none, .pending, .staged_cpu, .not_available, .unloaded => {
@@ -860,7 +880,7 @@ test "prepareCacheTextures - uploads staged_cpu and paces pending uploads" {
             },
         },
     };
-    prepareCacheTextures(&state, 1016);
+    _ = prepareCacheTextures(&state, 1016);
     switch (state.cache.get(k0).?.resident.asset) {
         .loaded_gpu => |active_gpu| {
             // Active promotion arrives while slot 1 is waiting: active wins
@@ -889,7 +909,7 @@ test "prepareCacheTextures - uploads staged_cpu and paces pending uploads" {
         state.cache.get(k1).?.resident.asset.hasPendingCpuUpload(),
     );
 
-    prepareCacheTextures(&state, 1032);
+    _ = prepareCacheTextures(&state, 1032);
     switch (state.cache.get(k0).?.resident.asset) {
         .loaded_gpu => |g| try std.testing.expectEqual(@as(f32, 96.0), g.w),
         .none, .loaded_cpu, .promoting_gpu, .failed => {
@@ -901,7 +921,7 @@ test "prepareCacheTextures - uploads staged_cpu and paces pending uploads" {
     );
 
     // Next frame: closest neighbor (slot 1) uploads, slot 2 stays pending
-    prepareCacheTextures(&state, 1048);
+    _ = prepareCacheTextures(&state, 1048);
     switch (state.cache.get(k1).?.resident.asset) {
         .loaded_gpu => {},
         .none, .loaded_cpu, .promoting_gpu, .failed => {
@@ -942,9 +962,115 @@ test "prepareCacheTextures - clears stranded staged_cpu on failed slots" {
         },
     });
 
-    prepareCacheTextures(&state, 1000);
+    _ = prepareCacheTextures(&state, 1000);
     try std.testing.expectEqual(
         ThumbnailState.not_available,
         state.cache.get(k1).?.resident.thumbnail,
     );
+}
+
+test "sysProcessAssetUploads - stamps and decays oversized staging buffer" {
+    _ = sdl.init(sdl.init_flags.video);
+    defer sdl.quit();
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var state = try AppState.initHeadless(allocator, io);
+    state.gpu_device = dev;
+    defer state.deinit();
+
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "huge.jpg" },
+    });
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+
+    // 3000x3000 RGBA32 (36,000,000 bytes > 32 MiB) expands transfer staging
+    const huge_surf = sdl.Surface.create(
+        3000,
+        3000,
+        sdl.PixelFormat.rgba32,
+    ) orelse return;
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = huge_surf,
+                        .w = 3000.0,
+                        .h = 3000.0,
+                        .size_bytes = 3000 * 3000 * 4,
+                    },
+                },
+            },
+        },
+    });
+
+    // Frame 1: upload occurs -> oversized_since_ms stamped at 1000
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    });
+    try std.testing.expectEqual(
+        @as(?u64, 1000),
+        state.upload_staging.oversized_since_ms,
+    );
+    switch (state.upload_staging.transfer) {
+        .allocated => |a| try std.testing.expect(
+            a.capacity > gpu.UploadStagingBuffer.WARM_STAGING_CAP_BYTES,
+        ),
+        .unallocated => return error.TestExpectedAllocatedTransfer,
+    }
+
+    // Frame 2: busy decode worker refreshes timer to 3000
+    state.workers.active_decode_threads.store(1, .release);
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 3000,
+    });
+    try std.testing.expectEqual(
+        @as(?u64, 3000),
+        state.upload_staging.oversized_since_ms,
+    );
+
+    // Frame 3: idle at 7999ms (4999ms elapsed) -> retained
+    state.workers.active_decode_threads.store(0, .release);
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 7999,
+    });
+    try std.testing.expectEqual(
+        @as(?u64, 3000),
+        state.upload_staging.oversized_since_ms,
+    );
+    switch (state.upload_staging.transfer) {
+        .allocated => {},
+        .unallocated => return error.TestExpectedAllocatedTransfer,
+    }
+
+    // Frame 4: idle at 8000ms (5000ms elapsed) -> decayed to .unallocated
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 8000,
+    });
+    try std.testing.expectEqual(
+        @as(?u64, null),
+        state.upload_staging.oversized_since_ms,
+    );
+    switch (state.upload_staging.transfer) {
+        .unallocated => {},
+        .allocated => return error.TestExpectedUnallocatedTransfer,
+    }
 }

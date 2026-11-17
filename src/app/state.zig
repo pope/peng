@@ -283,8 +283,8 @@ pub const AppState = struct {
     }
 
     /// Returns the remaining millisecond deadline for transient holding timers
-    /// (e.g. title auto-hide, snackbar, navigation settle), or null if none
-    /// active.
+    /// (e.g. title auto-hide, snackbar, navigation settle, staging decay),
+    /// or null if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
         var min_rem: ?u64 = null;
         switch (self.viewer.ui.overlays.title_display) {
@@ -304,6 +304,10 @@ pub const AppState = struct {
         }
         if (self.viewer.navigation.cadence.settleTimeoutMs(now)) |cadence_rem| {
             const rem: u64 = cadence_rem;
+            min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
+        }
+        if (self.upload_staging.decayTimeoutMs(now)) |decay_rem| {
+            const rem: u64 = decay_rem;
             min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
         }
         if (min_rem) |rem| {
@@ -1543,4 +1547,49 @@ test "AppState - promoting_gpu marks slide loading and hideWindow clears it" {
     };
     state.hideWindow();
     try std.testing.expectEqual(@as(usize, 0), state.cache.count());
+}
+
+test "AppState.getWaitTimeoutMs schedules staging decay and clears when null" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Unallocated / warm staging sleeps indefinitely at 0% CPU
+    try std.testing.expectEqual(@as(?i32, null), state.getWaitTimeoutMs(1000));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+
+    // Oversized staging stamped at 1000ms schedules capped 2000ms wakeup
+    state.upload_staging.oversized_since_ms = 1000;
+    try std.testing.expectEqual(@as(?i32, 2000), state.getWaitTimeoutMs(1000));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 2000 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+
+    // Near 5s deadline (4500ms elapsed -> 500ms remaining)
+    try std.testing.expectEqual(@as(?i32, 500), state.getWaitTimeoutMs(5500));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 500 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 5500),
+    );
+
+    // Shorter transient title timeout wins via @min
+    state.viewer.ui.overlays.title_display = .{
+        .transient = .{ .timeout_ms = 5650 },
+    };
+    try std.testing.expectEqual(@as(?i32, 150), state.getWaitTimeoutMs(5500));
+
+    // Once decayed (oversized_since_ms == null) and title hidden -> indefinite
+    state.viewer.ui.overlays.title_display = .hidden;
+    state.upload_staging.oversized_since_ms = null;
+    try std.testing.expectEqual(@as(?i32, null), state.getWaitTimeoutMs(6000));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 6000),
+    );
 }

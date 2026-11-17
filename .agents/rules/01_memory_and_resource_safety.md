@@ -119,6 +119,14 @@
     OS, and call `sdl.reclaimProcessHeap()` (`malloc_trim(0)` on Linux/glibc,
     gated on `active_decode_threads == 0` or `.hidden`) to return freed
     cross-thread C decoder (`SDL_image`/`stb_image`) arena pages to the OS.
+- **Staging Buffer Warm Cap & Idle Decay (`UploadStagingBuffer`)**:
+  - Retain host-to-GPU transfer and compute storage staging buffers up to
+    `WARM_STAGING_CAP_BYTES = 32 * 1024 * 1024` (32 MiB) across frames.
+  - Whenever either buffer exceeds 32 MiB, `UploadStagingBuffer.maybeShrinkIdle`
+    (`src/gpu/upload.zig`, invoked by `sysProcessAssetUploads`) releases
+    oversized buffers back to `.unallocated` after `IDLE_DECAY_MS = 5000` (5s)
+    of upload and decode inactivity while keeping buffers `<= 32 MiB` warm, and
+    `AppState.getWaitTimeoutMs` schedules wakeup via `decayTimeoutMs`.
 
 ## 2. Tagged Unions, Enums & Domain Invariant Modeling
 

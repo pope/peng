@@ -13,17 +13,20 @@ const UploadMode = state_pkg.UploadMode;
 
 /// Reusable GPU staging buffers for texture uploads, eliminating allocation
 /// and deallocation churn on every frame by retaining and geometrically
-/// growing transfer and storage buffers.
-///
-/// TODO: Add heuristics to periodically evaluate and shrink retained staging
-/// buffers after a duration/inactivity threshold (or high-water decay) so
-/// memory is reclaimed if a single exceptionally large image temporarily
-/// expanded capacity.
+/// growing transfer and storage buffers. Buffers up to
+/// `WARM_STAGING_CAP_BYTES` (32 MiB) remain warm across frames; oversized
+/// buffers decay back to `.unallocated` after `IDLE_DECAY_MS` (5000 ms) of
+/// upload and decode inactivity.
 pub const UploadStagingBuffer = struct {
+    pub const WARM_STAGING_CAP_BYTES: usize = 32 * 1024 * 1024;
+    pub const IDLE_DECAY_MS: u64 = 5000;
+
     transfer: sdl.gpu.RetainedTransferBuffer = .unallocated,
     storage: sdl.gpu.RetainedBuffer = .unallocated,
+    oversized_since_ms: ?u64 = null,
 
-    /// Releases retained GPU transfer and compute storage buffers.
+    /// Releases retained GPU transfer and compute storage buffers and resets
+    /// the idle decay timer.
     pub fn deinit(self: *UploadStagingBuffer, dev: sdl.gpu.Device) void {
         switch (self.transfer) {
             .unallocated => {},
@@ -39,6 +42,80 @@ pub const UploadStagingBuffer = struct {
                 self.storage = .unallocated;
             },
         }
+        self.oversized_since_ms = null;
+    }
+
+    fn isTransferOversized(self: UploadStagingBuffer) bool {
+        return switch (self.transfer) {
+            .unallocated => false,
+            .allocated => |a| a.capacity > WARM_STAGING_CAP_BYTES,
+        };
+    }
+
+    fn isStorageOversized(self: UploadStagingBuffer) bool {
+        return switch (self.storage) {
+            .unallocated => false,
+            .allocated => |a| a.capacity > WARM_STAGING_CAP_BYTES,
+        };
+    }
+
+    fn hasOversizedBuffer(self: UploadStagingBuffer) bool {
+        return self.isTransferOversized() or self.isStorageOversized();
+    }
+
+    /// Releases retained staging buffers exceeding `WARM_STAGING_CAP_BYTES`
+    /// back to `.unallocated` after `IDLE_DECAY_MS` of upload and decode
+    /// inactivity while keeping buffers at or below `WARM_STAGING_CAP_BYTES`
+    /// warm. Returns `true` if any buffer was released.
+    pub fn maybeShrinkIdle(
+        self: *UploadStagingBuffer,
+        dev: sdl.gpu.Device,
+        now_ms: u64,
+        is_idle: bool,
+    ) bool {
+        if (!self.hasOversizedBuffer()) {
+            self.oversized_since_ms = null;
+            return false;
+        }
+        if (!is_idle) {
+            self.oversized_since_ms = now_ms;
+            return false;
+        }
+        const since = self.oversized_since_ms orelse {
+            self.oversized_since_ms = now_ms;
+            return false;
+        };
+        if (now_ms -| since < IDLE_DECAY_MS) {
+            return false;
+        }
+        switch (self.transfer) {
+            .unallocated => {},
+            .allocated => |a| {
+                if (a.capacity > WARM_STAGING_CAP_BYTES) {
+                    dev.releaseTransferBuffer(a.handle);
+                    self.transfer = .unallocated;
+                }
+            },
+        }
+        switch (self.storage) {
+            .unallocated => {},
+            .allocated => |a| {
+                if (a.capacity > WARM_STAGING_CAP_BYTES) {
+                    dev.releaseBuffer(a.handle);
+                    self.storage = .unallocated;
+                }
+            },
+        }
+        self.oversized_since_ms = null;
+        return true;
+    }
+
+    /// Returns remaining milliseconds until the idle decay deadline expires,
+    /// or `null` when no oversized buffer decay is pending.
+    pub fn decayTimeoutMs(self: UploadStagingBuffer, now_ms: u64) ?u32 {
+        const since = self.oversized_since_ms orelse return null;
+        const rem = IDLE_DECAY_MS -| (now_ms -| since);
+        return @intCast(@max(1, rem));
     }
 
     /// Obtains a transfer buffer with at least `required_size` capacity,
@@ -899,4 +976,127 @@ test "uploadSurfaceToGpu - compute pipeline unpacks RGB24 and BGR24 pixels" {
             );
         }
     }
+}
+
+test "UploadStagingBuffer.decayTimeoutMs reports remaining cooldown" {
+    var staging = UploadStagingBuffer{};
+    try std.testing.expectEqual(@as(?u32, null), staging.decayTimeoutMs(1000));
+
+    // Timestamp 0 is distinct from null
+    staging.oversized_since_ms = 0;
+    try std.testing.expectEqual(@as(?u32, 5000), staging.decayTimeoutMs(0));
+    try std.testing.expectEqual(@as(?u32, 2500), staging.decayTimeoutMs(2500));
+    try std.testing.expectEqual(@as(?u32, 1), staging.decayTimeoutMs(5000));
+
+    staging.oversized_since_ms = 1000;
+    try std.testing.expectEqual(@as(?u32, 5000), staging.decayTimeoutMs(1000));
+    try std.testing.expectEqual(@as(?u32, 1), staging.decayTimeoutMs(5999));
+    try std.testing.expectEqual(@as(?u32, 1), staging.decayTimeoutMs(6000));
+    try std.testing.expectEqual(@as(?u32, 1), staging.decayTimeoutMs(9000));
+    try std.testing.expectEqual(@as(?u32, 5000), staging.decayTimeoutMs(500));
+}
+
+test "UploadStagingBuffer.maybeShrinkIdle keeps warm and decays oversized" {
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var staging = UploadStagingBuffer{};
+    defer staging.deinit(dev);
+
+    // Buffers <= 32 MiB remain warm and never stamp oversized_since_ms
+    try std.testing.expect(staging.getOrCreateTransferBuffer(
+        dev,
+        UploadStagingBuffer.WARM_STAGING_CAP_BYTES,
+    ) != null);
+    try std.testing.expect(staging.getOrCreateStorageBuffer(
+        dev,
+        4 * 1024 * 1024,
+    ) != null);
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 1000, true));
+    try std.testing.expectEqual(@as(?u64, null), staging.oversized_since_ms);
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 10000, true));
+    switch (staging.transfer) {
+        .allocated => {},
+        .unallocated => return error.TestExpectedAllocatedTransfer,
+    }
+    switch (staging.storage) {
+        .allocated => {},
+        .unallocated => return error.TestExpectedAllocatedStorage,
+    }
+
+    // Grow transfer buffer past 32 MiB while keeping storage warm at 4 MiB
+    try std.testing.expect(staging.getOrCreateTransferBuffer(
+        dev,
+        UploadStagingBuffer.WARM_STAGING_CAP_BYTES + 4096,
+    ) != null);
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 1000, true));
+    try std.testing.expectEqual(@as(?u64, 1000), staging.oversized_since_ms);
+
+    // Active frame refreshes cooldown timestamp
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 3000, false));
+    try std.testing.expectEqual(@as(?u64, 3000), staging.oversized_since_ms);
+
+    // Just before 5000ms idle elapsed -> retained
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 7999, true));
+    switch (staging.transfer) {
+        .allocated => {},
+        .unallocated => return error.TestExpectedAllocatedTransfer,
+    }
+
+    // At 5000ms idle elapsed -> oversized transfer released, warm storage kept
+    try std.testing.expect(staging.maybeShrinkIdle(dev, 8000, true));
+    try std.testing.expectEqual(@as(?u64, null), staging.oversized_since_ms);
+    switch (staging.transfer) {
+        .unallocated => {},
+        .allocated => return error.TestExpectedUnallocatedTransfer,
+    }
+    switch (staging.storage) {
+        .allocated => {},
+        .unallocated => return error.TestExpectedAllocatedStorage,
+    }
+}
+
+test "UploadStagingBuffer.maybeShrinkIdle decays oversized storage only" {
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var staging = UploadStagingBuffer{};
+    defer staging.deinit(dev);
+
+    try std.testing.expect(staging.getOrCreateTransferBuffer(
+        dev,
+        4 * 1024 * 1024,
+    ) != null);
+    try std.testing.expect(staging.getOrCreateStorageBuffer(
+        dev,
+        UploadStagingBuffer.WARM_STAGING_CAP_BYTES + 4096,
+    ) != null);
+
+    // Stamp at timestamp 0; still retained at 4999ms, released at 5000ms
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 0, true));
+    try std.testing.expectEqual(@as(?u64, 0), staging.oversized_since_ms);
+    try std.testing.expect(!staging.maybeShrinkIdle(dev, 4999, true));
+    try std.testing.expect(staging.maybeShrinkIdle(dev, 5000, true));
+    try std.testing.expectEqual(@as(?u64, null), staging.oversized_since_ms);
+    switch (staging.storage) {
+        .unallocated => {},
+        .allocated => return error.TestExpectedUnallocatedStorage,
+    }
+    switch (staging.transfer) {
+        .allocated => {},
+        .unallocated => return error.TestExpectedAllocatedTransfer,
+    }
+
+    // deinit clears any pending oversized_since_ms
+    staging.oversized_since_ms = 1234;
+    staging.deinit(dev);
+    try std.testing.expectEqual(@as(?u64, null), staging.oversized_since_ms);
 }

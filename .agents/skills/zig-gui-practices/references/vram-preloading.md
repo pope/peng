@@ -23,6 +23,10 @@
     1. All active decode workers have finished (`active_decode_threads == 0`) after destroying a full-image `SDL_Surface` (`drainWorkerEvents`, `prepareCacheTextures`),
     2. A background worker exits after cancellation (`cancel.isCanceled()` in `decodeWorker`) or background thumbnail/precache batch completion (`thumbWriterWorker`, `precacheDirectoryWorker`), or
     3. The window transitions to `.hidden` in `--server` mode (`AppState.hideWindow` + `viewer.zig`, alongside `RenderResources.releaseTransientResources` and `sdl.gpu.Device.reclaimMemory()`).
+- **Staging Buffer Warm Cap & Idle Decay (`UploadStagingBuffer`)**:
+  - `UploadStagingBuffer` (`src/gpu/upload.zig`) keeps retained transfer and compute storage buffers up to `WARM_STAGING_CAP_BYTES = 32 * 1024 * 1024` (32 MiB) warm across frames.
+  - At the end of `sysProcessAssetUploads` (`src/app/systems/asset_upload.zig`), `maybeShrinkIdle(gpu_dev, ctx.now_ms, is_idle)` evaluates idle state (`!did_upload and !cache.hasPendingCpuUploads(true) and active_decode_threads == 0`): active frames refresh `oversized_since_ms = now_ms`, and after `IDLE_DECAY_MS = 5000` (5s) idle, any buffer exceeding 32 MiB is released back to `.unallocated` while buffers `<= 32 MiB` stay warm.
+  - `AppState.getWaitTimeoutMs` (`src/app/state.zig`) incorporates `upload_staging.decayTimeoutMs(now)` so idle viewers wake deterministically at the 5s decay boundary before returning to 0% CPU `.wait_indefinite` sleep once `oversized_since_ms == null`.
 
 ______________________________________________________________________
 

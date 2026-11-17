@@ -92,10 +92,11 @@
     `has_unpopulated_cache`, or `window_resized` is true.
   - When idle, `getWaitTimeoutMs` schedules a bounded `waitEventTimeout` for
     active transient overlay deadlines (`title_display == .transient` or
-    `snackbar.notification == .active`) and active `ScrollCadence` settle
-    windows (`navigation.cadence.settleTimeoutMs(now)`), and otherwise enters
-    0% CPU blocking `wait_indefinite` (including when the command palette is
-    open and idle).
+    `snackbar.notification == .active`), active `ScrollCadence` settle
+    windows (`navigation.cadence.settleTimeoutMs(now)`), and oversized staging
+    buffer decay deadlines (`upload_staging.decayTimeoutMs(now)`), and
+    otherwise enters 0% CPU blocking `wait_indefinite` (including when the
+    command palette is open and idle, or once oversized staging buffers decay).
 - **Modal Dismissal Input Decoupling & Held-Key Suppression**:
   - Animated overlays (such as `PaletteState`) MUST decouple input focus from
     close animations via `isAcceptingInput()`
