@@ -91,18 +91,10 @@ pub fn mapModFromSdl(mod: u16) KeyModifiers {
     };
 }
 
-const TouchFinger = struct {
-    finger_id: u64,
-    x: f32,
-    y: f32,
-};
-
-var active_fingers: [8]TouchFinger = undefined;
-var active_finger_count: usize = 0;
-var last_touch_dist: f32 = 0.0;
-
-/// Temporary accumulator aggregating events drained during a single frame's SDL polling pass.
+/// Temporary accumulator aggregating events drained during a single frame's
+/// SDL polling pass.
 pub const FrameInputState = struct {
+    touch_tracker: state.TouchTracker = .{},
     frame_allocator: std.mem.Allocator,
     keys_pressed: std.ArrayList(Key),
     text_input_opt: ?[]const u8 = null,
@@ -119,6 +111,37 @@ pub const FrameInputState = struct {
     quit_request: state.QuitRequest = .none,
     win_w: f32 = 0,
     win_h: f32 = 0,
+
+    /// Converts accumulator state into a `FrameInput` record with default
+    /// peripheral queries.
+    pub fn toFrameInput(self: FrameInputState) state.FrameInput {
+        return .{
+            .win_w = self.win_w,
+            .win_h = self.win_h,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0.0,
+            .mouse_y = 0.0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = self.mouse_left_clicked,
+            .mouse_inside = self.mouse_inside,
+            .window_minimized = self.window_minimized,
+            .window_occluded = self.window_occluded,
+            .quit_request = self.quit_request,
+            .scroll_delta_x = self.scroll_delta_x,
+            .scroll_delta_y = self.scroll_delta_y,
+            .pinch_delta = self.pinch_delta,
+            .pinch_center_x = self.pinch_center_x,
+            .pinch_center_y = self.pinch_center_y,
+            .touch_tracker = self.touch_tracker,
+            .keys_pressed = self.keys_pressed,
+            .key_modifiers = .{},
+            .text_input = self.text_input_opt,
+            .dropped_path = self.dropped_path_opt,
+            .delta_time_ms = 0.0,
+            .now_ms = 0,
+        };
+    }
 };
 
 /// Processes a single SDL event and updates the frame input accumulator state.
@@ -206,64 +229,74 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
             }
         },
         sdl.event_type.finger_down => {
-            if (active_finger_count < 8) {
+            const tracker = &frame_input.touch_tracker;
+            if (tracker.count < 8) {
                 var found = false;
-                for (0..active_finger_count) |i| {
-                    if (active_fingers[i].finger_id == event.tfinger.fingerID) {
-                        active_fingers[i].x = event.tfinger.x;
-                        active_fingers[i].y = event.tfinger.y;
+                const fid = event.tfinger.fingerID;
+                for (0..tracker.count) |i| {
+                    if (tracker.active_fingers[i].finger_id == fid) {
+                        tracker.active_fingers[i].x = event.tfinger.x;
+                        tracker.active_fingers[i].y = event.tfinger.y;
                         found = true;
                         break;
                     }
                 }
                 if (!found) {
-                    active_fingers[active_finger_count] = .{
-                        .finger_id = event.tfinger.fingerID,
+                    tracker.active_fingers[tracker.count] = .{
+                        .finger_id = fid,
                         .x = event.tfinger.x,
                         .y = event.tfinger.y,
                     };
-                    active_finger_count += 1;
-                    last_touch_dist = 0.0;
+                    tracker.count += 1;
+                    tracker.last_dist = 0.0;
                 }
             }
         },
         sdl.event_type.finger_up => {
+            const tracker = &frame_input.touch_tracker;
+            const fid = event.tfinger.fingerID;
             var i: usize = 0;
-            while (i < active_finger_count) {
-                if (active_fingers[i].finger_id == event.tfinger.fingerID) {
-                    active_fingers[i] = active_fingers[active_finger_count - 1];
-                    active_finger_count -= 1;
+            while (i < tracker.count) {
+                if (tracker.active_fingers[i].finger_id == fid) {
+                    tracker.active_fingers[i] =
+                        tracker.active_fingers[tracker.count - 1];
+                    tracker.count -= 1;
                     break;
                 }
                 i += 1;
             }
-            if (active_finger_count < 2) {
-                last_touch_dist = 0.0;
+            if (tracker.count < 2) {
+                tracker.last_dist = 0.0;
             }
         },
         sdl.event_type.finger_motion => {
-            for (0..active_finger_count) |i| {
-                if (active_fingers[i].finger_id == event.tfinger.fingerID) {
-                    active_fingers[i].x = event.tfinger.x;
-                    active_fingers[i].y = event.tfinger.y;
+            const tracker = &frame_input.touch_tracker;
+            const fid = event.tfinger.fingerID;
+            for (0..tracker.count) |i| {
+                if (tracker.active_fingers[i].finger_id == fid) {
+                    tracker.active_fingers[i].x = event.tfinger.x;
+                    tracker.active_fingers[i].y = event.tfinger.y;
                     break;
                 }
             }
-            if (active_finger_count >= 2) {
+            if (tracker.count >= 2) {
                 const win_w = frame_input.win_w;
                 const win_h = frame_input.win_h;
-                const dx = (active_fingers[1].x - active_fingers[0].x) * win_w;
-                const dy = (active_fingers[1].y - active_fingers[0].y) * win_h;
+                const f0 = tracker.active_fingers[0];
+                const f1 = tracker.active_fingers[1];
+                const dx = (f1.x - f0.x) * win_w;
+                const dy = (f1.y - f0.y) * win_h;
                 const dist = @sqrt(dx * dx + dy * dy);
-                if (last_touch_dist > 0.0 and dist > 0.0) {
-                    const delta = (dist - last_touch_dist) / last_touch_dist;
+                if (tracker.last_dist > 0.0 and dist > 0.0) {
+                    const delta = (dist - tracker.last_dist) /
+                        tracker.last_dist;
                     frame_input.pinch_delta += delta;
-                    const mid_x = (active_fingers[0].x + active_fingers[1].x) * 0.5;
-                    const mid_y = (active_fingers[0].y + active_fingers[1].y) * 0.5;
+                    const mid_x = (f0.x + f1.x) * 0.5;
+                    const mid_y = (f0.y + f1.y) * 0.5;
                     frame_input.pinch_center_x = mid_x * win_w;
                     frame_input.pinch_center_y = mid_y * win_h;
                 }
-                last_touch_dist = dist;
+                tracker.last_dist = dist;
             }
         },
         sdl.event_type.pinch_begin => {
@@ -389,6 +422,7 @@ pub fn pollFrameInput(
     frame_allocator: std.mem.Allocator,
     last_time: *u64,
     prev_mouse_inside: bool,
+    prev_touch_tracker: state.TouchTracker,
     wait_strategy: EventWaitStrategy,
 ) !FrameInput {
     // Get window sizes and scale
@@ -405,6 +439,7 @@ pub fn pollFrameInput(
         1.0;
 
     var frame_input_state = FrameInputState{
+        .touch_tracker = prev_touch_tracker,
         .frame_allocator = frame_allocator,
         .keys_pressed = .empty,
         .mouse_inside = prev_mouse_inside,
@@ -477,6 +512,7 @@ pub fn pollFrameInput(
         .pinch_delta = frame_input_state.pinch_delta,
         .pinch_center_x = frame_input_state.pinch_center_x,
         .pinch_center_y = frame_input_state.pinch_center_y,
+        .touch_tracker = frame_input_state.touch_tracker,
         .keys_pressed = frame_input_state.keys_pressed,
         .key_modifiers = mapModFromSdl(sdl.keys.getModState()),
         .directional_held = directional_held,
@@ -701,4 +737,108 @@ test "processSDLEvent tracks window minimize and occlusion transitions" {
     try processSDLEvent(.{ .type = sdl.event_type.window_exposed }, &fis);
     try std.testing.expectEqual(@as(?bool, false), fis.window_occluded);
     try std.testing.expectEqual(@as(?bool, false), fis.window_minimized);
+}
+
+test "processSDLEvent pinch-to-zoom touch gesture lifecycle and hermeticity" {
+    const allocator = std.testing.allocator;
+    var fis = FrameInputState{
+        .frame_allocator = allocator,
+        .keys_pressed = .empty,
+        .win_w = 800.0,
+        .win_h = 600.0,
+    };
+    defer fis.keys_pressed.deinit(allocator);
+
+    // 1. Finger 1 down at (0.2, 0.5)
+    var evt1 = std.mem.zeroes(sdl.Event);
+    evt1.type = sdl.event_type.finger_down;
+    evt1.tfinger.fingerID = 101;
+    evt1.tfinger.x = 0.2;
+    evt1.tfinger.y = 0.5;
+    try processSDLEvent(evt1, &fis);
+
+    try std.testing.expectEqual(@as(u4, 1), fis.touch_tracker.count);
+    try std.testing.expectEqual(
+        @as(u64, 101),
+        fis.touch_tracker.active_fingers[0].finger_id,
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), fis.pinch_delta);
+
+    // 2. Finger 2 down at (0.6, 0.5)
+    var evt2 = std.mem.zeroes(sdl.Event);
+    evt2.type = sdl.event_type.finger_down;
+    evt2.tfinger.fingerID = 102;
+    evt2.tfinger.x = 0.6;
+    evt2.tfinger.y = 0.5;
+    try processSDLEvent(evt2, &fis);
+
+    try std.testing.expectEqual(@as(u4, 2), fis.touch_tracker.count);
+    try std.testing.expectEqual(@as(f32, 0.0), fis.touch_tracker.last_dist);
+
+    // 3. First finger_motion: establishes baseline last_dist = 320px
+    var evt_m1 = std.mem.zeroes(sdl.Event);
+    evt_m1.type = sdl.event_type.finger_motion;
+    evt_m1.tfinger.fingerID = 102;
+    evt_m1.tfinger.x = 0.6;
+    evt_m1.tfinger.y = 0.5;
+    try processSDLEvent(evt_m1, &fis);
+
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 320.0),
+        fis.touch_tracker.last_dist,
+        0.001,
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), fis.pinch_delta);
+
+    // 4. Second finger_motion: finger 2 moves to (0.8, 0.5) -> dist = 480px
+    // delta = (480 - 320) / 320 = 0.5 (zoom in)
+    var evt_m2 = std.mem.zeroes(sdl.Event);
+    evt_m2.type = sdl.event_type.finger_motion;
+    evt_m2.tfinger.fingerID = 102;
+    evt_m2.tfinger.x = 0.8;
+    evt_m2.tfinger.y = 0.5;
+    try processSDLEvent(evt_m2, &fis);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), fis.pinch_delta, 0.001);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 480.0),
+        fis.touch_tracker.last_dist,
+        0.001,
+    );
+    // Center should be mid-point ((0.2 + 0.8)/2 * 800 = 400, 0.5 * 600 = 300)
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 400.0),
+        fis.pinch_center_x,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 300.0),
+        fis.pinch_center_y,
+        0.001,
+    );
+
+    // 5. Finger 1 up: drops count to 1, resets last_dist to 0
+    var evt_u1 = std.mem.zeroes(sdl.Event);
+    evt_u1.type = sdl.event_type.finger_up;
+    evt_u1.tfinger.fingerID = 101;
+    try processSDLEvent(evt_u1, &fis);
+
+    try std.testing.expectEqual(@as(u4, 1), fis.touch_tracker.count);
+    try std.testing.expectEqual(@as(f32, 0.0), fis.touch_tracker.last_dist);
+    try std.testing.expectEqual(
+        @as(u64, 102),
+        fis.touch_tracker.active_fingers[0].finger_id,
+    );
+
+    // 6. Conversion via toFrameInput preserves touch_tracker by value
+    const frame_input = fis.toFrameInput();
+    try std.testing.expectEqual(@as(u4, 1), frame_input.touch_tracker.count);
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        frame_input.touch_tracker.last_dist,
+    );
+    try std.testing.expectEqual(
+        @as(u64, 102),
+        frame_input.touch_tracker.active_fingers[0].finger_id,
+    );
 }

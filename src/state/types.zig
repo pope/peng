@@ -51,6 +51,27 @@ pub const QuitRequest = enum {
     terminate,
 };
 
+/// Tracked active touch contact point in normalized or window coordinates.
+pub const TouchFinger = struct {
+    finger_id: u64 = 0,
+    x: f32 = 0.0,
+    y: f32 = 0.0,
+};
+
+/// Tracks active touch contact points and distances for pinch-to-zoom
+/// gestures across frames.
+pub const TouchTracker = struct {
+    active_fingers: [8]TouchFinger = undefined,
+    count: u4 = 0,
+    last_dist: f32 = 0.0,
+
+    /// Resets all active touch finger tracking and pinch distances.
+    pub fn reset(self: *TouchTracker) void {
+        self.count = 0;
+        self.last_dist = 0.0;
+    }
+};
+
 /// Aggregated input events, mouse coordinates, keyboard actions, and window
 /// metrics for a single frame iteration.
 pub const FrameInput = struct {
@@ -71,6 +92,7 @@ pub const FrameInput = struct {
     pinch_delta: f32 = 0.0,
     pinch_center_x: f32 = 0.0,
     pinch_center_y: f32 = 0.0,
+    touch_tracker: TouchTracker = .{},
     keys_pressed: std.ArrayList(Key),
     key_modifiers: KeyModifiers,
     directional_held: DirectionFlags = .{},
@@ -571,4 +593,16 @@ test "OverlayState floating panel dismissal" {
 
     // Subsequent dismissal returns false
     try std.testing.expect(!overlays.dismissFloatingPanels());
+}
+
+test "TouchTracker.reset clears active finger count and last distance" {
+    var tracker = TouchTracker{};
+    tracker.count = 2;
+    tracker.last_dist = 150.0;
+    tracker.active_fingers[0] = .{ .finger_id = 1, .x = 0.2, .y = 0.3 };
+    tracker.active_fingers[1] = .{ .finger_id = 2, .x = 0.5, .y = 0.6 };
+
+    tracker.reset();
+    try std.testing.expectEqual(@as(u4, 0), tracker.count);
+    try std.testing.expectEqual(@as(f32, 0.0), tracker.last_dist);
 }

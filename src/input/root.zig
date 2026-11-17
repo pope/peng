@@ -37,36 +37,36 @@ test "mapKeyToAction mapping" {
 
 test "processSDLEvent updates FrameInputState" {
     const allocator = std.testing.allocator;
-    var state = FrameInputState{
+    var input_state = FrameInputState{
         .frame_allocator = allocator,
         .keys_pressed = .empty,
         .mouse_inside = false,
     };
-    defer state.keys_pressed.deinit(allocator);
+    defer input_state.keys_pressed.deinit(allocator);
 
     var evt = sdl.Event{
         .type = sdl.event_type.mouse_enter,
     };
-    try processSDLEvent(evt, &state);
-    try std.testing.expect(state.mouse_inside);
+    try processSDLEvent(evt, &input_state);
+    try std.testing.expect(input_state.mouse_inside);
 
     evt = sdl.Event{
         .type = sdl.event_type.window_close_requested,
     };
-    try processSDLEvent(evt, &state);
-    try std.testing.expectEqual(.window_close, state.quit_request);
+    try processSDLEvent(evt, &input_state);
+    try std.testing.expectEqual(.window_close, input_state.quit_request);
 
     // Terminate supersedes window_close and cannot be downgraded by a
     // subsequent window_close
     evt = sdl.Event{
         .type = sdl.event_type.quit,
     };
-    try processSDLEvent(evt, &state);
-    try std.testing.expectEqual(.terminate, state.quit_request);
+    try processSDLEvent(evt, &input_state);
+    try std.testing.expectEqual(.terminate, input_state.quit_request);
 
     evt = sdl.Event{
         .type = sdl.event_type.window_close_requested,
     };
-    try processSDLEvent(evt, &state);
-    try std.testing.expectEqual(.terminate, state.quit_request);
+    try processSDLEvent(evt, &input_state);
+    try std.testing.expectEqual(.terminate, input_state.quit_request);
 }

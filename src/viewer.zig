@@ -50,6 +50,7 @@ pub fn updateFrame(
         frame_allocator,
         last_time,
         app_state.viewer.mouse_inside,
+        app_state.viewer.touch_tracker,
         wait_strategy,
     );
 
@@ -61,6 +62,7 @@ pub fn updateFrame(
     }
 
     app_state.viewer.mouse_inside = input.mouse_inside;
+    app_state.viewer.touch_tracker = input.touch_tracker;
     app_state.viewer.last_win_dims = input.logicalWinDims();
 
     const was_hidden = app_state.display.isHidden();

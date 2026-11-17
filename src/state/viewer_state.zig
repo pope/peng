@@ -14,6 +14,7 @@ const ImageTransition = types.ImageTransition;
 const LogicalDims = geom.LogicalDims;
 const NavigationState = navigation.NavigationState;
 const PanController = viewport.PanController;
+const TouchTracker = types.TouchTracker;
 const UiState = ui_state.UiState;
 const ViewerStats = telemetry.ViewerStats;
 const ViewportParams = viewport.ViewportParams;
@@ -54,6 +55,7 @@ pub const ViewerState = struct {
     mouse_inside: bool = true,
     pan_controller: PanController = .{},
     zoom_controller: ZoomController = .{},
+    touch_tracker: TouchTracker = .{},
     last_win_dims: LogicalDims = .{},
 
     server_mode: bool = false,
@@ -95,6 +97,7 @@ pub const ViewerState = struct {
         self.drag_state = .none;
         self.pan_controller.reset();
         self.zoom_controller.reset();
+        self.touch_tracker.reset();
     }
 
     /// Returns the protected previous image index if an image dissolve
@@ -223,9 +226,13 @@ test "ViewerState.resetToDefaults restores configured startup defaults" {
     viewer.navigation.crossfade = true;
     viewer.navigation.stack_raw_jpeg = true;
     viewer.navigation.triage.view_mode = .picks;
+    viewer.touch_tracker.count = 2;
+    viewer.touch_tracker.last_dist = 50.0;
 
     viewer.resetToDefaults();
 
+    try std.testing.expectEqual(@as(u4, 0), viewer.touch_tracker.count);
+    try std.testing.expectEqual(@as(f32, 0.0), viewer.touch_tracker.last_dist);
     try std.testing.expectEqual(ZoomPreset.shrink, viewer.viewport.fit_mode);
     try std.testing.expectEqual(viewport.ZoomMode.fit, viewer.viewport.mode);
     try std.testing.expectEqual(
