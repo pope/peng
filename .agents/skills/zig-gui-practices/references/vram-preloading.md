@@ -186,9 +186,12 @@ ______________________________________________________________________
   1. *Application Shutdown*: `workers.exiting` aborts all background activity.
   2. *Global Generation*: `state.cache.generation.fetchAdd(1, .release)`
      invalidates all stale directory or navigation decodes en masse.
-  3. *Per-Slot / Per-Job Atomic Epoch*: Each decode job receives a pinned
-     ticket `job_epochs: [16]std.atomic.Value(u32)`. Advancing a job's epoch
-     instantly cancels only that specific worker on eviction or stream switch.
+  3. *Per-Slot / Per-Job Atomic Epoch*: `AppState.spawnSlotDecode` uniformly
+     allocates a pinned ticket (`cache.allocJob()`,
+     `job_epochs: [16]std.atomic.Value(u32)`) for both overlapped `openPath`
+     slot 0 and `sysUpdateCache` / pair promotion decodes. Advancing a job's
+     epoch instantly cancels only that specific worker on eviction or stream
+     switch.
 - **`CancellationToken` & `SlotBound` Injection**:
   `DecodeArgs` in `src/app/workers/decode.zig` bundles the slot's
   `ImageCacheKey` (stable `id: MediaId` and assigned `generation`),

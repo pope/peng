@@ -171,7 +171,10 @@
     validation and cooperative cancellation are enforced at the type boundary.
     Cancellation is three-tiered: application shutdown (`exiting`), global
     cache generation invalidation, and per-slot atomic job epoch invalidation
-    (`job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)`).
+    (`job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)`). All decode workers
+    (overlapped `openPath` slot 0, `sysUpdateCache`, and pair promotion) spawn
+    via `AppState.spawnSlotDecode`, acquiring a `cache.allocJob()` epoch ticket
+    with `has_gpu_device = (gpu_device != null) or gpu_enabled`.
 - **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache**:
   - Issue single `statFile` and `openFile` per worker pass. Read 256KB Stage 1
     header via `probe.readRangePositional` for metadata probing and thumbnail

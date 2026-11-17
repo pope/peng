@@ -20,6 +20,8 @@ const image = core.image;
 const ImageCache = image.ImageCache;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
+const MediaId = vfs.MediaId;
+const PairStreamTarget = vfs.PairStreamTarget;
 const PaletteMode = intents.PaletteMode;
 const PhysicalDims = geom.PhysicalDims;
 const startTextInput = core.display.startTextInput;
@@ -870,6 +872,79 @@ pub const AppState = struct {
         self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
     }
 
+    /// Allocates a cache job ticket (`job_id`, `job_epoch`), duplicates
+    /// `entry_item`, updates the slot's `inflight` state, and spawns a
+    /// background decode worker for `id` with `errdefer` rollback.
+    pub fn spawnSlotDecode(
+        self: *AppState,
+        id: MediaId,
+        entry_item: MediaEntry,
+        thumb_only: bool,
+        pair_target: PairStreamTarget,
+        now_ms: u64,
+    ) !void {
+        const ticket = self.cache.allocJob() orelse return error.OutOfMemory;
+        errdefer self.cache.cancelJob(ticket.job_id);
+
+        const dup_entry = entry_item.dupe(self.allocator) catch |err| {
+            std.log.err(
+                "Failed to dupe MediaEntry for decode worker: {}",
+                .{err},
+            );
+            return err;
+        };
+        errdefer dup_entry.deinit(self.allocator);
+
+        const args = try self.allocator.create(workers_mod.DecodeArgs);
+        errdefer self.allocator.destroy(args);
+
+        const key = self.cache.activeKey(id);
+        const prev_inflight = if (self.cache.get(key)) |entry|
+            entry.inflight
+        else
+            null;
+        if (self.cache.get(key)) |entry| {
+            if (entry.inflight) |*inf| {
+                inf.has_thread = true;
+                inf.job_id = ticket.job_id;
+                inf.job_epoch = ticket.epoch;
+            } else {
+                entry.inflight = .{
+                    .stage = .decoding,
+                    .has_thread = true,
+                    .start_time_ms = now_ms,
+                    .target = pair_target,
+                    .job_id = ticket.job_id,
+                    .job_epoch = ticket.epoch,
+                };
+            }
+        }
+        errdefer {
+            if (self.cache.get(key)) |entry| {
+                entry.inflight = prev_inflight;
+            }
+        }
+
+        const has_gpu_device = (self.gpu_device != null) or self.gpu_enabled;
+        args.* = workers_mod.DecodeArgs{
+            .workers = &self.workers,
+            .allocator = self.allocator,
+            .io = self.io,
+            .key = key,
+            .job_id = ticket.job_id,
+            .job_epoch = ticket.epoch,
+            .current_job_epoch = &self.cache.job_epochs[ticket.job_id],
+            .entry = dup_entry,
+            .has_gpu_device = has_gpu_device,
+            .pixel_format = self.display.getPixelFormat(),
+            .thumb_only = thumb_only,
+            .pair_target = pair_target,
+            .current_generation = &self.cache.generation,
+        };
+
+        try workers_mod.spawnDecode(args);
+    }
+
     /// Initiates loading a target path (file or directory). When opening a
     /// regular image file that already resides in the active, fully scanned
     /// directory playlist, jumps directly to that entry while preserving the
@@ -1019,37 +1094,18 @@ pub const AppState = struct {
                     stack_raw,
                 );
 
-                // Spawn immediate decode for slot 0 to overlap with graphics/GPU init
-                const key0 = try self.cache.appendSlot(
-                    self.allocator,
+                // Spawn immediate decode for slot 0 to overlap with
+                // graphics/GPU init
+                _ = try self.cache.appendSlot(self.allocator, initial_id, .{});
+                const pair_target: PairStreamTarget =
+                    if (stack_raw) .adaptive else .standalone_jpeg;
+                try self.spawnSlotDecode(
                     initial_id,
-                    .{ .inflight = .{ .has_thread = true } },
+                    .{ .filesystem = .{ .path = dup } },
+                    false,
+                    pair_target,
+                    sdl.timer.getTicks(),
                 );
-                errdefer {
-                    if (self.cache.get(key0)) |entry| {
-                        if (entry.inflight) |*dec| dec.has_thread = false;
-                    }
-                }
-                const dup_entry = try (MediaEntry{
-                    .filesystem = .{ .path = owned_path },
-                }).dupe(self.allocator);
-                errdefer dup_entry.deinit(self.allocator);
-
-                const args = try self.allocator.create(workers_mod.DecodeArgs);
-                errdefer self.allocator.destroy(args);
-                args.* = workers_mod.DecodeArgs{
-                    .workers = &self.workers,
-                    .allocator = self.allocator,
-                    .io = self.io,
-                    .key = key0,
-                    .entry = dup_entry,
-                    .has_gpu_device = (self.gpu_device != null) or self.gpu_enabled,
-                    .pixel_format = self.display.getPixelFormat(),
-                    .thumb_only = false,
-                    .pair_target = if (self.viewer.navigation.stack_raw_jpeg) .adaptive else .standalone_jpeg,
-                    .current_generation = &self.cache.generation,
-                };
-                try workers_mod.spawnDecode(args);
             }
         }
         self.resetViewportAndTransitions();
@@ -1329,6 +1385,46 @@ test "AppState.openPath spawns immediate decode for single image file" {
     try std.testing.expect(entry0 != null);
     try std.testing.expect(entry0.?.inflight != null);
     try std.testing.expect(entry0.?.inflight.?.has_thread);
+}
+
+test "AppState.openPath acquires job ticket and epoch for single image" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const sample_jpg = "testfiles/images/000_0_1024x682.jpg";
+    try state.openPath(sample_jpg);
+
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const entry0 = state.cache.get(state.cache.activeKey(id0)).?;
+    const inf = entry0.inflight.?;
+
+    try std.testing.expect(inf.has_thread);
+    try std.testing.expect(inf.job_id < image.MAX_DECODE_JOBS);
+    try std.testing.expect(inf.job_epoch >= 1);
+
+    const job_bit = @as(u16, 1) << @as(u4, @truncate(inf.job_id));
+    try std.testing.expect((state.cache.job_alloc_mask & job_bit) != 0);
+    try std.testing.expectEqual(
+        inf.job_epoch,
+        state.cache.job_epochs[inf.job_id].load(.acquire),
+    );
+    try std.testing.expect(state.cache.validateJobEpoch(0, inf.job_epoch));
+
+    // Cancelling the slot 0 job advances its pinned epoch and frees the bit
+    state.cache.cancelJob(inf.job_id);
+    try std.testing.expect((state.cache.job_alloc_mask & job_bit) == 0);
+    try std.testing.expectEqual(
+        inf.job_epoch + 1,
+        state.cache.job_epochs[inf.job_id].load(.acquire),
+    );
+
+    const reused = state.cache.allocJob().?;
+    try std.testing.expectEqual(inf.job_id, reused.job_id);
+    try std.testing.expectEqual(inf.job_epoch + 1, reused.epoch);
+    state.cache.releaseJob(reused.job_id);
 }
 
 test "AppState.openPath reuses warm directory playlist and resets viewport" {

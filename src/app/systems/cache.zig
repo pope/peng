@@ -1,7 +1,6 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
 const core = @import("core");
-const decode_mod = @import("../workers/decode.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -9,7 +8,6 @@ const std = @import("std");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
-const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
 const image = core.image;
 const ImageCache = image.ImageCache;
@@ -17,85 +15,6 @@ const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
 const RawMetadata = probe.RawMetadata;
-
-/// Spawns an asynchronous worker task to decode an image file from disk into RAM.
-///
-/// Pre-conditions: `entry_item` is cloned into a duplicated heap instance owned by the decode task.
-/// On failure, resources are freed via `errdefer`.
-///
-/// Parameters:
-/// - `state`: Pointer to global application state.
-/// - `id`: Stable media ID being decoded.
-/// - `entry_item`: Media entry being decoded.
-/// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail
-///   for rapid scrolling.
-/// - `pair_target`: Stream target for stacked RAW+JPEG pairs.
-/// - `now_ms`: Timestamp in milliseconds used to stamp inflight decode.
-fn spawnCacheDecodeSlot(
-    state: *AppState,
-    id: MediaId,
-    entry_item: MediaEntry,
-    thumb_only: bool,
-    pair_target: PairStreamTarget,
-    now_ms: u64,
-) !void {
-    const ticket = state.cache.allocJob() orelse return error.OutOfMemory;
-    errdefer state.cache.cancelJob(ticket.job_id);
-
-    const dup_entry = entry_item.dupe(state.allocator) catch |err| {
-        std.log.err("Failed to dupe MediaEntry for decode worker: {}", .{err});
-        return err;
-    };
-    errdefer dup_entry.deinit(state.allocator);
-
-    const args = try state.allocator.create(DecodeArgs);
-    errdefer state.allocator.destroy(args);
-
-    const key = state.cache.activeKey(id);
-    if (state.cache.get(key)) |entry| {
-        if (entry.inflight) |*inf| {
-            inf.has_thread = true;
-            inf.job_id = ticket.job_id;
-            inf.job_epoch = ticket.epoch;
-        } else {
-            entry.inflight = .{
-                .stage = .decoding,
-                .has_thread = true,
-                .start_time_ms = now_ms,
-                .target = pair_target,
-                .job_id = ticket.job_id,
-                .job_epoch = ticket.epoch,
-            };
-        }
-    }
-    errdefer {
-        if (state.cache.get(key)) |entry| {
-            if (entry.inflight) |*inf| {
-                inf.has_thread = false;
-                inf.job_id = 0;
-                inf.job_epoch = 0;
-            }
-        }
-    }
-
-    args.* = DecodeArgs{
-        .workers = &state.workers,
-        .allocator = state.allocator,
-        .io = state.io,
-        .key = key,
-        .job_id = ticket.job_id,
-        .job_epoch = ticket.epoch,
-        .current_job_epoch = &state.cache.job_epochs[ticket.job_id],
-        .entry = dup_entry,
-        .has_gpu_device = state.gpu_device != null,
-        .pixel_format = state.display.getPixelFormat(),
-        .thumb_only = thumb_only,
-        .pair_target = pair_target,
-        .current_generation = &state.cache.generation,
-    };
-
-    try decode_mod.spawnDecode(args);
-}
 
 fn probeActiveSlotMetadata(
     state: *AppState,
@@ -177,29 +96,13 @@ fn checkPairPromotion(
         (tex_demand > 1.15);
 
     if ((is_inspecting or is_settled_fit) and state.workers.canSpawnDecode()) {
-        if (state.cache.get(key)) |entry| {
-            if (entry.inflight) |inf| {
-                if (inf.has_thread) {
-                    state.cache.cancelJob(inf.job_id);
-                }
-            }
-            entry.inflight = .{
-                .stage = .decoding,
-                .start_time_ms = now,
-                .target = .standalone_jpeg,
-            };
-        }
-        spawnCacheDecodeSlot(
-            state,
+        state.spawnSlotDecode(
             key.id,
             media_item,
             false,
             .standalone_jpeg,
             now,
         ) catch |err| {
-            if (state.cache.get(key)) |entry| {
-                entry.inflight = null;
-            }
             std.log.err("Failed to spawn zoom promotion decode: {}", .{err});
         };
     }
@@ -438,8 +341,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         };
         const thumb_only = is_fast_scrolling and !thumb_not_available;
 
-        spawnCacheDecodeSlot(
-            state,
+        state.spawnSlotDecode(
             req.id,
             req.entry,
             thumb_only,
@@ -1183,7 +1085,7 @@ test "sysUpdateCache fast-scroll throttling deterministic with ctx.now_ms" {
     try std.testing.expect(state.cache.get(state.cache.activeKey(id2)) != null);
 }
 
-test "spawnCacheDecodeSlot stamps now_ms on inflight entry" {
+test "AppState.spawnSlotDecode stamps now_ms and job ticket on inflight" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
@@ -1202,8 +1104,7 @@ test "spawnCacheDecodeSlot stamps now_ms on inflight entry" {
     const id0 = state.viewer.navigation.getIdAt(0).?;
     const key0 = try state.cache.appendSlot(allocator, id0, .{});
 
-    try spawnCacheDecodeSlot(
-        &state,
+    try state.spawnSlotDecode(
         id0,
         .{ .filesystem = .{ .path = dup } },
         false,
@@ -1213,7 +1114,11 @@ test "spawnCacheDecodeSlot stamps now_ms on inflight entry" {
 
     const entry = state.cache.get(key0).?;
     try std.testing.expect(entry.inflight != null);
-    try std.testing.expectEqual(@as(u64, 4200), entry.inflight.?.start_time_ms);
+    try std.testing.expectEqual(
+        @as(u64, 4200),
+        entry.inflight.?.start_time_ms,
+    );
+    try std.testing.expect(entry.inflight.?.job_epoch >= 1);
 }
 
 test "checkPairPromotion - Fit mode waits until cadence settles past 250ms" {
