@@ -33,15 +33,26 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
 - **Phase 2 — Sequential Systems (`runUpdatePhase` in `src/app/systems/root.zig`)**:
   - Systems accept `ctx: FrameContext` and **MUST NOT** call other systems
     directly (communicating solely via `AppState` or `pending_intents`):
-    1. `sysSyncWindowVisibility` -> 02. `sysUpdateAnimations` ->
-    2. `sysExecuteIpcCommands` -> 04. `sysProcessPaletteInput` ->
-    3. `sysProcessInput` -> 06. `sysProcessUiInteractions` ->
-    4. `sysUpdateViewport` & `sysUpdateSlideshow` ->
-    5. `sysExecuteIntents` (`defer self.clearIntents()` right after empty check;
-       `defer self.flushPendingSelectionStreams()`) ->
-    6. `sysSyncWindow` -> 10. `sysProcessAssetUploads` ->
-    7. `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`) ->
-    8. `sysSyncMetrics`.
+    `sysSyncWindowVisibility` $\\to$ `sysUpdateAnimations` $\\to$
+    `sysExecuteIpcCommands` $\\to$ `sysProcessPaletteInput` $\\to$
+    `sysProcessInput` $\\to$ `sysProcessUiInteractions` $\\to$
+    `sysUpdateViewport` & `sysUpdateSlideshow` $\\to$
+    `sysExecuteIntents` (`defer self.clearIntents()` right after empty check;
+    `defer self.flushPendingSelectionStreams()`) $\\to$
+    `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
+    `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`) $\\to$
+    `sysSyncMetrics`.
+- **Intentional Pipeline Trade-Offs (Preserve)**:
+  1. *Pre-Render Sync*: `sysProcessAssetUploads` and `sysUpdateCache` run right
+     *before* `renderFrame` (not after) so staged CPU surfaces/thumbnails promote
+     to GPU and display on the **same frame** with 0-frame lag.
+  2. *Data-Plane vs Control-Plane Events*: Only `ipc_command` events push
+     `AppIntent`s; decoded `sdl.Surface` and scan payloads stage directly onto
+     CPU state in `drainWorkerEvents` so `AppIntent` stays pure value data.
+  3. *Startup & Discrete Scan Overlap*: Continuous decodes dispatch via
+     `sysUpdateCache`, while `openPathInternal` / `loadPaletteDirectory` / IPC
+     `preview` & `precache` launch one-shot workers directly on transition to
+     hide cold-start window/Vulkan init latency.
 - **Intents, Registry & Input Isolation**:
   - All UI, keyboard, and IPC actions enqueue `intents.AppIntent` via
     `pushIntent` rather than mutating state inline.

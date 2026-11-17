@@ -43,8 +43,22 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 3. Acyclic Package Boundaries (`src/`)
+## 3. Frame Pipeline & Acyclic Package Boundaries (`src/`)
 
+- **North-Star Game-Engine Frame Loop (`src/viewer.zig`, `src/app/systems/root.zig`)**:
+  - Each frame executes unidirectionally: **1. Ingest** (`pollFrameInput` + O(1)
+    `drainWorkerEvents` staging onto CPU state, zero GPU/VRAM calls) $\\to$
+    **2a. Reduce Intents** (input/IPC/UI/motion systems push `AppIntent`s reduced
+    by `sysExecuteIntents`, zero render-thread disk I/O) $\\to$ **2b. Sync
+    Hardware & Workers** (`sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
+    `sysUpdateCache`) $\\to$ **3. Render Snapshot** (`buildUiViewModel(*const AppState)` $\\to$ `ui.layout.renderFrame`, recording next-frame hit rects on
+    explicit `*InteractionState`).
+  - **Intentional Nuances**: (a) Phase 2b runs *before* `renderFrame` so staged
+    thumbnails/surfaces promote to GPU and draw with **0-frame lag**; (b)
+    data-plane worker surfaces stage directly on CPU cache unions while only
+    `ipc_command`s emit `AppIntent`s (keeping `AppIntent` pure value data); (c)
+    startup/discrete directory opens spawn scan/slot-0 workers immediately to
+    overlap cold-start I/O with window/Vulkan initialization.
 - **Zero-SDL Pure Packages**:
   - `geom` (pure `std` 2D geometry, DPI, `FRect` `RectCut`), `probe` (MIME,
     EXIF, RAW headers), `vfs` (dir scan, CBZ seek, RAW+JPEG pairs), `triage`

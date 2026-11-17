@@ -7,7 +7,7 @@ ______________________________________________________________________
 ## Features
 
 - **GPU Acceleration:** Uses the modern SDL3 GPU API with Vulkan and Metal backends.
-- **Camera RAW Zero-Copy Streaming:** High-performance viewing of Camera RAW images (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) with zero full-file allocations in RAM. Streams 128KB stack headers for sub-0.1ms metadata probing, range-limited positional reads for preview JPEGs, and instant embedded thumbnail rendering during fast navigation.
+- **Camera RAW Zero-Copy Streaming:** High-performance viewing of Camera RAW images (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) with zero full-file allocations in RAM. Streams 256KB Stage-1 headers on background worker threads for off-render-thread metadata probing, range-limited positional reads for preview JPEGs, and instant embedded thumbnail rendering during fast navigation.
 - **RAW+JPEG Stacking & Progressive Streaming:** Sibling RAW and JPEG files
   with identical stems (e.g. `DSC00941.ARW` + `DSC00941.JPG`) automatically
   collapse into a single logical photo entry. Employs a 4-tier loading pipeline:
@@ -16,7 +16,7 @@ ______________________________________________________________________
   screen pixel demand exceeds preview resolution ($M\_{\\text{tex}} > 1.05$) or
   upon pressing `j`.
 - **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
-- **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
+- **Advanced Filtering & Resampling:** Features a 7-filter GPU resampling suite including Nearest, Bilinear, Pixel Art (AA-Nearest), Mitchell-Netravali, Analytical Lanczos3, AMD FSR 1.0, and Tiny CNN (ESPCN).
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
 - **Docked Image Adjustments Panel:** Interactive side panel (`e` key)
   featuring a 13-parameter photographic color and presence pipeline across
@@ -310,6 +310,54 @@ fd . testfiles/images -e jpg | \
 # Quit the app / terminate the resident server
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock quit
 ```
+
+______________________________________________________________________
+
+## Architecture
+
+Peng is structured around a reactive, unidirectional **game-engine frame
+pipeline** (`src/viewer.zig`, `src/app/systems/root.zig`) backed by an acyclic
+17-package Zig module graph (`build.zig`):
+
+```text
+Phase 1: Ingest          Phase 2a: Reduce Intents      Phase 2b: Sync Hardware & Workers    Phase 3: Render Snapshot
+┌─────────────────────┐  ┌──────────────────────────┐  ┌─────────────────────────────────┐  ┌──────────────────────────┐
+│ • pollFrameInput    │─▶│ • IPC / Palette / Keys   │─▶│ • sysSyncWindow                 │─▶│ • buildUiViewModel       │
+│ • drainWorkerEvents │  │ • Pointer Hits & Motion  │  │ • sysProcessAssetUploads (GPU)  │  │   (*const AppState)      │
+│   (O(1) MPSC swap,  │  │ • sysExecuteIntents      │  │ • sysUpdateCache (DecodeMode &  │  │ • ui.layout.renderFrame  │
+│    CPU staging)     │  │   (single-pass reducer)  │  │   DecodePriority workers)       │  │ • 2-pass RenderPacket    │
+└─────────────────────┘  └──────────────────────────┘  └─────────────────────────────────┘  └──────────────────────────┘
+```
+
+### Key Design Choices
+
+- **Lock-Free Main-Thread State (`ViewerState`)**: `ViewerState` lives 100% on
+  the main thread with zero GPU handles, worker mutexes, or stored allocators.
+  Background `std.Io` workers communicate strictly via an $O(1)$-swapped MPSC
+  event queue and cancel cooperatively via 3-tier generation and per-slot atomic
+  `job_epochs`.
+- **Decoupled Simulation & Presentation (`app` $\\leftrightarrow$ `ui`)**: `app`
+  and `ui` are independent sibling modules (`app` never imports `ui`; `ui` has
+  zero SDL or `core` linkage), bridged in `src/viewer.zig` via an immutable
+  `UiViewModel` snapshot (`*const AppState`) and explicit `*InteractionState`
+  immediate-mode hit rects.
+- **Zero-Lag Pre-Render GPU Promotion**: GPU texture uploads
+  (`sysProcessAssetUploads`) and worker dispatch (`sysUpdateCache`) run at the
+  end of Phase 2—right *before* `renderFrame` rather than after—so CPU-staged
+  thumbnails and full surfaces promote to GPU textures and render on the **same
+  frame** with zero extra frame latency.
+- **Control-Plane vs. Data-Plane Separation**: Control inputs (keyboard, mouse,
+  palette, and UDS `ipc_command`s) reduce through pure value-typed `AppIntent`s,
+  while data-plane worker completions (`sdl.Surface` pixels and directory scans)
+  stage directly onto CPU cache unions (`ThumbnailState.staged_cpu`,
+  `ResidentAsset.loaded_cpu` / `.promoting_gpu`) with zero render-thread disk
+  I/O.
+- **Cold-Start I/O Overlap & Adaptive 0% CPU Sleep**: Startup `openPath`
+  launches initial file/directory workers *before* window and Vulkan pipeline
+  creation to hide cold-start latency, while `computeFrameWaitStrategy` ticks at
+  display refresh rate during active animations/glides and drops to blocking
+  `waitEvent` (`0%` CPU) once settled (including after the 5s `32 MiB` staging
+  buffer idle decay).
 
 ______________________________________________________________________
 
