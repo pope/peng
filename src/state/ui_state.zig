@@ -36,7 +36,7 @@ pub const UiState = struct {
     /// Releases palette allocations and responds to any pending screenshot
     /// requests.
     pub fn deinit(self: *UiState, io: std.Io, allocator: std.mem.Allocator) void {
-        self.palette.deinit();
+        self.palette.deinit(allocator);
         switch (self.screenshot_mode) {
             .idle => {},
             .capturing => |*s| {

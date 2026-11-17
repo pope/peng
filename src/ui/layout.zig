@@ -1154,7 +1154,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         .{ .w = 160.0, .h = 120.0 },
     );
     var pal_state = try PaletteState.init(std.testing.allocator);
-    defer pal_state.deinit();
+    defer pal_state.deinit(std.testing.allocator);
     const model = UiViewModel{
         .is_fullscreen = false,
         .total_images = 2,

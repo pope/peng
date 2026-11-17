@@ -1549,7 +1549,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
 
     var data = MeasureTextUserData{};
     var pal_state = try PaletteState.init(std.testing.allocator);
-    defer pal_state.deinit();
+    defer pal_state.deinit(std.testing.allocator);
     pal_state.mode = .actions;
     pal_state.is_closing = false;
 

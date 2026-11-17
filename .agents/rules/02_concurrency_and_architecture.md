@@ -26,10 +26,12 @@
     `zoom_controller: ZoomController`, `rotation_map`, `drag_state`,
     `mouse_inside`, `last_win_dims: LogicalDims`, `server_mode`, `running`).
   - **Purity Invariant**: `ViewerState` MUST contain **ZERO** GPU device
-    pointers, **ZERO** worker thread pools, **ZERO** `std.Io` contexts, and
-    **ZERO** mutexes or concurrent queues (its `rotation_map` stores zero
-    allocator as `std.StringHashMapUnmanaged(f32)`, and only `navigation` and
-    `palette` sub-states hold CPU arenas/allocators).
+    pointers, **ZERO** worker thread pools, **ZERO** `std.Io` contexts,
+    **ZERO** mutexes or concurrent queues, and **ZERO** raw
+    `std.mem.Allocator` fields (`rotation_map` uses
+    `std.StringHashMapUnmanaged(f32)`, and `PaletteState` is unmanaged—passing
+    `allocator` explicitly to mutating and teardown methods—leaving only
+    `navigation` holding CPU arenas).
     It must remain safe for headless unit testing without GPU, I/O, or worker
     setup.
 - **`UiViewModel` (Read-Only Presentation Snapshot)**:

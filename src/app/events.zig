@@ -400,6 +400,7 @@ fn syncActiveFilePaletteMatches(state: *AppState) void {
         !state.viewer.ui.palette.is_closing)
     {
         state.viewer.ui.palette.rebuildFileMatches(
+            state.allocator,
             state.viewer.navigation.getEntries(),
         ) catch |err| {
             std.log.err("Failed to rebuild palette file matches: {}", .{err});

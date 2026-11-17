@@ -114,7 +114,7 @@ pub const ViewerState = struct {
         errdefer nav.deinit(allocator);
 
         var ui = try UiState.init(allocator);
-        errdefer ui.palette.deinit();
+        errdefer ui.palette.deinit(allocator);
 
         var vs = ViewerState{
             .navigation = nav,

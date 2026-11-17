@@ -155,8 +155,11 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
     ui.palette.selected_idx = 0;
     ui.palette.selection_dirty = true;
     switch (ui.palette.mode) {
-        .actions => try self.viewer.ui.palette.rebuildActionMatches(),
+        .actions => try self.viewer.ui.palette.rebuildActionMatches(
+            self.allocator,
+        ),
         .files => try self.viewer.ui.palette.rebuildFileMatches(
+            self.allocator,
             self.viewer.navigation.getEntries(),
         ),
         .inactive, .directory_navigator, .prompt => {},
@@ -548,6 +551,7 @@ fn executeIntent(
             showCustomSnackbar(self, msg, now_ms);
             if (ui.palette.mode == .files and !ui.palette.is_closing) {
                 try self.viewer.ui.palette.rebuildFileMatches(
+                    self.allocator,
                     self.viewer.navigation.getEntries(),
                 );
             }

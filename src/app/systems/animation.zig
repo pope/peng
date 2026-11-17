@@ -74,7 +74,7 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
     // Check if palette close animation has finished settling to 0.0 (even if already settled)
     if (state.viewer.ui.palette.is_closing) {
         if (!anim.isActive(.palette_reveal) or anim.get(.palette_reveal) <= 0.001) {
-            state.viewer.ui.palette.reset();
+            state.viewer.ui.palette.reset(state.allocator);
         }
     }
 

@@ -177,13 +177,13 @@ fn handlePaletteKeys(
 
     // Delete Word Backward: Ctrl+W or Alt+Backspace
     if ((key == .char_w and mod.ctrl) or (key == .backspace and mod.alt)) {
-        _ = try palette.deleteWordBackward(entries);
+        _ = try palette.deleteWordBackward(self.allocator, entries);
         return true;
     }
 
     // Clear Line: Ctrl+U
     if (key == .char_u and mod.ctrl) {
-        _ = try palette.clearQuery(entries);
+        _ = try palette.clearQuery(self.allocator, entries);
         return true;
     }
 
@@ -250,7 +250,7 @@ fn handlePaletteKeys(
         },
 
         .backspace => {
-            if (try palette.deleteCharBackward(entries)) {
+            if (try palette.deleteCharBackward(self.allocator, entries)) {
                 return false;
             } else if (palette.mode == .directory_navigator) {
                 const parent_buf = try ctx.frame_allocator.alloc(
@@ -353,7 +353,11 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     if (input.text_input) |text| {
         if (!suppress_text_input and !has_cmd_mod) {
             const entries = self.viewer.navigation.getEntries();
-            _ = try self.viewer.ui.palette.appendPrintableText(text, entries);
+            _ = try self.viewer.ui.palette.appendPrintableText(
+                self.allocator,
+                text,
+                entries,
+            );
         }
     }
 
@@ -843,7 +847,7 @@ test "directory_navigator archive_file drill-down and click behavior" {
             .full_path = try allocator.dupe(u8, "/tmp/comics/issue1.cbz"),
         },
     });
-    try palette.rebuildDirectoryMatches();
+    try palette.rebuildDirectoryMatches(allocator);
     palette.selected_idx = 1;
     try palette.query.appendSlice(allocator, "issue");
 

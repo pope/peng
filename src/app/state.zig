@@ -560,7 +560,7 @@ pub const AppState = struct {
     /// Immediately closes and resets the command palette without animation.
     pub fn closePaletteImmediately(self: *AppState) void {
         stopTextInput(self.display);
-        self.viewer.ui.palette.reset();
+        self.viewer.ui.palette.reset(self.allocator);
         self.viewer.animations.setImmediate(.palette_reveal, 0.0);
     }
 
@@ -622,7 +622,7 @@ pub const AppState = struct {
         self.closePaletteImmediately();
         self.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
         self.viewer.ui.palette.current_dir_image_count = 0;
-        self.viewer.ui.palette.shrinkToWarmCapacity();
+        self.viewer.ui.palette.shrinkToWarmCapacity(self.allocator);
         self.viewer.resetToDefaults();
         self.viewer.ui.interaction.reset();
 
@@ -704,7 +704,11 @@ pub const AppState = struct {
     /// Loads directory items into the command palette directory navigator and spawns
     /// a background worker task to asynchronously count images and subdirectories.
     pub fn loadPaletteDirectory(self: *AppState, dir_path: []const u8) !void {
-        try self.viewer.ui.palette.loadDirectoryEntries(self.io, dir_path);
+        try self.viewer.ui.palette.loadDirectoryEntries(
+            self.allocator,
+            self.io,
+            dir_path,
+        );
         try workers_mod.spawnPaletteScanForItems(
             &self.workers,
             self.allocator,
@@ -760,7 +764,7 @@ pub const AppState = struct {
     /// Activates the command palette in the specified PaletteMode, resetting
     /// queries and starting text input.
     pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
-        self.viewer.ui.palette.reset();
+        self.viewer.ui.palette.reset(self.allocator);
         self.viewer.ui.palette.mode = active_type;
         self.viewer.animations.start(
             .palette_reveal,
@@ -776,9 +780,12 @@ pub const AppState = struct {
 
         switch (active_type) {
             .files => try self.viewer.ui.palette.rebuildFileMatches(
+                self.allocator,
                 self.viewer.navigation.getEntries(),
             ),
-            .actions => try self.viewer.ui.palette.rebuildActionMatches(),
+            .actions => try self.viewer.ui.palette.rebuildActionMatches(
+                self.allocator,
+            ),
             .directory_navigator => {
                 const nav_path = resolveNavigatorInitialPath(self);
                 if (nav_path.preselect_child) |child| {
@@ -1002,6 +1009,7 @@ pub const AppState = struct {
                     !self.viewer.ui.palette.is_closing)
                 {
                     try self.viewer.ui.palette.rebuildFileMatches(
+                        self.allocator,
                         self.viewer.navigation.getEntries(),
                     );
                 }
@@ -1087,6 +1095,7 @@ pub const AppState = struct {
             !self.viewer.ui.palette.is_closing)
         {
             try self.viewer.ui.palette.rebuildFileMatches(
+                self.allocator,
                 self.viewer.navigation.getEntries(),
             );
         }

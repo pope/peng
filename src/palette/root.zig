@@ -43,28 +43,14 @@ pub const PaletteState = struct {
     dir_items: std.ArrayList(DirectoryEntry) = .empty,
     current_dir_image_count: usize = 0,
     dir_scan_generation: std.atomic.Value(usize) = .init(0),
-    allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
 
     /// Initializes a new `PaletteState` instance, reserving initial
     /// capacities for queries, matches, and paths.
     pub fn init(allocator: std.mem.Allocator) !PaletteState {
-        var self = PaletteState{
-            .query = .empty,
-            .matches = .empty,
-            .scored_matches = .empty,
-            .current_nav_dir = .empty,
-            .last_nav_dir = .empty,
-            .last_child_dir = .empty,
-            .dir_items = .empty,
-            .current_dir_image_count = 0,
-            .dir_scan_generation = .init(0),
-            .allocator = allocator,
-            .searcher = null,
-            .max_haystack_len = 64,
-        };
-        errdefer self.deinit();
+        var self = PaletteState{};
+        errdefer self.deinit(allocator);
         // 64 bytes: accommodates user search query input strings
         // (typical search queries are < 64 chars)
         try self.query.ensureTotalCapacity(allocator, 64);
@@ -95,27 +81,30 @@ pub const PaletteState = struct {
 
     /// Frees all dynamically allocated memory, string arrays, searcher state,
     /// and directory items.
-    pub fn deinit(self: *PaletteState) void {
+    pub fn deinit(self: *PaletteState, allocator: std.mem.Allocator) void {
         if (self.searcher) |*s| {
             s.deinit();
         }
-        self.query.deinit(self.allocator);
-        self.matches.deinit(self.allocator);
-        self.scored_matches.deinit(self.allocator);
-        self.current_nav_dir.deinit(self.allocator);
-        self.last_nav_dir.deinit(self.allocator);
-        self.last_child_dir.deinit(self.allocator);
-        self.clearDirItems();
-        self.dir_items.deinit(self.allocator);
+        self.query.deinit(allocator);
+        self.matches.deinit(allocator);
+        self.scored_matches.deinit(allocator);
+        self.current_nav_dir.deinit(allocator);
+        self.last_nav_dir.deinit(allocator);
+        self.last_child_dir.deinit(allocator);
+        self.clearDirItems(allocator);
+        self.dir_items.deinit(allocator);
     }
 
     /// Releases heap strings owned by directory items and clears the list while
     /// retaining capacity.
-    pub fn clearDirItems(self: *PaletteState) void {
+    pub fn clearDirItems(
+        self: *PaletteState,
+        allocator: std.mem.Allocator,
+    ) void {
         for (self.dir_items.items) |entry| {
-            self.allocator.free(entry.getName());
+            allocator.free(entry.getName());
             if (entry.getFullPath().len > 0) {
-                self.allocator.free(entry.getFullPath());
+                allocator.free(entry.getFullPath());
             }
         }
         self.dir_items.clearRetainingCapacity();
@@ -123,13 +112,13 @@ pub const PaletteState = struct {
 
     /// Clears search query, matched indexes, navigation directory, and
     /// restores palette to inactive mode.
-    pub fn reset(self: *PaletteState) void {
+    pub fn reset(self: *PaletteState, allocator: std.mem.Allocator) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
         self.current_nav_dir.clearRetainingCapacity();
         self.last_child_dir.clearRetainingCapacity();
-        self.clearDirItems();
+        self.clearDirItems(allocator);
         _ = self.dir_scan_generation.fetchAdd(1, .release);
         self.mode = .inactive;
         self.is_closing = false;
@@ -139,16 +128,19 @@ pub const PaletteState = struct {
 
     /// Trims oversized backing arrays and fuzzy searcher allocations back to
     /// their warm initial footprint when hiding the window in server mode.
-    pub fn shrinkToWarmCapacity(self: *PaletteState) void {
+    pub fn shrinkToWarmCapacity(
+        self: *PaletteState,
+        allocator: std.mem.Allocator,
+    ) void {
         if (self.matches.capacity > 64) {
-            self.matches.clearAndFree(self.allocator);
+            self.matches.clearAndFree(allocator);
         }
         if (self.scored_matches.capacity > 64) {
-            self.scored_matches.clearAndFree(self.allocator);
+            self.scored_matches.clearAndFree(allocator);
         }
         if (self.dir_items.capacity > 64) {
-            self.clearDirItems();
-            self.dir_items.clearAndFree(self.allocator);
+            self.clearDirItems(allocator);
+            self.dir_items.clearAndFree(allocator);
         }
         if (self.searcher) |*s| {
             if (s.alg.max_haystack > 64) {
@@ -169,6 +161,7 @@ pub const PaletteState = struct {
     /// the requested haystack and needle lengths.
     fn getSearcher(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         max_haystack: usize,
         max_needle: usize,
     ) !*fuzzig.Ascii {
@@ -189,7 +182,7 @@ pub const PaletteState = struct {
             return s;
         } else {
             self.searcher = try fuzzig.Ascii.init(
-                self.allocator,
+                allocator,
                 req_haystack,
                 req_needle,
                 .{ .case_sensitive = false },
@@ -200,7 +193,10 @@ pub const PaletteState = struct {
 
     /// Sorts `scored_matches` by score descending and extracts matching
     /// candidate indices into `matches`.
-    fn sortAndExtractMatches(self: *PaletteState) !void {
+    fn sortAndExtractMatches(
+        self: *PaletteState,
+        allocator: std.mem.Allocator,
+    ) !void {
         std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
             fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
                 return a.score > b.score;
@@ -208,7 +204,7 @@ pub const PaletteState = struct {
         }.lessThan);
 
         try self.matches.ensureTotalCapacity(
-            self.allocator,
+            allocator,
             self.scored_matches.items.len,
         );
         for (self.scored_matches.items) |item| {
@@ -223,13 +219,16 @@ pub const PaletteState = struct {
     ///   without searcher allocation or fuzzy scoring.
     /// - Pre-allocates `scored_matches` and `matches` capacities to allow
     ///   `appendAssumeCapacity` writes during scoring.
-    pub fn rebuildActionMatches(self: *PaletteState) !void {
+    pub fn rebuildActionMatches(
+        self: *PaletteState,
+        allocator: std.mem.Allocator,
+    ) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
             try self.matches.ensureTotalCapacity(
-                self.allocator,
+                allocator,
                 palette_action_items.len,
             );
             for (palette_action_items, 0..) |_, idx| {
@@ -243,10 +242,14 @@ pub const PaletteState = struct {
             max_h = @max(max_h, item.name.len);
         }
 
-        const searcher_ptr = try self.getSearcher(max_h, query_str.len);
+        const searcher_ptr = try self.getSearcher(
+            allocator,
+            max_h,
+            query_str.len,
+        );
 
         try self.scored_matches.ensureTotalCapacity(
-            self.allocator,
+            allocator,
             palette_action_items.len,
         );
 
@@ -258,7 +261,7 @@ pub const PaletteState = struct {
             }
         }
 
-        try self.sortAndExtractMatches();
+        try self.sortAndExtractMatches(allocator);
     }
 
     /// Rebuilds fuzzy match results for directory navigator items.
@@ -268,7 +271,10 @@ pub const PaletteState = struct {
     ///   without searcher allocation or fuzzy scoring.
     /// - Pre-allocates `scored_matches` and `matches` capacities to allow
     ///   `appendAssumeCapacity` writes during scoring.
-    pub fn rebuildDirectoryMatches(self: *PaletteState) !void {
+    pub fn rebuildDirectoryMatches(
+        self: *PaletteState,
+        allocator: std.mem.Allocator,
+    ) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
         self.selected_idx = 0;
@@ -276,7 +282,7 @@ pub const PaletteState = struct {
 
         if (query_str.len == 0) {
             try self.matches.ensureTotalCapacity(
-                self.allocator,
+                allocator,
                 self.dir_items.items.len,
             );
             for (self.dir_items.items, 0..) |_, idx| {
@@ -303,10 +309,14 @@ pub const PaletteState = struct {
         }
         self.max_haystack_len = max_h;
 
-        const searcher_ptr = try self.getSearcher(max_h, query_str.len);
+        const searcher_ptr = try self.getSearcher(
+            allocator,
+            max_h,
+            query_str.len,
+        );
 
         try self.scored_matches.ensureTotalCapacity(
-            self.allocator,
+            allocator,
             self.dir_items.items.len,
         );
 
@@ -318,7 +328,7 @@ pub const PaletteState = struct {
             }
         }
 
-        try self.sortAndExtractMatches();
+        try self.sortAndExtractMatches(allocator);
     }
 
     /// Rebuilds fuzzy match results for image file list items.
@@ -330,6 +340,7 @@ pub const PaletteState = struct {
     ///   `appendAssumeCapacity` writes during scoring.
     pub fn rebuildFileMatches(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         image_list: []const MediaEntry,
     ) !void {
         self.matches.clearRetainingCapacity();
@@ -337,7 +348,7 @@ pub const PaletteState = struct {
         const query_str = self.query.items;
         if (query_str.len == 0) {
             try self.matches.ensureTotalCapacity(
-                self.allocator,
+                allocator,
                 image_list.len,
             );
             for (image_list, 0..) |_, real_idx| {
@@ -358,10 +369,14 @@ pub const PaletteState = struct {
         max_h = @max(max_h, "RAW+JPG".len);
         self.max_haystack_len = max_h;
 
-        const searcher_ptr = try self.getSearcher(max_h, query_str.len);
+        const searcher_ptr = try self.getSearcher(
+            allocator,
+            max_h,
+            query_str.len,
+        );
 
         try self.scored_matches.ensureTotalCapacity(
-            self.allocator,
+            allocator,
             image_list.len,
         );
 
@@ -395,7 +410,7 @@ pub const PaletteState = struct {
             }
         }
 
-        try self.sortAndExtractMatches();
+        try self.sortAndExtractMatches(allocator);
     }
 
     /// Populates directory entries for `dir_path` into `PaletteState`, tracks
@@ -404,6 +419,7 @@ pub const PaletteState = struct {
     /// directory matches.
     pub fn loadDirectoryEntries(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         io: std.Io,
         dir_path: []const u8,
     ) !void {
@@ -416,7 +432,7 @@ pub const PaletteState = struct {
         var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         var fb: std.heap.BufferFirstAllocator = .init(
             &stack_buf,
-            self.allocator,
+            allocator,
         );
         const temp_alloc = fb.allocator();
         const dir_path_copy = try temp_alloc.dupe(u8, target);
@@ -443,22 +459,22 @@ pub const PaletteState = struct {
                 &path_scratch_buf,
             );
             self.last_child_dir.clearRetainingCapacity();
-            try self.last_child_dir.appendSlice(self.allocator, child_base);
+            try self.last_child_dir.appendSlice(allocator, child_base);
         } else if (self.current_nav_dir.items.len > 0) {
             self.last_child_dir.clearRetainingCapacity();
         }
 
         self.current_nav_dir.clearRetainingCapacity();
-        try self.current_nav_dir.appendSlice(self.allocator, dir_path_copy);
+        try self.current_nav_dir.appendSlice(allocator, dir_path_copy);
 
         self.last_nav_dir.clearRetainingCapacity();
-        try self.last_nav_dir.appendSlice(self.allocator, dir_path_copy);
+        try self.last_nav_dir.appendSlice(allocator, dir_path_copy);
 
         _ = self.dir_scan_generation.fetchAdd(1, .release);
 
-        self.clearDirItems();
+        self.clearDirItems(allocator);
         self.current_dir_image_count = scanDirectoryEntries(
-            self.allocator,
+            allocator,
             io,
             dir_path_copy,
             &self.dir_items,
@@ -469,19 +485,20 @@ pub const PaletteState = struct {
             );
             break :blk 0;
         };
-        try self.rebuildDirectoryMatches();
+        try self.rebuildDirectoryMatches(allocator);
         self.selection_dirty = true;
     }
 
     /// Rebuilds fuzzy search matches based on current palette mode and query.
     pub fn rebuildMatches(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         entries: []const MediaEntry,
     ) !void {
         switch (self.mode) {
-            .files => try self.rebuildFileMatches(entries),
-            .actions => try self.rebuildActionMatches(),
-            .directory_navigator => try self.rebuildDirectoryMatches(),
+            .files => try self.rebuildFileMatches(allocator, entries),
+            .actions => try self.rebuildActionMatches(allocator),
+            .directory_navigator => try self.rebuildDirectoryMatches(allocator),
             .prompt => |kind| switch (kind) {
                 .go_to_image, .slideshow_interval, .edit_param => {},
             },
@@ -531,6 +548,7 @@ pub const PaletteState = struct {
     /// rebuilding matches and returning `true` if any characters were removed.
     pub fn deleteWordBackward(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         entries: []const MediaEntry,
     ) !bool {
         if (self.query.items.len == 0) return false;
@@ -552,7 +570,7 @@ pub const PaletteState = struct {
         if (self.query.items.len == initial_len) return false;
         self.selected_idx = 0;
         self.selection_dirty = true;
-        try self.rebuildMatches(entries);
+        try self.rebuildMatches(allocator, entries);
         return true;
     }
 
@@ -560,13 +578,14 @@ pub const PaletteState = struct {
     /// if any characters were removed.
     pub fn clearQuery(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         entries: []const MediaEntry,
     ) !bool {
         if (self.query.items.len == 0) return false;
         self.query.clearRetainingCapacity();
         self.selected_idx = 0;
         self.selection_dirty = true;
-        try self.rebuildMatches(entries);
+        try self.rebuildMatches(allocator, entries);
         return true;
     }
 
@@ -574,6 +593,7 @@ pub const PaletteState = struct {
     /// returning `true` if a character was removed.
     pub fn deleteCharBackward(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         entries: []const MediaEntry,
     ) !bool {
         if (self.query.items.len == 0) return false;
@@ -583,7 +603,7 @@ pub const PaletteState = struct {
         }
         self.selected_idx = 0;
         self.selection_dirty = true;
-        try self.rebuildMatches(entries);
+        try self.rebuildMatches(allocator, entries);
         return true;
     }
 
@@ -591,20 +611,21 @@ pub const PaletteState = struct {
     /// rebuilding matches and returning `true` if any bytes were appended.
     pub fn appendPrintableText(
         self: *PaletteState,
+        allocator: std.mem.Allocator,
         text: []const u8,
         entries: []const MediaEntry,
     ) !bool {
         var any_appended = false;
         for (text) |ch| {
             if (ch >= 32 and ch != 127) {
-                try self.query.append(self.allocator, ch);
+                try self.query.append(allocator, ch);
                 any_appended = true;
             }
         }
         if (any_appended) {
             self.selected_idx = 0;
             self.selection_dirty = true;
-            try self.rebuildMatches(entries);
+            try self.rebuildMatches(allocator, entries);
             return true;
         }
         return false;
@@ -1167,21 +1188,21 @@ pub fn remapMiddleTruncatedMatches(
 test "PaletteState - lifecycle, action matching, and reset" {
     const allocator = std.testing.allocator;
     var state = try PaletteState.init(allocator);
-    defer state.deinit();
+    defer state.deinit(allocator);
 
     state.mode = .actions;
-    try state.rebuildActionMatches();
+    try state.rebuildActionMatches(allocator);
     const all_count = state.matches.items.len;
     try std.testing.expect(all_count > 0);
 
     // Query search "zoom"
     try state.query.appendSlice(allocator, "zoom");
-    try state.rebuildActionMatches();
+    try state.rebuildActionMatches(allocator);
     try std.testing.expect(state.matches.items.len > 0);
     try std.testing.expect(state.matches.items.len < all_count);
 
     // Reset clears state
-    state.reset();
+    state.reset(allocator);
     try std.testing.expectEqual(PaletteMode.inactive, state.mode);
     try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
@@ -1191,7 +1212,7 @@ test "PaletteState - lifecycle, action matching, and reset" {
 test "PaletteState - rebuildFileMatches with RAW+JPEG pair" {
     const allocator = std.testing.allocator;
     var state = try PaletteState.init(allocator);
-    defer state.deinit();
+    defer state.deinit(allocator);
 
     state.mode = .files;
     const entries = [_]MediaEntry{
@@ -1206,32 +1227,32 @@ test "PaletteState - rebuildFileMatches with RAW+JPEG pair" {
     };
 
     // 1. Empty query matches all items
-    try state.rebuildFileMatches(&entries);
+    try state.rebuildFileMatches(allocator, &entries);
     try std.testing.expectEqual(@as(usize, 3), state.matches.items.len);
 
     // 2. Searching RAW extension matches pair
     try state.query.appendSlice(allocator, "ARW");
-    try state.rebuildFileMatches(&entries);
+    try state.rebuildFileMatches(allocator, &entries);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items[0]);
 
     // 3. Searching companion JPEG extension matches both pair and beach.jpg
     state.query.clearRetainingCapacity();
     try state.query.appendSlice(allocator, "JPG");
-    try state.rebuildFileMatches(&entries);
+    try state.rebuildFileMatches(allocator, &entries);
     try std.testing.expectEqual(@as(usize, 2), state.matches.items.len);
 
     // 4. Searching RAW+JPG matches pair
     state.query.clearRetainingCapacity();
     try state.query.appendSlice(allocator, "RAW+JPG");
-    try state.rebuildFileMatches(&entries);
+    try state.rebuildFileMatches(allocator, &entries);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items[0]);
 
     // 5. Searching non-pair file matches only that file
     state.query.clearRetainingCapacity();
     try state.query.appendSlice(allocator, "forest");
-    try state.rebuildFileMatches(&entries);
+    try state.rebuildFileMatches(allocator, &entries);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.matches.items[0]);
 }
@@ -1259,22 +1280,22 @@ test "PaletteConfig.resolveScrollOffsetY clamps stale scroll and seeds mount" {
 test "PaletteState.getSearcher resizes only dimensions that exceed capacity" {
     const allocator = std.testing.allocator;
     var state = try PaletteState.init(allocator);
-    defer state.deinit();
+    defer state.deinit(allocator);
 
     // 1. Initial allocation clamps to (64, 16)
-    const s1 = try state.getSearcher(10, 5);
+    const s1 = try state.getSearcher(allocator, 10, 5);
     try std.testing.expectEqual(@as(usize, 64), s1.alg.max_haystack);
     try std.testing.expectEqual(@as(usize, 16), s1.alg.max_needle);
 
     // 2. Haystack exceeds capacity (100 > 64), needle fits (10 <= 16):
     // max_haystack doubles to 128, max_needle remains unchanged at 16
-    const s2 = try state.getSearcher(100, 10);
+    const s2 = try state.getSearcher(allocator, 100, 10);
     try std.testing.expectEqual(@as(usize, 128), s2.alg.max_haystack);
     try std.testing.expectEqual(@as(usize, 16), s2.alg.max_needle);
 
     // 3. Needle exceeds capacity (20 > 16), haystack fits (80 <= 128):
     // max_needle doubles to 32, max_haystack remains unchanged at 128
-    const s3 = try state.getSearcher(80, 20);
+    const s3 = try state.getSearcher(allocator, 80, 20);
     try std.testing.expectEqual(@as(usize, 128), s3.alg.max_haystack);
     try std.testing.expectEqual(@as(usize, 32), s3.alg.max_needle);
 }
@@ -1300,12 +1321,12 @@ test "loadDirectoryEntries preserves root path '/' on upward nav" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var palette = try PaletteState.init(allocator);
-    defer palette.deinit();
+    defer palette.deinit(allocator);
 
     palette.current_nav_dir.clearRetainingCapacity();
     try palette.current_nav_dir.appendSlice(allocator, "/home");
 
-    try palette.loadDirectoryEntries(io, "/");
+    try palette.loadDirectoryEntries(allocator, io, "/");
 
     try std.testing.expectEqualStrings("/", palette.current_nav_dir.items);
     try std.testing.expectEqualStrings("/", palette.last_nav_dir.items);
@@ -1313,37 +1334,32 @@ test "loadDirectoryEntries preserves root path '/' on upward nav" {
 }
 
 test "PaletteState directory_navigator mode configuration and item matching" {
-    var palette = try PaletteState.init(std.testing.allocator);
-    defer palette.deinit();
+    const alloc = std.testing.allocator;
+    var palette = try PaletteState.init(alloc);
+    defer palette.deinit(alloc);
 
     palette.mode = .directory_navigator;
-    try palette.current_nav_dir.appendSlice(
-        std.testing.allocator,
-        "/home/user/Pictures",
-    );
+    try palette.current_nav_dir.appendSlice(alloc, "/home/user/Pictures");
 
-    try palette.dir_items.append(std.testing.allocator, .{
+    try palette.dir_items.append(alloc, .{
         .parent = .{
-            .name = try std.testing.allocator.dupe(u8, ".."),
-            .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
+            .name = try alloc.dupe(u8, ".."),
+            .full_path = try alloc.dupe(u8, "/home/user"),
         },
     });
-    try palette.dir_items.append(std.testing.allocator, .{
+    try palette.dir_items.append(alloc, .{
         .directory = .{
-            .name = try std.testing.allocator.dupe(u8, "Vacation"),
-            .full_path = try std.testing.allocator.dupe(
-                u8,
-                "/home/user/Pictures/Vacation",
-            ),
+            .name = try alloc.dupe(u8, "Vacation"),
+            .full_path = try alloc.dupe(u8, "/home/user/Pictures/Vacation"),
             .scan = .{ .scanned = .{ .image_count = 12 } },
         },
     });
 
-    try palette.rebuildDirectoryMatches();
+    try palette.rebuildDirectoryMatches(alloc);
     try std.testing.expectEqual(@as(usize, 2), palette.matches.items.len);
 
-    try palette.query.appendSlice(std.testing.allocator, "Vac");
-    try palette.rebuildDirectoryMatches();
+    try palette.query.appendSlice(alloc, "Vac");
+    try palette.rebuildDirectoryMatches(alloc);
     try std.testing.expectEqual(@as(usize, 1), palette.matches.items.len);
     try std.testing.expectEqual(@as(usize, 1), palette.matches.items[0]);
 }
@@ -1431,7 +1447,7 @@ test "FuzzyHighlighter.matchFileItem - stem match on jpeg pair" {
 test "PaletteState.computeWindowMaxHaystack across visible rows" {
     const alloc = std.testing.allocator;
     var pal_state = try PaletteState.init(alloc);
-    defer pal_state.deinit();
+    defer pal_state.deinit(alloc);
     pal_state.mode = .directory_navigator;
 
     const long_name: [96]u8 = @splat('a');
@@ -1748,7 +1764,7 @@ test "VirtualWindow compute calculations and edge cases" {
 test "PaletteState - selection navigation and paging" {
     const alloc = std.testing.allocator;
     var state = try PaletteState.init(alloc);
-    defer state.deinit();
+    defer state.deinit(alloc);
 
     // With 12 dummy matches:
     for (0..12) |i| {
@@ -1809,7 +1825,7 @@ test "PaletteState - selection navigation and paging" {
 test "PaletteState - query editing operations and UTF-8 backspace" {
     const alloc = std.testing.allocator;
     var state = try PaletteState.init(alloc);
-    defer state.deinit();
+    defer state.deinit(alloc);
     state.mode = .files;
 
     const entries = [_]MediaEntry{
@@ -1819,7 +1835,7 @@ test "PaletteState - query editing operations and UTF-8 backspace" {
     };
 
     // 1. appendPrintableText appends valid characters and rebuilds matches
-    const appended = try state.appendPrintableText("fore", &entries);
+    const appended = try state.appendPrintableText(alloc, "fore", &entries);
     try std.testing.expect(appended);
     try std.testing.expectEqualStrings("fore", state.query.items);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
@@ -1827,55 +1843,61 @@ test "PaletteState - query editing operations and UTF-8 backspace" {
     // Non-printable bytes return false and do not mutate query
     const non_printable = [_]u8{ 0x01, 0x1F, 0x7F };
     try std.testing.expect(
-        !(try state.appendPrintableText(&non_printable, &entries)),
+        !(try state.appendPrintableText(alloc, &non_printable, &entries)),
     );
     try std.testing.expectEqualStrings("fore", state.query.items);
 
     // 2. clearQuery resets query and rebuilds matches
-    const cleared = try state.clearQuery(&entries);
+    const cleared = try state.clearQuery(alloc, &entries);
     try std.testing.expect(cleared);
     try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
     try std.testing.expectEqual(@as(usize, 3), state.matches.items.len);
 
     // clearQuery on empty returns false
-    try std.testing.expect(!(try state.clearQuery(&entries)));
+    try std.testing.expect(!(try state.clearQuery(alloc, &entries)));
 
     // 3. deleteCharBackward handles multi-byte UTF-8
-    _ = try state.appendPrintableText("café", &entries);
+    _ = try state.appendPrintableText(alloc, "café", &entries);
     try std.testing.expectEqualStrings("café", state.query.items);
     // 'é' is 2 bytes (0xC3, 0xA9)
     try std.testing.expectEqual(@as(usize, 5), state.query.items.len);
 
-    const char_deleted = try state.deleteCharBackward(&entries);
+    const char_deleted = try state.deleteCharBackward(alloc, &entries);
     try std.testing.expect(char_deleted);
     try std.testing.expectEqualStrings("caf", state.query.items);
     try std.testing.expectEqual(@as(usize, 3), state.query.items.len);
 
     // 4. deleteWordBackward removes trailing whitespace and words
-    _ = try state.clearQuery(&entries);
-    _ = try state.appendPrintableText("path/to file   ", &entries);
+    _ = try state.clearQuery(alloc, &entries);
+    _ = try state.appendPrintableText(alloc, "path/to file   ", &entries);
     try std.testing.expectEqualStrings("path/to file   ", state.query.items);
 
-    const word_deleted = try state.deleteWordBackward(&entries);
+    const word_deleted = try state.deleteWordBackward(alloc, &entries);
     try std.testing.expect(word_deleted);
     try std.testing.expectEqualStrings("path/to ", state.query.items);
 
-    _ = try state.deleteWordBackward(&entries);
+    _ = try state.deleteWordBackward(alloc, &entries);
     try std.testing.expectEqualStrings("path/", state.query.items);
 
     // Calling deleteWordBackward on delimiter boundary returns false
-    try std.testing.expect(!(try state.deleteWordBackward(&entries)));
+    try std.testing.expect(
+        !(try state.deleteWordBackward(alloc, &entries)),
+    );
     try std.testing.expectEqualStrings("path/", state.query.items);
 
-    _ = try state.clearQuery(&entries);
-    try std.testing.expect(!(try state.deleteWordBackward(&entries)));
-    try std.testing.expect(!(try state.deleteCharBackward(&entries)));
+    _ = try state.clearQuery(alloc, &entries);
+    try std.testing.expect(
+        !(try state.deleteWordBackward(alloc, &entries)),
+    );
+    try std.testing.expect(
+        !(try state.deleteCharBackward(alloc, &entries)),
+    );
 }
 
 test "PaletteState - applyFolderScan updates matching directory entry" {
     const alloc = std.testing.allocator;
     var state = try PaletteState.init(alloc);
-    defer state.deinit();
+    defer state.deinit(alloc);
 
     try state.dir_items.append(alloc, .{
         .directory = .{
