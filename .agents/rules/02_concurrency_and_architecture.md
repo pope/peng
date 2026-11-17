@@ -34,9 +34,11 @@
     setup.
 - **`UiViewModel` (Read-Only Presentation Snapshot)**:
   - Defined in `src/ui/view_model.zig` (`ui.UiViewModel`).
-  - Constructed at the end of Phase 2 (`runUpdatePhase`) as an immutable
-    snapshot with `*const` references, pre-computed strings (`window_title`),
-    and value-copied metrics (`UiRenderMetrics.toSnapshot()`).
+  - Constructed in `src/viewer.zig`
+    (`buildUiViewModel(*const AppState, now_ms)`) at the Phase 2 -> Phase 3
+    boundary as an immutable snapshot with `*const` references, pre-computed
+    strings (`window_title`), and value-copied metrics
+    (`UiRenderMetrics.toSnapshot()`), keeping `app` and `ui` decoupled.
   - **Pure Phase 3 Presentation**: Phase 3 (`ui.layout.renderFrame`,
     `ui.renderer.buildRenderPacket`, and `gpu.pass.executeFrame`) is
     strictly read-only. Layout and render passes MUST NOT mutate
@@ -82,9 +84,10 @@
         (`defer state.flushPendingWaitLoadStreams()`).
     11. `sysSyncMetrics(ctx)`: Snapshots atomic worker counters, active image
         telemetry, and cache status into `state.viewer.stats` (`ViewerStats`).
-  - **Phase 3: Presentation**: Builds `UiViewModel`, evaluates immediate-mode
-    `RectCut` UI layout (`UiDrawList`), and executes the 2-pass GPU renderer
-    (`buildRenderPacket` -> `executeRenderPacket`).
+  - **Phase 3: Presentation**: `src/viewer.zig` builds `UiViewModel` from
+    `*const AppState`, evaluates immediate-mode `RectCut` UI layout
+    (`UiDrawList`), and executes the 2-pass GPU renderer (`buildRenderPacket` ->
+    `executeRenderPacket`).
 - **Zero-Dependency Intent Queue (`AppIntent`)**:
   - UI controls, keyboard shortcuts, and IPC commands MUST push high-level
     `intents.AppIntent` variants (`src/intents/root.zig`) via

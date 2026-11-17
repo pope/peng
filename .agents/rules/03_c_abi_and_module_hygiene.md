@@ -72,10 +72,12 @@
     `@import("sdl")`). Tested via `zig build test-ui`.
   - `src/app/`: Application state (`state.zig`), worker event ingestion
     (`events.zig`), sequential Phase 2 systems (`systems/`), and background
-    worker tasks (`workers/`). Tested via `zig build test-unit`.
+    worker tasks (`workers/`). Strictly zero `@import("ui")` (`app` and `ui`
+    are independent sibling modules). Tested via `zig build test-unit`.
   - `src/viewer.zig`: Thin coordinator for frame update and render loop entry
-    point (compiled statically by default, or as a hot-reloadable shared library
-    `viewer` / `libviewer` when built with `-Dhot_reload=true`).
+    point that orchestrates `app` and `ui` and builds `UiViewModel` from
+    `*const AppState` (compiled statically by default, or as a hot-reloadable
+    shared library `viewer` / `libviewer` when built with `-Dhot_reload=true`).
 - **Engine Core (`src/core/`)**:
   - State-free utilities (`display.zig`, `events.zig`, `image.zig`,
     `thumbcache.zig`) live in `src/core/`.

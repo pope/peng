@@ -284,7 +284,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "state", .module = state_module },
             .{ .name = "thumbcache", .module = thumbcache_module },
             .{ .name = "triage", .module = triage_module },
-            .{ .name = "ui", .module = ui_module },
             .{ .name = "vfs", .module = vfs_module },
         },
     );
@@ -301,6 +300,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "input", .module = input_module },
                 .{ .name = "sdl", .module = sdl_module },
+                .{ .name = "state", .module = state_module },
                 .{ .name = "ui", .module = ui_module },
             },
         }),
