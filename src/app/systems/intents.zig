@@ -1,6 +1,6 @@
 const app_state = @import("../state.zig");
+const cache = @import("cache");
 const context = @import("context.zig");
-const core = @import("core");
 const intents = @import("intents");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -10,7 +10,7 @@ const triage = @import("triage");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
-const CacheEntry = core.image.CacheEntry;
+const CacheEntry = cache.CacheEntry;
 const Classification = triage.Classification;
 const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;

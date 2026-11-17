@@ -574,7 +574,8 @@ pub const ImageCache = struct {
         return self.slots.len;
     }
 
-    /// Deinitializes all cached GPU textures and releases the multi-array storage memory.
+    /// Deinitializes all cached GPU textures and releases the multi-array
+    /// storage memory.
     pub fn deinit(
         self: *ImageCache,
         allocator: std.mem.Allocator,
@@ -611,7 +612,8 @@ pub const ImageCache = struct {
         self.max_prefetch_dist = 2;
     }
 
-    /// Finds the dense array index of the slot matching `key`, or null if not found.
+    /// Finds the dense array index of the slot matching `key`, or null if not
+    /// found.
     pub fn getIndex(self: *const ImageCache, key: ImageCacheKey) ?usize {
         const keys = self.slots.items(.key);
         for (keys, 0..) |k, i| {
@@ -620,13 +622,15 @@ pub const ImageCache = struct {
         return null;
     }
 
-    /// Returns a pointer to the `CacheEntry` corresponding to `key`, or null if not present.
+    /// Returns a pointer to the `CacheEntry` corresponding to `key`, or null if
+    /// not present.
     pub fn get(self: *ImageCache, key: ImageCacheKey) ?*CacheEntry {
         if (self.getIndex(key)) |i| return &self.slots.items(.entry)[i];
         return null;
     }
 
-    /// Returns a copy of the `CacheEntry` corresponding to `key`, or null if not present.
+    /// Returns a copy of the `CacheEntry` corresponding to `key`, or null if
+    /// not present.
     pub fn getEntry(self: *const ImageCache, key: ImageCacheKey) ?CacheEntry {
         if (self.getIndex(key)) |i| return self.slots.items(.entry)[i];
         return null;
@@ -685,7 +689,8 @@ pub const ImageCache = struct {
         return key;
     }
 
-    /// Removes a slot at `index_in_list` via swap-remove and releases its GPU texture.
+    /// Removes a slot at `index_in_list` via swap-remove and releases its GPU
+    /// texture.
     pub fn removeAndDeinit(
         self: *ImageCache,
         index_in_list: usize,
@@ -919,8 +924,8 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
     };
 }
 
-/// Extracted thumbnail surface along with orientation, full-resolution dimensions,
-/// RAW metadata, and DCT block snapping detection.
+/// Extracted thumbnail surface along with orientation, full-resolution
+/// dimensions, RAW metadata, and DCT block snapping detection.
 pub const ExtractedThumbnail = struct {
     surface: sdl.Surface,
     orientation: Orientation = .normal,
@@ -929,15 +934,20 @@ pub const ExtractedThumbnail = struct {
     dct_snapped: bool = false,
 };
 
-/// Inspects the decoded thumbnail CPU surface to detect whether letterbox (or pillarbox) black bars
-/// have been padded and snapped to 8-pixel DCT block boundaries by in-camera preview encoders
-/// (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
-/// Requires candidate DCT boundary lines to be black AND active image content to begin at
-/// the 8px boundary.
-/// If candidate boundary lines contain image data (e.g. Sony ARW, standard JPEGs) OR if the scene
-/// itself is an extended solid black background (e.g. astrophotography), returns false to use
-/// theoretical aspect-ratio padding.
-pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bool {
+/// Inspects the decoded thumbnail CPU surface to detect whether letterbox (or
+/// pillarbox) black bars have been padded and snapped to 8-pixel DCT block
+/// boundaries by in-camera preview encoders (e.g. Fujifilm RAF, Ricoh GR IIIx
+/// JPEG).
+/// Requires candidate DCT boundary lines to be black AND active image content
+/// to begin at the 8px boundary.
+/// If candidate boundary lines contain image data (e.g. Sony ARW, standard
+/// JPEGs) OR if the scene itself is an extended solid black background (e.g.
+/// astrophotography), returns false to use theoretical aspect-ratio padding.
+pub fn detectThumbnailDctPadding(
+    surf: sdl.Surface,
+    full_w: f32,
+    full_h: f32,
+) bool {
     const sw = surf.w();
     const sh = surf.h();
     if (!std.math.isFinite(full_w) or
@@ -958,10 +968,12 @@ pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bo
     // Matching aspect ratio within epsilon -> no letterboxing or pillarboxing
     if (@abs(ar_full - ar_thumb) <= 0.01) return false;
 
-    const threshold: u8 = 16; // Tolerant to lossy JPEG compression ringing / chroma near boundaries
+    // Tolerant to lossy JPEG compression ringing / chroma near boundaries.
+    const threshold: u8 = 16;
 
     if (ar_full > ar_thumb) {
-        // Letterboxing: full image is wider than container -> black bars on top and bottom
+        // Letterboxing: full image is wider than container -> black bars on top
+        // and bottom.
         const raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0;
         const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
 
@@ -970,19 +982,20 @@ pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bo
             @abs(raw_pad_px - nearest_block_px) <= 2.0)
         {
             const test_row_top: i32 = @intFromFloat(nearest_block_px - 1.0);
-            const test_row_bot: i32 = sh - @as(i32, @intFromFloat(nearest_block_px));
+            const block_px_i32: i32 = @intFromFloat(nearest_block_px);
+            const test_row_bot: i32 = sh - block_px_i32;
 
             // Candidate DCT padding rows must both be black
             if (surf.isRowBlack(test_row_top, threshold) and
                 surf.isRowBlack(test_row_bot, threshold))
             {
-                // Verify active image content begins at DCT block boundary (step-transition).
-                // If both row 8 and row 111 are ALSO black, the photo has an extended black
-                // background; treating continuous black backgrounds as theoretical padding
-                // prevents false-positive distortion.
-                const first_image_row_top: i32 = @intFromFloat(nearest_block_px);
-                const last_image_row_bot: i32 =
-                    sh - @as(i32, @intFromFloat(nearest_block_px)) - 1;
+                // Verify active image content begins at DCT block boundary
+                // (step-transition). If both row 8 and row 111 are ALSO black,
+                // the photo has an extended black background; treating
+                // continuous black backgrounds as theoretical padding prevents
+                // false-positive distortion.
+                const first_image_row_top: i32 = block_px_i32;
+                const last_image_row_bot: i32 = sh - block_px_i32 - 1;
 
                 if (!surf.isRowBlack(first_image_row_top, threshold) or
                     !surf.isRowBlack(last_image_row_bot, threshold))
@@ -992,7 +1005,8 @@ pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bo
             }
         }
     } else {
-        // Pillarboxing: full image is taller than container -> black bars on left and right
+        // Pillarboxing: full image is taller than container -> black bars on
+        // left and right.
         const raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0;
         const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
 
@@ -1001,14 +1015,14 @@ pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bo
             @abs(raw_pad_px - nearest_block_px) <= 2.0)
         {
             const test_col_left: i32 = @intFromFloat(nearest_block_px - 1.0);
-            const test_col_right: i32 = sw - @as(i32, @intFromFloat(nearest_block_px));
+            const block_px_i32: i32 = @intFromFloat(nearest_block_px);
+            const test_col_right: i32 = sw - block_px_i32;
 
             if (surf.isColBlack(test_col_left, threshold) and
                 surf.isColBlack(test_col_right, threshold))
             {
-                const first_image_col_left: i32 = @intFromFloat(nearest_block_px);
-                const last_image_col_right: i32 =
-                    sw - @as(i32, @intFromFloat(nearest_block_px)) - 1;
+                const first_image_col_left: i32 = block_px_i32;
+                const last_image_col_right: i32 = sw - block_px_i32 - 1;
 
                 if (!surf.isColBlack(first_image_col_left, threshold) or
                     !surf.isColBlack(last_image_col_right, threshold))
@@ -1154,7 +1168,7 @@ pub fn loadThumbnailSurface(
             var slices = [_][]u8{header_buf[0..target_read]};
             const header_n = file.readPositional(io, &slices, 0) catch |err| {
                 std.log.warn(
-                    "loadThumbnailSurface: readPositional failed for '{s}': {any}",
+                    "loadThumbnailSurface: readPositional failed '{s}': {any}",
                     .{ f.path, err },
                 );
                 return null;
@@ -1237,7 +1251,11 @@ pub fn loadThumbnailSurface(
             }
         },
         .pair => |p| {
-            return loadThumbnailSurface(io, alloc, .{ .filesystem = .{ .path = p.raw_path } });
+            return loadThumbnailSurface(
+                io,
+                alloc,
+                .{ .filesystem = .{ .path = p.raw_path } },
+            );
         },
     }
 }
@@ -1350,7 +1368,7 @@ pub fn convertAndScaleSurface(
     };
 }
 
-test "enforceVramBudget - distant eviction, circular distance, and neighbor protection" {
+test "enforceVramBudget - eviction, circular distance, neighbor protection" {
     const allocator = std.testing.allocator;
     var cache = ImageCache{};
     defer cache.deinit(allocator, null);
@@ -1556,7 +1574,7 @@ test "hasUnreadyPrefetchSlots" {
     );
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
-    // One slot is loaded_cpu: unready if has_gpu = true, ready if has_gpu = false
+    // One slot is loaded_cpu: unready if has_gpu=true, ready if has_gpu=false
     const surf = sdl.Surface.create(1, 1, sdl.PixelFormat.rgba32) orelse return;
     cache.setInFlight(cache.activeKey(mock_nav.getIdAt(2).?), null);
     cache.setResidentAsset(cache.activeKey(mock_nav.getIdAt(2).?), .{
@@ -1789,23 +1807,26 @@ test "loadThumbnailSurface - filesystem non-existent file returns null" {
 }
 
 test "detectThumbnailDctPadding - matching aspect ratio returns false" {
-    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse
+        return;
     defer surf.destroy();
     try std.testing.expect(!detectThumbnailDctPadding(surf, 1600.0, 1200.0));
 }
 
 test "detectThumbnailDctPadding - invalid dimensions return false" {
-    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse
+        return;
     defer surf.destroy();
     try std.testing.expect(!detectThumbnailDctPadding(surf, 0.0, 1200.0));
     try std.testing.expect(!detectThumbnailDctPadding(surf, 1600.0, 0.0));
 }
 
 test "detectThumbnailDctPadding - detects 8px DCT block snapping" {
-    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse
+        return;
     defer surf.destroy();
 
-    // Fill rows 0..7 and 112..119 with black (0), rows 8..111 with bright pixels (200)
+    // Fill rows 0..7 and 112..119 with black (0), rows 8..111 with bright (200)
     const pitch: usize = @intCast(surf.pitch());
     const px = surf.pixels();
     var y: usize = 0;
@@ -1815,17 +1836,18 @@ test "detectThumbnailDctPadding - detects 8px DCT block snapping" {
         @memset(row[0 .. 160 * 3], val);
     }
 
-    // 3:2 full image (6000x4000) in 4:3 thumb (160x120): theoretical pad is 6.67px
+    // 3:2 full image (6000x4000) in 4:3 thumb (160x120): pad is 6.67px.
     // Snaps to 8px DCT block; candidate row 7 and row 112 are black, and row 8
     // has image pixels -> returns true
     try std.testing.expect(detectThumbnailDctPadding(surf, 6000.0, 4000.0));
 }
 
-test "detectThumbnailDctPadding - returns false when row 7 contains active image pixels" {
-    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+test "detectThumbnailDctPadding - false when row 7 has active image pixels" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse
+        return;
     defer surf.destroy();
 
-    // Active image begins at row 7 (e.g. theoretical 6.67px padding in Sony ARW / Fuji JPG)
+    // Active image begins at row 7 (e.g. theoretical 6.67px pad in Sony ARW)
     const pitch: usize = @intCast(surf.pitch());
     const px = surf.pixels();
     var y: usize = 0;
@@ -1835,15 +1857,16 @@ test "detectThumbnailDctPadding - returns false when row 7 contains active image
         @memset(row[0 .. 160 * 3], val);
     }
 
-    // Row 7 has bright pixels (200 > 16) -> not snapped to 8px DCT block boundary
+    // Row 7 has bright pixels (200 > 16) -> not snapped to 8px DCT boundary
     try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
 }
 
-test "detectThumbnailDctPadding - solid black background returns false (no false positive)" {
-    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+test "detectThumbnailDctPadding - solid black background returns false" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse
+        return;
     defer surf.destroy();
 
-    // Entire surface is pure black (e.g. astrophotography or seamless black background)
+    // Entire surface is pure black (e.g. astrophotography / black backdrop)
     const pitch: usize = @intCast(surf.pitch());
     const px = surf.pixels();
     var y: usize = 0;
@@ -1852,7 +1875,7 @@ test "detectThumbnailDctPadding - solid black background returns false (no false
         @memset(row[0 .. 160 * 3], 0);
     }
 
-    // Because rows 8 and 111 are also black (no step-transition to image content at row 8),
+    // Because rows 8 and 111 are also black (no step-transition at row 8),
     // it correctly avoids a false-positive DCT snapping detection.
     try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
 }

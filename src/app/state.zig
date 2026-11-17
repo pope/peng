@@ -1,3 +1,4 @@
+const cache = @import("cache");
 const core = @import("core");
 const geom = @import("geom");
 const gpu = @import("gpu");
@@ -13,11 +14,10 @@ const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
 const BackgroundEvent = workers_mod.BackgroundEvent;
-const CacheEntry = image.CacheEntry;
+const CacheEntry = cache.CacheEntry;
 const DisplayState = core.display.DisplayState;
 const getParentDirBuf = vfs.getParentDirBuf;
-const image = core.image;
-const ImageCache = image.ImageCache;
+const ImageCache = cache.ImageCache;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
@@ -1385,7 +1385,7 @@ test "AppState.openPath acquires job ticket and epoch for single image" {
     const inf = entry0.inflight.?;
 
     try std.testing.expect(inf.has_thread);
-    try std.testing.expect(inf.job_id < image.MAX_DECODE_JOBS);
+    try std.testing.expect(inf.job_id < cache.MAX_DECODE_JOBS);
     try std.testing.expect(inf.job_epoch >= 1);
 
     const job_bit = @as(u16, 1) << @as(u4, @truncate(inf.job_id));

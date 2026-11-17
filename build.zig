@@ -224,6 +224,20 @@ pub fn build(b: *std.Build) void {
             .{ .name = "triage", .module = triage_module },
         },
     );
+    const cache_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/cache/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "probe", .module = probe_module },
+            .{ .name = "sdl", .module = sdl_module },
+            .{ .name = "state", .module = state_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
     const core_module = createInternalModule(
         b,
         target,
@@ -233,10 +247,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "geom", .module = geom_module },
             .{ .name = "probe", .module = probe_module },
             .{ .name = "sdl", .module = sdl_module },
-            .{ .name = "state", .module = state_module },
             .{ .name = "thumbcache", .module = thumbcache_module },
-            .{ .name = "triage", .module = triage_module },
-            .{ .name = "vfs", .module = vfs_module },
         },
     );
     const gpu_module = createInternalModule(
@@ -256,7 +267,7 @@ pub fn build(b: *std.Build) void {
         optimize,
         "src/ui/root.zig",
         &.{
-            .{ .name = "core", .module = core_module },
+            .{ .name = "cache", .module = cache_module },
             .{ .name = "geom", .module = geom_module },
             .{ .name = "gpu", .module = gpu_module },
             .{ .name = "intents", .module = intents_module },
@@ -272,6 +283,7 @@ pub fn build(b: *std.Build) void {
         optimize,
         "src/app/root.zig",
         &.{
+            .{ .name = "cache", .module = cache_module },
             .{ .name = "core", .module = core_module },
             .{ .name = "geom", .module = geom_module },
             .{ .name = "gpu", .module = gpu_module },
@@ -430,6 +442,12 @@ pub fn build(b: *std.Build) void {
             .module = state_module,
             .step_name = "test-state",
             .step_desc = "Run state module unit tests",
+        },
+        .{
+            .module = cache_module,
+            .step_name = "test-cache",
+            .step_desc = "Run cache tests",
+            .needs_cwd = true,
         },
         .{
             .module = core_module,

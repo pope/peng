@@ -1,4 +1,4 @@
-const core = @import("core");
+const cache = @import("cache");
 const edit_panel = @import("edit_panel.zig");
 const geom = @import("geom");
 const gpu_pkg = @import("gpu");
@@ -13,7 +13,7 @@ const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
-const CacheEntry = core.image.CacheEntry;
+const CacheEntry = cache.CacheEntry;
 const DpiScale = geom.DpiScale;
 const FrameInput = state.FrameInput;
 const FrameTargetOptions = gpu_pkg.pass.FrameTargetOptions;

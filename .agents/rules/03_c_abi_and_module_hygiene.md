@@ -64,12 +64,18 @@
     shaders (`src/gpu/shaders/`), resources, texture staging buffers, compute
     unpack pipelines, and GPU texture uploads.
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
+  - `src/cache/`: Dedicated image slot cache (`ImageCache`, `CacheEntry`,
+    `ImageCacheKey`, `ResidentAsset`, `ThumbnailState`, `InFlightDecode`),
+    header metadata probing (`probeMediaMetadata`), and thumbnail extraction
+    and surface scaling (imports `geom`, `probe`, `sdl`, `state`, `triage`,
+    `vfs`). Tested via `zig build test-cache`.
   - `src/ui/`: Immediate-mode `RectCut` UI layout builders (`layout.zig`,
     `palette.zig`, `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation
     snapshot (`view_model.zig`), `UiDrawList` & 2-pass GPU packet builder
     (`renderer.zig`), text utilities (`text_utils.zig`), and theme styling
-    (`theme.zig`). Strictly 100% zero-SDL linkage or imports (zero
-    `@import("sdl")`). Tested via `zig build test-ui`.
+    (`theme.zig`). Strictly 100% zero-SDL and zero-`core` linkage or imports
+    (zero `@import("sdl")`, zero `@import("core")`; imports `cache`). Tested
+    via `zig build test-ui`.
   - `src/app/`: Application state (`state.zig`), worker event ingestion
     (`events.zig`), sequential Phase 2 systems (`systems/`), and background
     worker tasks (`workers/`). Strictly zero `@import("ui")` (`app` and `ui`
@@ -79,14 +85,14 @@
     `*const AppState` (compiled statically by default, or as a hot-reloadable
     shared library `viewer` / `libviewer` when built with `-Dhot_reload=true`).
 - **Engine Core (`src/core/`)**:
-  - State-free utilities (`display.zig`, `image.zig`, `mpsc_queue.zig`,
-    `thumbcache.zig`) live in `src/core/`.
+  - State-free utilities (`display.zig`, `mpsc_queue.zig`, `thumbcache.zig`)
+    live in `src/core/` (imports `geom`, `probe`, `sdl`, `thumbcache`).
   - **Acyclic Dependency Invariant**: Pure modules (`geom`, `probe`, `vfs`,
     `triage`, `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`,
-    `config`, `core`, `gpu`) MUST NOT import `AppState`, `src/app/systems/`, or
-    `src/app/workers/`. Never cross module boundaries via relative file paths
-    (e.g. `@import("probe/root.zig")` from `src/main.zig`); always use canonical
-    module namespace (`@import("probe")`).
+    `config`, `core`, `cache`, `gpu`) MUST NOT import `AppState`,
+    `src/app/systems/`, or `src/app/workers/`. Never cross module boundaries via
+    relative file paths (e.g. `@import("probe/root.zig")` from `src/main.zig`);
+    always use canonical module namespace (`@import("probe")`).
 - **Zig 0.17 `std.process.Init` & `std.Io` Streaming I/O Invariants**:
   - Entrypoints (`pub fn main(init: std.process.Init) !void`) MUST thread
     `init.io`, `init.gpa`, `init.minimal.args`, and `init.environ_map`
@@ -110,10 +116,10 @@
     `peng-test-runner` (`src/test_runner_main.zig`).
   - Build & Test Commands:
     - `zig build`: Build application binaries.
-    - `zig build test-unit`: Run fast unit tests across all 16 module test
+    - `zig build test-unit`: Run fast unit tests across all 17 module test
       targets (`geom`, `probe`, `vfs`, `triage`, `palette`, `sdl`, `gpu`,
-      `state`, `core`, `app`, `ui`, `intents`, `config`, `input`, `ipc`,
-      `thumbcache`).
+      `state`, `cache`, `core`, `app`, `ui`, `intents`, `config`, `input`,
+      `ipc`, `thumbcache`).
     - `zig build test-geom`: Run `geom` (`src/geom/root.zig`) unit tests.
     - `zig build test-probe`: Run `probe` (`src/probe/root.zig`) unit tests.
     - `zig build test-gpu`: Run `gpu` (`src/gpu/root.zig`) unit tests.
@@ -124,6 +130,7 @@
       tests.
     - `zig build test-thumbcache`: Run `thumbcache` (`src/thumbcache/root.zig`)
       unit tests.
+    - `zig build test-cache`: Run `cache` (`src/cache/root.zig`) unit tests.
     - `zig build test-core`: Run `core` (`src/core/root.zig`) unit tests.
     - `zig build test-ui`: Run `ui` (`src/ui/root.zig`) unit tests.
     - `zig build test-ipc`: Run `ipc` (`src/ipc/root.zig`) unit tests.

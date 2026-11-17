@@ -1,5 +1,5 @@
 const app_state = @import("state.zig");
-const core = @import("core");
+const cache = @import("cache");
 const geom = @import("geom");
 const ipc = @import("ipc");
 const probe = @import("probe");
@@ -12,7 +12,6 @@ const workers = @import("workers/root.zig");
 const AppState = app_state.AppState;
 const EntryScanState = vfs.EntryScanState;
 const events = workers.events;
-const image = core.image;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
@@ -114,7 +113,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 
 fn handleDecodeFailedEvent(
     state: *AppState,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
     is_current: bool,
 ) void {
     const entry = state.cache.get(key) orelse return;
@@ -195,7 +194,7 @@ fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
 
 fn handleDimensionsProbedEvent(
     state: *AppState,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
     probed: events.DimensionsProbedPayload,
 ) void {
     {
@@ -220,7 +219,7 @@ fn handleDimensionsProbedEvent(
 
 fn hasSubsequentImageDecoded(
     remaining: []const events.BackgroundEvent,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
     job_epoch: u32,
 ) bool {
     for (remaining) |*evt| {
@@ -247,7 +246,7 @@ fn hasSubsequentImageDecoded(
 
 fn handleExifThumbnailEvent(
     state: *AppState,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
     thumb_data: events.ThumbDecodedPayload,
     skip_staging: bool,
 ) bool {
@@ -292,7 +291,7 @@ fn handleExifThumbnailEvent(
 
 fn handleImageDecodedEvent(
     state: *AppState,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
 ) void {
     const entry = state.cache.get(key) orelse return;
@@ -307,13 +306,13 @@ fn handleImageDecodedEvent(
     applyDecodedMetadata(entry, decoded_data);
     entry.resident.thumbnail.discardStagedAndMarkUnavailable();
 
-    const thumb_write: ?image.DeferredThumbWrite =
+    const thumb_write: ?cache.DeferredThumbWrite =
         if (decoded_data.thumb_write_mtime_sec) |mtime_sec|
             .{ .source_mtime_sec = mtime_sec }
         else
             null;
 
-    const cpu_asset = image.CpuAsset{
+    const cpu_asset = cache.CpuAsset{
         .cpu = .{
             .surface = surf,
             .w = decoded_data.w,
@@ -351,7 +350,7 @@ fn handleImageDecodedEvent(
 }
 
 fn applyDecodedMetadata(
-    entry: *image.CacheEntry,
+    entry: *cache.CacheEntry,
     decoded_data: *const events.ImageDecodedPayload,
 ) void {
     entry.metadata.orientation = decoded_data.orientation;
@@ -839,7 +838,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     const key1 = try state.cache.appendSlot(
         allocator,
         id1,
-        image.CacheEntry.stubLoadedGpuForTest(
+        cache.CacheEntry.stubLoadedGpuForTest(
             .{ .w = 1600, .h = 1200 },
             .{ .w = 0, .h = 0 },
         ),
@@ -1189,7 +1188,7 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        image.ResidentAsset.failed,
+        cache.ResidentAsset.failed,
         state.cache.get(key1).?.resident.asset,
     );
     try std.testing.expectEqual(
@@ -1468,7 +1467,7 @@ test "handleImageDecodedEvent - keeps loaded_gpu and stages promoting_gpu" {
     const key1 = try state.cache.appendSlot(
         allocator,
         id1,
-        image.CacheEntry.stubLoadedGpuForTest(
+        cache.CacheEntry.stubLoadedGpuForTest(
             .{ .w = 16.0, .h = 16.0 },
             .{ .w = 0.0, .h = 0.0 },
         ),
@@ -1573,7 +1572,7 @@ test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
 
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        image.ThumbnailState.not_available,
+        cache.ThumbnailState.not_available,
         entry0.resident.thumbnail,
     );
     switch (entry0.resident.asset) {
@@ -1610,7 +1609,7 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
     const key0 = try state.cache.appendSlot(
         allocator,
         id0,
-        image.CacheEntry.stubLoadedGpuForTest(
+        cache.CacheEntry.stubLoadedGpuForTest(
             .{ .w = 16.0, .h = 16.0 },
             .{ .w = 0.0, .h = 0.0 },
         ),
@@ -1657,11 +1656,11 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
 
     const entry1 = state.cache.get(key1).?;
     try std.testing.expectEqual(
-        image.ResidentAsset.failed,
+        cache.ResidentAsset.failed,
         entry1.resident.asset,
     );
     try std.testing.expectEqual(
-        image.ThumbnailState.not_available,
+        cache.ThumbnailState.not_available,
         entry1.resident.thumbnail,
     );
     try std.testing.expect(!state.cache.hasPendingCpuUploads(true));

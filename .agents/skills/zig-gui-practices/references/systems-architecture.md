@@ -69,7 +69,7 @@ ______________________________________________________________________
 ## ImageCache & Generation Ownership
 
 - **Pattern 4 — Cache Slot Generation Ownership, Weak Keys & Envelope Validation**:
-  - `ImageCache` (`state.cache` in `src/core/image.zig`) uses Zig's
+  - `ImageCache` (`state.cache` in `src/cache/root.zig`) uses Zig's
     `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory
     layout, allowing key scanning without cache-line pollution while mutating
     key and entry slices atomically.

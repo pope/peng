@@ -1,11 +1,11 @@
-const core = @import("core");
+const cache = @import("cache");
 const palette_pkg = @import("palette");
 const state = @import("state");
 const triage = @import("triage");
 const vfs = @import("vfs");
 
 const AnimationChannel = state.AnimationChannel;
-const CacheEntry = core.image.CacheEntry;
+const CacheEntry = cache.CacheEntry;
 const Classification = triage.Classification;
 const MediaEntry = vfs.MediaEntry;
 const MediaItemSlice = state.MediaItemSlice;

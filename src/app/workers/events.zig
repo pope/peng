@@ -1,5 +1,5 @@
 const builtin = @import("builtin");
-const core = @import("core");
+const cache_pkg = @import("cache");
 const geom = @import("geom");
 const ipc = @import("ipc");
 const probe = @import("probe");
@@ -9,8 +9,8 @@ const std = @import("std");
 const vfs = @import("vfs");
 
 const EntryScanState = vfs.EntryScanState;
-const ImageCache = core.image.ImageCache;
-const ImageCacheKey = core.image.ImageCacheKey;
+const ImageCache = cache_pkg.ImageCache;
+const ImageCacheKey = cache_pkg.ImageCacheKey;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;

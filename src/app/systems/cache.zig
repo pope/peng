@@ -1,6 +1,6 @@
 const app_state = @import("../state.zig");
+const cache = @import("cache");
 const context = @import("context.zig");
-const core = @import("core");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -9,8 +9,7 @@ const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
-const image = core.image;
-const ImageCache = image.ImageCache;
+const ImageCache = cache.ImageCache;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
@@ -18,11 +17,11 @@ const RawMetadata = probe.RawMetadata;
 
 fn probeActiveSlotMetadata(
     state: *AppState,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
 ) void {
     const media_item = state.viewer.navigation.getMediaEntryById(key.id) orelse
         return;
-    const meta = image.probeMediaMetadata(state.io, media_item) orelse {
+    const meta = cache.probeMediaMetadata(state.io, media_item) orelse {
         if (state.cache.get(key)) |entry| {
             entry.resident.thumbnail.markNotAvailableIfUnresolved();
         }
@@ -58,7 +57,7 @@ fn probeActiveSlotMetadata(
 
 fn checkPairPromotion(
     state: *AppState,
-    key: image.ImageCacheKey,
+    key: cache.ImageCacheKey,
     now: u64,
 ) void {
     const media_item = state.viewer.navigation.getMediaEntryById(key.id) orelse
@@ -128,7 +127,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         neighbors,
         state.viewer.getTransitionPrevIndex(),
         len,
-        image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
+        ImageCache.DEFAULT_MAX_VRAM_BYTES,
     );
 
     const max_dist = state.cache.getMaxPrefetchDist(neighbors);
@@ -631,7 +630,7 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
     // Because test_0_init.png has no embedded thumbnail, synchronous probe
     // on Frame 1 sets .not_available!
     try std.testing.expectEqual(
-        image.ThumbnailState.not_available,
+        cache.ThumbnailState.not_available,
         entry.?.resident.thumbnail,
     );
 }
@@ -666,7 +665,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     const entry = state.cache.get(state.cache.activeKey(id0));
     try std.testing.expect(entry != null);
     try std.testing.expectEqual(
-        image.ThumbnailState.not_available,
+        cache.ThumbnailState.not_available,
         entry.?.resident.thumbnail,
     );
     // Active slot 0 should have has_thread = true (decode worker was spawned, not skipped!)
@@ -1000,7 +999,7 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
     const key0 = try state.cache.appendSlot(
         allocator,
         id0,
-        image.CacheEntry.stubLoadedGpuForTest(
+        cache.CacheEntry.stubLoadedGpuForTest(
             .{ .w = 1616.0, .h = 1080.0 },
             .{ .w = 0.0, .h = 0.0 },
         ),
@@ -1025,7 +1024,7 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
     }
     try std.testing.expect(entry.inflight != null);
     try std.testing.expectEqual(
-        image.InFlightStage.decoding,
+        cache.InFlightStage.decoding,
         entry.inflight.?.stage,
     );
     try std.testing.expectEqual(
@@ -1141,7 +1140,7 @@ test "checkPairPromotion - Fit mode waits until cadence settles past 250ms" {
     const key0 = try state.cache.appendSlot(
         allocator,
         id0,
-        image.CacheEntry.stubLoadedGpuForTest(
+        cache.CacheEntry.stubLoadedGpuForTest(
             .{ .w = 400.0, .h = 267.0 },
             .{ .w = 0.0, .h = 0.0 },
         ),

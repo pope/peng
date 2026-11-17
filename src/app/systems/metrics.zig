@@ -1,12 +1,12 @@
 const app_state = @import("../state.zig");
+const cache = @import("cache");
 const context = @import("context.zig");
-const core = @import("core");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
-const CacheEntry = core.image.CacheEntry;
+const CacheEntry = cache.CacheEntry;
 const FrameContext = context.FrameContext;
 
 /// System function that copies real-time atomic worker counters, active

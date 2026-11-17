@@ -1,6 +1,6 @@
 const app_state = @import("../state.zig");
+const cache_pkg = @import("cache");
 const context = @import("context.zig");
-const core = @import("core");
 const geom = @import("geom");
 const gpu = @import("gpu");
 const sdl = @import("sdl");
@@ -8,10 +8,16 @@ const state_pkg = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
+const CacheEntry = cache_pkg.CacheEntry;
+const calcCyclicDistance = cache_pkg.calcCyclicDistance;
+const CpuAsset = cache_pkg.CpuAsset;
+const CpuSurfaceComponent = cache_pkg.CpuSurfaceComponent;
 const FrameContext = context.FrameContext;
-const image = core.image;
-const ImageCacheKey = image.ImageCacheKey;
+const ImageCache = cache_pkg.ImageCache;
+const ImageCacheKey = cache_pkg.ImageCacheKey;
+const loadThumbnailSurface = cache_pkg.loadThumbnailSurface;
 const PhysicalDims = geom.PhysicalDims;
+const ThumbnailState = cache_pkg.ThumbnailState;
 const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 
 /// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures.
@@ -34,7 +40,7 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) void {
         if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
         return;
     };
-    const extracted = image.loadThumbnailSurface(
+    const extracted = loadThumbnailSurface(
         state.io,
         state.allocator,
         media,
@@ -84,7 +90,7 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) void {
 }
 
 fn uploadActivePendingThumb(
-    cache: *image.ImageCache,
+    cache: *ImageCache,
     staging: *gpu.UploadStagingBuffer,
     gpu_dev: sdl.gpu.Device,
     unpack_pipeline: ?sdl.gpu.ComputePipeline,
@@ -139,9 +145,9 @@ fn uploadActivePendingThumb(
 }
 
 fn takeStagedCpuAsset(
-    entry: *image.CacheEntry,
+    entry: *CacheEntry,
     now_ms: u64,
-) ?image.CpuAsset {
+) ?CpuAsset {
     switch (entry.resident.asset) {
         .loaded_cpu => |asset| {
             entry.resident.asset = .none;
@@ -241,7 +247,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
 
     var upload_target: ?struct {
         key: ImageCacheKey,
-        asset: image.CpuAsset,
+        asset: CpuAsset,
     } = null;
 
     const cur_entry_opt = if (cur_key_opt) |ck|
@@ -279,13 +285,13 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
             const dist = blk: {
                 if (neighbors_opt) |neighbors| {
                     break :blk neighbors.stepDistance(pos) orelse
-                        (3 + image.calcCyclicDistance(
+                        (3 + calcCyclicDistance(
                             pos,
                             neighbors.current,
                             total_items,
                         ));
                 } else if (state.viewer.navigation.current_index) |cur| {
-                    break :blk image.calcCyclicDistance(
+                    break :blk calcCyclicDistance(
                         pos,
                         cur,
                         total_items,
@@ -333,7 +339,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
                 &target.asset,
                 res,
                 gpu_dev,
-                image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
+                ImageCache.DEFAULT_MAX_VRAM_BYTES,
                 &surface_transferred,
             );
         } else {
@@ -345,7 +351,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) void {
 fn enqueueDecodedThumbWrite(
     state: *AppState,
     key: ImageCacheKey,
-    cpu: *const image.CpuSurfaceComponent,
+    cpu: *const CpuSurfaceComponent,
     mtime_sec: i64,
     surf: sdl.Surface,
 ) bool {
@@ -383,7 +389,7 @@ fn enqueueDecodedThumbWrite(
 fn completeGpuUpload(
     state: *AppState,
     key: ImageCacheKey,
-    asset: *const image.CpuAsset,
+    asset: *const CpuAsset,
     res: gpu.GpuUploadResult,
     gpu_dev: ?sdl.gpu.Device,
     max_vram_bytes: usize,
@@ -528,7 +534,7 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
     _ = try state.cache.appendSlot(
         allocator,
         id0,
-        image.CacheEntry.stubLoadedGpuForTest(
+        CacheEntry.stubLoadedGpuForTest(
             .{ .w = 800, .h = 600 },
             .{ .w = 160, .h = 120 },
         ),
@@ -665,7 +671,7 @@ test "completeGpuUpload - enqueues thumb write before swapRemove" {
     // Slot 0: distant GPU texture that will be evicted via swapRemove(0)
     const id0 = state.viewer.navigation.getIdAt(0).?;
     const id5 = state.viewer.navigation.getIdAt(5).?;
-    const stub0 = image.CacheEntry.stubLoadedGpuForTest(
+    const stub0 = CacheEntry.stubLoadedGpuForTest(
         .{ .w = 10.0, .h = 10.0 },
         .{ .w = 0.0, .h = 0.0 },
     );
@@ -685,7 +691,7 @@ test "completeGpuUpload - enqueues thumb write before swapRemove" {
     var surface_transferred = false;
     defer if (!surface_transferred) surf.destroy();
 
-    const asset = image.CpuAsset{
+    const asset = CpuAsset{
         .cpu = .{
             .surface = surf,
             .w = 1616.0,
@@ -743,7 +749,7 @@ test "completeGpuUpload - enqueues thumb write before swapRemove" {
     const expired_surf = sdl.Surface.create(8, 8, sdl.PixelFormat.rgba32) orelse
         return;
     defer expired_surf.destroy();
-    const expired_key = image.ImageCacheKey{
+    const expired_key = ImageCacheKey{
         .id = id0,
         .generation = key5.generation,
     };
@@ -938,7 +944,7 @@ test "prepareCacheTextures - clears stranded staged_cpu on failed slots" {
 
     prepareCacheTextures(&state, 1000);
     try std.testing.expectEqual(
-        image.ThumbnailState.not_available,
+        ThumbnailState.not_available,
         state.cache.get(k1).?.resident.thumbnail,
     );
 }

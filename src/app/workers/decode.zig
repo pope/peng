@@ -1,3 +1,4 @@
+const cache = @import("cache");
 const context = @import("context.zig");
 const core = @import("core");
 const geom = @import("geom");
@@ -10,13 +11,12 @@ const thumbcache = @import("thumbcache");
 const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
-const convertAndScaleSurface = image.convertAndScaleSurface;
+const convertAndScaleSurface = cache.convertAndScaleSurface;
 const decompressCbzMediaEntry = vfs.decompressCbzMediaEntry;
 const FilePair = vfs.FilePair;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
 const header_probe_limit = context.header_probe_limit;
-const image = core.image;
-const ImageCacheKey = image.ImageCacheKey;
+const ImageCacheKey = cache.ImageCacheKey;
 const isRawFile = vfs.isRawFile;
 const loadCachedThumbnail = core.thumbcache.loadCachedThumbnail;
 const MediaEntry = vfs.MediaEntry;
@@ -123,7 +123,7 @@ fn pushThumbDecoded(
     const dct_snapped = if (source == .freedesktop_cache)
         false
     else if (source_dims) |sd|
-        image.detectThumbnailDctPadding(surface, sd.w, sd.h)
+        cache.detectThumbnailDctPadding(surface, sd.w, sd.h)
     else
         false;
 

@@ -1,14 +1,12 @@
 //! Engine Core Module
 //!
-//! Houses pure, state-free utility types, image cache slot maps, palette
-//! helpers, and messaging constructs used internally by app system passes and
-//! worker threads.
+//! Houses pure, state-free engine constructs (`display`, `mpsc_queue`, and
+//! `thumbcache`) used by application system passes and worker threads.
 //!
 //! INVARIANT: Code in `src/core/` MUST NOT depend on `src/app/` or `src/ui/`
 //! (zero imports of `AppState`, systems, workers, or app actions).
 
 pub const display = @import("display.zig");
-pub const image = @import("image.zig");
 pub const mpsc_queue = @import("mpsc_queue.zig");
 pub const thumbcache = @import("thumbcache.zig");
 
@@ -18,7 +16,6 @@ pub const MpscQueue = mpsc_queue.MpscQueue;
 
 test {
     _ = display;
-    _ = image;
     _ = mpsc_queue;
     _ = thumbcache;
 }
