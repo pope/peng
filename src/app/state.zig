@@ -770,25 +770,7 @@ pub const AppState = struct {
         );
         self.viewer.ui.palette.selected_idx = switch (active_type) {
             .files => self.viewer.navigation.current_index orelse 0,
-            .inactive,
-            .actions,
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            .go_to_image,
-            .directory_navigator,
-            .set_slideshow_interval,
-            => 0,
+            .inactive, .actions, .directory_navigator, .prompt => 0,
         };
         self.viewer.ui.palette.selection_dirty = true;
 
@@ -818,41 +800,33 @@ pub const AppState = struct {
                     }
                 }
             },
-            .set_slideshow_interval => {
-                var buf: [32]u8 = undefined;
-                const dur_secs = switch (self.viewer.navigation.slideshow) {
-                    .active => |s| s.interval_s,
-                    .inactive => 3.0,
-                };
-                const formatted = std.mem.print(
-                    &buf,
-                    "{d:.1}",
-                    .{dur_secs},
-                ) catch |err| blk: {
-                    std.log.warn(
-                        "Failed to format slideshow interval string: {}, defaulting to 3.0",
-                        .{err},
+            .prompt => |kind| switch (kind) {
+                .slideshow_interval => {
+                    var buf: [32]u8 = undefined;
+                    const dur_secs = switch (self.viewer.navigation.slideshow) {
+                        .active => |s| s.interval_s,
+                        .inactive => 3.0,
+                    };
+                    const formatted = std.mem.print(
+                        &buf,
+                        "{d:.1}",
+                        .{dur_secs},
+                    ) catch |err| blk: {
+                        std.log.warn(
+                            "Failed to format slideshow interval: {}, " ++
+                                "defaulting to 3.0",
+                            .{err},
+                        );
+                        break :blk "3.0";
+                    };
+                    try self.viewer.ui.palette.query.appendSlice(
+                        self.allocator,
+                        formatted,
                     );
-                    break :blk "3.0";
-                };
-                try self.viewer.ui.palette.query.appendSlice(self.allocator, formatted);
+                },
+                .go_to_image, .edit_param => {},
             },
-            .inactive,
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            .go_to_image,
-            => {},
+            .inactive => {},
         }
         startTextInput(self.display);
     }

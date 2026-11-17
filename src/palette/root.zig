@@ -87,7 +87,10 @@ pub const PaletteState = struct {
 
     /// Returns `true` if the palette is open in any active mode.
     pub inline fn isOpen(self: *const PaletteState) bool {
-        return self.mode != .inactive;
+        return switch (self.mode) {
+            .inactive => false,
+            .files, .actions, .directory_navigator, .prompt => true,
+        };
     }
 
     /// Frees all dynamically allocated memory, string arrays, searcher state,
@@ -159,7 +162,7 @@ pub const PaletteState = struct {
     /// Returns whether the palette is currently active and accepting user
     /// input (not closing).
     pub inline fn isAcceptingInput(self: *const PaletteState) bool {
-        return self.mode != .inactive and !self.is_closing;
+        return self.isOpen() and !self.is_closing;
     }
 
     /// Returns a lazily initialized or resized ASCII fuzzy searcher matching
@@ -479,23 +482,10 @@ pub const PaletteState = struct {
             .files => try self.rebuildFileMatches(entries),
             .actions => try self.rebuildActionMatches(),
             .directory_navigator => try self.rebuildDirectoryMatches(),
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            .go_to_image,
-            .set_slideshow_interval,
-            .inactive,
-            => {},
+            .prompt => |kind| switch (kind) {
+                .go_to_image, .slideshow_interval, .edit_param => {},
+            },
+            .inactive => {},
         }
     }
 
@@ -682,23 +672,10 @@ pub const PaletteState = struct {
                         );
                     }
                 },
-                .set_brightness,
-                .set_contrast,
-                .set_contrast_blend,
-                .set_highlights,
-                .set_shadows,
-                .set_whites,
-                .set_blacks,
-                .set_temperature,
-                .set_tint,
-                .set_vibrance,
-                .set_saturation,
-                .set_clarity,
-                .set_texture,
-                .go_to_image,
-                .set_slideshow_interval,
-                .inactive,
-                => {},
+                .prompt => |kind| switch (kind) {
+                    .go_to_image, .slideshow_interval, .edit_param => {},
+                },
+                .inactive => {},
             }
         }
         return max_h;
@@ -917,9 +894,6 @@ const palette_configs: [EditParam.count]PaletteConfig = blk: {
 
 /// Returns the static layout configuration struct for a given palette mode.
 pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
-    if (mode.toEditParam()) |param| {
-        return palette_configs[@backingInt(param)];
-    }
     return switch (mode) {
         .files => .{
             .title = "Search Files",
@@ -931,35 +905,24 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
             .placeholder = "Type a command to run...",
             .base_item_height = 50.0,
         },
-        .go_to_image => .{
-            .title = "Go to Image",
-            .placeholder = "Enter image number...",
-            .base_item_height = 50.0,
-        },
         .directory_navigator => .{
             .title = "Directory Navigator",
             .placeholder = "Search subfolders...",
             .base_item_height = 50.0,
         },
-        .set_slideshow_interval => .{
-            .title = "Start Slide Show",
-            .placeholder = "Enter delay in seconds (e.g. 3 or 2.5)...",
-            .base_item_height = 50.0,
+        .prompt => |kind| switch (kind) {
+            .go_to_image => .{
+                .title = "Go to Image",
+                .placeholder = "Enter image number...",
+                .base_item_height = 50.0,
+            },
+            .slideshow_interval => .{
+                .title = "Start Slide Show",
+                .placeholder = "Enter delay in seconds (e.g. 3 or 2.5)...",
+                .base_item_height = 50.0,
+            },
+            .edit_param => |param| palette_configs[@backingInt(param)],
         },
-        .set_brightness,
-        .set_contrast,
-        .set_contrast_blend,
-        .set_highlights,
-        .set_shadows,
-        .set_whites,
-        .set_blacks,
-        .set_temperature,
-        .set_tint,
-        .set_vibrance,
-        .set_saturation,
-        .set_clarity,
-        .set_texture,
-        => unreachable,
         .inactive => getPaletteConfig(.files),
     };
 }
@@ -1317,7 +1280,9 @@ test "PaletteState.getSearcher resizes only dimensions that exceed capacity" {
 }
 
 test "PaletteConfig - Contrast palette config displays 0.0 to 3.0 range" {
-    const contrast_cfg = getPaletteConfig(.set_contrast);
+    const contrast_cfg = getPaletteConfig(.{
+        .prompt = .{ .edit_param = .contrast },
+    });
     try std.testing.expectEqualStrings("Set Contrast", contrast_cfg.title);
     try std.testing.expectEqualStrings(
         "Enter contrast (0.0 to 3.0, e.g. 1.5)...",
@@ -1398,19 +1363,23 @@ test "getPaletteConfig metadata lookup helper" {
         actions_cfg.placeholder,
     );
 
-    const bright_cfg = getPaletteConfig(.set_brightness);
+    const bright_cfg = getPaletteConfig(.{
+        .prompt = .{ .edit_param = .brightness },
+    });
     try std.testing.expectEqualStrings("Set Brightness", bright_cfg.title);
 
-    const contrast_cfg = getPaletteConfig(.set_contrast);
+    const contrast_cfg = getPaletteConfig(.{
+        .prompt = .{ .edit_param = .contrast },
+    });
     try std.testing.expectEqualStrings("Set Contrast", contrast_cfg.title);
 
-    const goto_cfg = getPaletteConfig(.go_to_image);
+    const goto_cfg = getPaletteConfig(.{ .prompt = .go_to_image });
     try std.testing.expectEqualStrings("Go to Image", goto_cfg.title);
 
     const dir_cfg = getPaletteConfig(.directory_navigator);
     try std.testing.expectEqualStrings("Directory Navigator", dir_cfg.title);
 
-    const slide_cfg = getPaletteConfig(.set_slideshow_interval);
+    const slide_cfg = getPaletteConfig(.{ .prompt = .slideshow_interval });
     try std.testing.expectEqualStrings("Start Slide Show", slide_cfg.title);
 }
 

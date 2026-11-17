@@ -171,8 +171,8 @@
     `std.Io.Clock.awake.now(io)` for timing in `std.Io`-aware background tasks.
 - **Exhaustive Enum & Tagged Union Pattern Matching (Anti-`else => ...`)**:
   - `switch` statements on core domain enums and tagged unions (`PaletteMode`,
-    `EditParam`, `EditDomain`, `AppIntent`, `AdjustIntent`, `IpcCommand`,
-    `IpcMode`, `ZoomPreset`, `TextureScaleMode`, `ResidentAsset`,
+    `PromptKind`, `EditParam`, `EditDomain`, `AppIntent`, `AdjustIntent`,
+    `IpcCommand`, `IpcMode`, `ZoomPreset`, `TextureScaleMode`, `ResidentAsset`,
     `InFlightStage`, `ThumbnailState`, `DisplayState`, `DragState`,
     `MediaEntry`, `DirectoryEntry`, `BackgroundEvent`) MUST exhaustively
     list all variants without wildcard `else => ...` branches (including
@@ -232,8 +232,11 @@
     `https://...` URLs on dedicated comment lines and existing ASCII tables).
   - Keep peak indentation at or below 24–28 columns (~6 levels) using early
     returns, loop `continue`/`break` guards, and private helper functions.
-  - Use trailing commas for multi-line wrapping and verify formatting with
-    `zig fmt --check <file>` and:
+  - Use trailing commas for multi-line wrapping (no stacked multi-line closing
+    braces like `} } },` on nested struct/union literals—put trailing commas on
+    outer levels so each outer wrapper gets its own line and only the leaf
+    `.{ ... }` is inline) and verify formatting with `zig fmt --check <file>`
+    and:
     ```bash
     git diff | awk '/^\+[^+]/ { if (length($0) > 81) print length($0)-1, $0 }'
     ```

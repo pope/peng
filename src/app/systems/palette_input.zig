@@ -14,7 +14,8 @@ const KeyModifiers = intents.KeyModifiers;
 const PaletteMode = intents.PaletteMode;
 const palette_action_items = intents.actions.palette_action_items;
 
-/// Processes Return key confirmation for 1-based image index input palette mode (`.go_to_image`).
+/// Processes Return key confirmation for 1-based image index input palette mode
+/// (`.prompt = .go_to_image`).
 fn handlePaletteReturnGoToImage(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
@@ -29,22 +30,12 @@ fn handlePaletteReturnGoToImage(ctx: FrameContext, raw_str: []const u8) !void {
 }
 
 /// Processes Return key confirmation for slideshow interval input palette mode
-/// (`.set_slideshow_interval`).
+/// (`.prompt = .slideshow_interval`).
 fn handlePaletteReturnSlideshow(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
             if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                const clamped = std.math.clamp(
-                    val,
-                    state_pkg.SlideshowMode.MIN_INTERVAL_S,
-                    state_pkg.SlideshowMode.MAX_INTERVAL_S,
-                );
-                ctx.state.viewer.navigation.slideshow = .{
-                    .active = .{
-                        .interval_s = clamped,
-                        .timer_ms = 0.0,
-                    },
-                };
+                try ctx.state.pushIntent(.{ .start_slideshow_interval = val });
                 ctx.state.closePalette();
             }
         } else |err| {
@@ -113,11 +104,13 @@ fn handlePaletteReturnMatchSelection(ctx: FrameContext) !void {
 
     if (palette.selected_idx >= palette.matches.items.len) return;
     const target_idx = palette.matches.items[palette.selected_idx];
-    if (palette.mode == .files) {
-        try self.pushIntent(.{ .go_to_image = target_idx });
-    } else if (palette.mode == .actions) {
-        const item = palette_action_items[target_idx];
-        try self.pushIntent(item.intent);
+    switch (palette.mode) {
+        .files => try self.pushIntent(.{ .go_to_image = target_idx }),
+        .actions => {
+            const item = palette_action_items[target_idx];
+            try self.pushIntent(item.intent);
+        },
+        .inactive, .directory_navigator, .prompt => {},
     }
 }
 
@@ -236,24 +229,17 @@ fn handlePaletteKeys(
         .return_key => {
             const raw_str = palette.query.items;
             switch (palette.mode) {
-                .go_to_image => try handlePaletteReturnGoToImage(ctx, raw_str),
-                .set_slideshow_interval => {
-                    try handlePaletteReturnSlideshow(ctx, raw_str);
+                .prompt => |kind| switch (kind) {
+                    .go_to_image => {
+                        try handlePaletteReturnGoToImage(ctx, raw_str);
+                    },
+                    .slideshow_interval => {
+                        try handlePaletteReturnSlideshow(ctx, raw_str);
+                    },
+                    .edit_param => {
+                        try handlePaletteReturnEditParam(ctx, raw_str);
+                    },
                 },
-                .set_brightness,
-                .set_contrast,
-                .set_contrast_blend,
-                .set_highlights,
-                .set_shadows,
-                .set_whites,
-                .set_blacks,
-                .set_temperature,
-                .set_tint,
-                .set_vibrance,
-                .set_saturation,
-                .set_clarity,
-                .set_texture,
-                => try handlePaletteReturnEditParam(ctx, raw_str),
                 .directory_navigator => {
                     try handlePaletteReturnDirectory(ctx, mod);
                 },
@@ -293,7 +279,6 @@ fn handlePaletteKeys(
 fn processPaletteItemClick(
     ctx: FrameContext,
     real_idx: usize,
-    old_mode: PaletteMode,
 ) !bool {
     const self = ctx.state;
     switch (self.viewer.ui.palette.mode) {
@@ -305,10 +290,8 @@ fn processPaletteItemClick(
         .actions => {
             const item = palette_action_items[real_idx];
             try self.pushIntent(item.intent);
-            if (self.viewer.ui.palette.mode == old_mode) {
-                self.closePalette();
-                return true;
-            }
+            self.closePalette();
+            return true;
         },
         .directory_navigator => {
             const dir_items = self.viewer.ui.palette.dir_items.items;
@@ -333,23 +316,7 @@ fn processPaletteItemClick(
                 });
             }
         },
-        .inactive,
-        .set_brightness,
-        .set_contrast,
-        .set_contrast_blend,
-        .set_highlights,
-        .set_shadows,
-        .set_whites,
-        .set_blacks,
-        .set_temperature,
-        .set_tint,
-        .set_vibrance,
-        .set_saturation,
-        .set_clarity,
-        .set_texture,
-        .go_to_image,
-        .set_slideshow_interval,
-        => {},
+        .inactive, .prompt => {},
     }
     return false;
 }
@@ -406,7 +373,6 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                 palette_closed_this_frame = try processPaletteItemClick(
                     ctx,
                     real_idx,
-                    self.viewer.ui.palette.mode,
                 );
             },
         }
@@ -899,7 +865,7 @@ test "directory_navigator archive_file drill-down and click behavior" {
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
 
     // 2. Clicking an archive_file entry pushes .open_path and closes palette
-    const closed = try processPaletteItemClick(ctx, 1, .directory_navigator);
+    const closed = try processPaletteItemClick(ctx, 1);
     try std.testing.expect(closed);
     try std.testing.expect(palette.is_closing);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
@@ -909,7 +875,7 @@ test "directory_navigator archive_file drill-down and click behavior" {
     );
 }
 
-test "handlePaletteReturnSlideshow clamps interval to min and max bounds" {
+test "handlePaletteReturnSlideshow pushes start_slideshow_interval intent" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -924,24 +890,18 @@ test "handlePaletteReturnSlideshow clamps interval to min and max bounds" {
         .frame_allocator = frame_arena.allocator(),
     };
 
-    // Sub-minimum value clamps to MIN_INTERVAL_S (0.1s)
-    try handlePaletteReturnSlideshow(ctx, "0.005");
-    try std.testing.expectEqual(
-        state_pkg.SlideshowMode.MIN_INTERVAL_S,
-        state.viewer.navigation.slideshow.active.interval_s,
-    );
-
-    // Super-maximum value clamps to MAX_INTERVAL_S (3600.0s)
-    try handlePaletteReturnSlideshow(ctx, "99999.0");
-    try std.testing.expectEqual(
-        state_pkg.SlideshowMode.MAX_INTERVAL_S,
-        state.viewer.navigation.slideshow.active.interval_s,
-    );
-
-    // Normal valid value sets exact interval
     try handlePaletteReturnSlideshow(ctx, "7.5");
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
     try std.testing.expectEqual(
         @as(f32, 7.5),
-        state.viewer.navigation.slideshow.active.interval_s,
+        state.pending_intents.items[0].start_slideshow_interval,
     );
+
+    // Invalid inputs push nothing
+    state.clearIntents();
+    try handlePaletteReturnSlideshow(ctx, "0");
+    try handlePaletteReturnSlideshow(ctx, "-2.0");
+    try handlePaletteReturnSlideshow(ctx, "nan");
+    try handlePaletteReturnSlideshow(ctx, "abc");
+    try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
 }

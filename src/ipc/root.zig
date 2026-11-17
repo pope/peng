@@ -292,26 +292,42 @@ pub const IpcCommand = union(enum) {
             .zoom => |factor| return .{ .set_zoom = factor },
             .pan => |p| return .{ .set_pan = p },
             .adjust => return null,
-            .tone => |t| return .{ .adjust = .{ .batch_tone = .{
-                .highlights = t.highlights,
-                .shadows = t.shadows,
-                .whites = t.whites,
-                .blacks = t.blacks,
-            } } },
-            .color => |c| return .{ .adjust = .{ .batch_color = .{
-                .temperature = c.temperature,
-                .tint = c.tint,
-                .vibrance = c.vibrance,
-                .saturation = c.saturation,
-            } } },
-            .presence => |p| return .{ .adjust = .{ .batch_presence = .{
-                .clarity = p.clarity,
-                .texture = p.texture,
-            } } },
-            .set_param => |sp| return .{ .adjust = .{ .set = .{
-                .param = sp.param,
-                .value = sp.value,
-            } } },
+            .tone => |t| return .{
+                .adjust = .{
+                    .batch_tone = .{
+                        .highlights = t.highlights,
+                        .shadows = t.shadows,
+                        .whites = t.whites,
+                        .blacks = t.blacks,
+                    },
+                },
+            },
+            .color => |c| return .{
+                .adjust = .{
+                    .batch_color = .{
+                        .temperature = c.temperature,
+                        .tint = c.tint,
+                        .vibrance = c.vibrance,
+                        .saturation = c.saturation,
+                    },
+                },
+            },
+            .presence => |p| return .{
+                .adjust = .{
+                    .batch_presence = .{
+                        .clarity = p.clarity,
+                        .texture = p.texture,
+                    },
+                },
+            },
+            .set_param => |sp| return .{
+                .adjust = .{
+                    .set = .{
+                        .param = sp.param,
+                        .value = sp.value,
+                    },
+                },
+            },
             .compare => |action| switch (action) {
                 .enable => return .{ .adjust = .{ .set_compare = true } },
                 .disable => return .{ .adjust = .{ .set_compare = false } },
@@ -358,7 +374,7 @@ pub const IpcCommand = union(enum) {
                 const mode: intents.PaletteMode = switch (target.kind) {
                     .actions => .actions,
                     .files => .files,
-                    .slideshow => .set_slideshow_interval,
+                    .slideshow => .{ .prompt = .slideshow_interval },
                     .none => .inactive,
                 };
                 return .{ .set_palette = .{ .mode = mode, .query = target.query } };
@@ -1376,50 +1392,70 @@ test "IpcCommand parsing" {
 
     const cmd_tone = try IpcCommand.parse("tone 0.1 -0.2 0.3 -0.4");
     try std.testing.expectEqual(
-        intents.AppIntent{ .adjust = .{ .batch_tone = .{
-            .highlights = 0.1,
-            .shadows = -0.2,
-            .whites = 0.3,
-            .blacks = -0.4,
-        } } },
+        intents.AppIntent{
+            .adjust = .{
+                .batch_tone = .{
+                    .highlights = 0.1,
+                    .shadows = -0.2,
+                    .whites = 0.3,
+                    .blacks = -0.4,
+                },
+            },
+        },
         cmd_tone.toIntent().?,
     );
 
     const cmd_color = try IpcCommand.parse("color 0.5 -0.1 0.25 -0.35");
     try std.testing.expectEqual(
-        intents.AppIntent{ .adjust = .{ .batch_color = .{
-            .temperature = 0.5,
-            .tint = -0.1,
-            .vibrance = 0.25,
-            .saturation = -0.35,
-        } } },
+        intents.AppIntent{
+            .adjust = .{
+                .batch_color = .{
+                    .temperature = 0.5,
+                    .tint = -0.1,
+                    .vibrance = 0.25,
+                    .saturation = -0.35,
+                },
+            },
+        },
         cmd_color.toIntent().?,
     );
 
     const cmd_presence = try IpcCommand.parse("presence 0.35 -0.2");
     try std.testing.expectEqual(
-        intents.AppIntent{ .adjust = .{ .batch_presence = .{
-            .clarity = 0.35,
-            .texture = -0.2,
-        } } },
+        intents.AppIntent{
+            .adjust = .{
+                .batch_presence = .{
+                    .clarity = 0.35,
+                    .texture = -0.2,
+                },
+            },
+        },
         cmd_presence.toIntent().?,
     );
 
     const cmd_clarity = try IpcCommand.parse("clarity 0.45");
     try std.testing.expectEqual(
-        intents.AppIntent{ .adjust = .{ .set = .{
-            .param = .clarity,
-            .value = 0.45,
-        } } },
+        intents.AppIntent{
+            .adjust = .{
+                .set = .{
+                    .param = .clarity,
+                    .value = 0.45,
+                },
+            },
+        },
         cmd_clarity.toIntent().?,
     );
 
     const cmd_texture = try IpcCommand.parse("texture -0.5");
     try std.testing.expectEqual(
-        intents.AppIntent{ .adjust = .{ .set = .{
-            .param = .texture,
-            .value = -0.5,
-        } } },
+        intents.AppIntent{
+            .adjust = .{
+                .set = .{
+                    .param = .texture,
+                    .value = -0.5,
+                },
+            },
+        },
         cmd_texture.toIntent().?,
     );
 

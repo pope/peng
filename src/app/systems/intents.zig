@@ -135,15 +135,18 @@ fn precacheCurrentDirectory(self: *AppState, now_ms: u64) !void {
 
 fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
     const ui = &self.viewer.ui;
-    if (p.mode == .inactive) {
-        self.closePaletteImmediately();
-        return;
-    }
-    if (p.mode == .directory_navigator and p.query != null) {
-        ui.palette.query.clearRetainingCapacity();
-        try self.loadPaletteDirectory(p.query.?);
-        ui.palette.mode = .directory_navigator;
-        return;
+    switch (p.mode) {
+        .inactive => {
+            self.closePaletteImmediately();
+            return;
+        },
+        .directory_navigator => if (p.query) |q| {
+            ui.palette.query.clearRetainingCapacity();
+            try self.loadPaletteDirectory(q);
+            ui.palette.mode = .directory_navigator;
+            return;
+        },
+        .files, .actions, .prompt => {},
     }
     try self.openPalette(p.mode);
     const q = p.query orelse return;
@@ -156,24 +159,7 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
         .files => try self.viewer.ui.palette.rebuildFileMatches(
             self.viewer.navigation.getEntries(),
         ),
-        .inactive,
-        .set_brightness,
-        .set_contrast,
-        .set_contrast_blend,
-        .set_highlights,
-        .set_shadows,
-        .set_whites,
-        .set_blacks,
-        .set_temperature,
-        .set_tint,
-        .set_vibrance,
-        .set_saturation,
-        .set_clarity,
-        .set_texture,
-        .go_to_image,
-        .directory_navigator,
-        .set_slideshow_interval,
-        => {},
+        .inactive, .directory_navigator, .prompt => {},
     }
 }
 
@@ -490,13 +476,15 @@ fn executeIntent(
                         !is_animating and old_entry_loaded and target_decoded);
 
                 if (should_crossfade) {
-                    self.viewer.image_transition = .{ .active = .{
-                        .prev_index = old_index.?,
-                        .prev_rotation = old_rot,
-                        .prev_zoom = old_zoom,
-                        .prev_pan_x = old_pan_x,
-                        .prev_pan_y = old_pan_y,
-                    } };
+                    self.viewer.image_transition = .{
+                        .active = .{
+                            .prev_index = old_index.?,
+                            .prev_rotation = old_rot,
+                            .prev_zoom = old_zoom,
+                            .prev_pan_x = old_pan_x,
+                            .prev_pan_y = old_pan_y,
+                        },
+                    };
                     const is_ready = if (cur_entry) |e|
                         e.resident.asset.hasGpuTexture()
                     else
@@ -752,7 +740,23 @@ fn executeIntent(
         .set_debug_thumb => |val| {
             ui.overlays.debug_show_thumb = val;
         },
-        .start_slideshow => try self.openPalette(.set_slideshow_interval),
+        .start_slideshow => {
+            try self.openPalette(.{ .prompt = .slideshow_interval });
+        },
+        .start_slideshow_interval => |interval| {
+            if (!std.math.isFinite(interval)) return;
+            const clamped = std.math.clamp(
+                interval,
+                state.SlideshowMode.MIN_INTERVAL_S,
+                state.SlideshowMode.MAX_INTERVAL_S,
+            );
+            nav.slideshow = .{
+                .active = .{
+                    .interval_s = clamped,
+                    .timer_ms = 0.0,
+                },
+            };
+        },
         .stop_slideshow => {
             nav.slideshow = .inactive;
             self.viewer.image_transition = .none;
@@ -2183,4 +2187,47 @@ test "togglePairStream - clears staged promoting_gpu without blanking" {
         entry.inflight.?.target,
     );
     try std.testing.expectEqual(@as(u64, 2000), entry.inflight.?.start_time_ms);
+}
+
+test "executeIntent - start_slideshow opens prompt and clamps interval" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try executeIntent(&app_st, .start_slideshow, 1000);
+    try std.testing.expectEqual(
+        intents.PaletteMode{ .prompt = .slideshow_interval },
+        app_st.viewer.ui.palette.mode,
+    );
+    try std.testing.expectEqualStrings(
+        "3.0",
+        app_st.viewer.ui.palette.query.items,
+    );
+
+    // Clamps below minimum to MIN_INTERVAL_S
+    try executeIntent(&app_st, .{ .start_slideshow_interval = 0.005 }, 1000);
+    try std.testing.expectEqual(
+        state.SlideshowMode.MIN_INTERVAL_S,
+        app_st.viewer.navigation.slideshow.active.interval_s,
+    );
+
+    // Clamps above maximum to MAX_INTERVAL_S
+    try executeIntent(&app_st, .{ .start_slideshow_interval = 99999.0 }, 1000);
+    try std.testing.expectEqual(
+        state.SlideshowMode.MAX_INTERVAL_S,
+        app_st.viewer.navigation.slideshow.active.interval_s,
+    );
+
+    // Sets valid interval and ignores NaN
+    try executeIntent(&app_st, .{ .start_slideshow_interval = 7.5 }, 1000);
+    try executeIntent(
+        &app_st,
+        .{ .start_slideshow_interval = std.math.nan(f32) },
+        1000,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 7.5),
+        app_st.viewer.navigation.slideshow.active.interval_s,
+    );
 }

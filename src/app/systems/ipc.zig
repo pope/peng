@@ -371,6 +371,7 @@ fn handleIntentCommand(
         .toggle_debug_thumb,
         .set_debug_thumb,
         .start_slideshow,
+        .start_slideshow_interval,
         .stop_slideshow,
         .toggle_manga_mode,
         .set_manga_mode,

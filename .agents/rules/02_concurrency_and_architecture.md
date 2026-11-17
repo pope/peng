@@ -186,7 +186,7 @@
     (see [vram-preloading.md][vram-preload] §2).
 - **Demand-First Priority Gating for Cache & GPU Uploads**:
   1. **Decode Gating (`sysUpdateCache`)**: Never spawn neighbor prefetch workers
-     ($\pm 1, \pm 2$) while the active slot (`idx`) is still decoding or
+     ($\\pm 1, \\pm 2$) while the active slot (`idx`) is still decoding or
      uploading.
   2. **Staged CPU Ingestion (`handleImageDecodedEvent` /
      `handleExifThumbnailEvent`)**:

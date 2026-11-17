@@ -95,23 +95,12 @@ fn renderHeader(
     const text_color = withAlpha(switch (mode) {
         .files => theme.pink,
         .actions => theme.blue,
-        .set_brightness,
-        .set_contrast,
-        .set_contrast_blend,
-        .set_highlights,
-        .set_shadows,
-        .set_whites,
-        .set_blacks,
-        .set_temperature,
-        .set_tint,
-        .set_vibrance,
-        .set_saturation,
-        .set_clarity,
-        .set_texture,
-        => theme.peach,
-        .go_to_image => theme.green,
         .directory_navigator => theme.mauve,
-        .set_slideshow_interval => theme.yellow,
+        .prompt => |kind| switch (kind) {
+            .edit_param => theme.peach,
+            .go_to_image => theme.green,
+            .slideshow_interval => theme.yellow,
+        },
         .inactive => theme.text,
     }, progress);
 
@@ -535,168 +524,157 @@ fn renderTextInputDialog(
     const center_y = rect.y + (rect.h - 16.0) * 0.5;
 
     switch (palette.mode) {
-        .go_to_image => {
-            if (total_count == 0) {
-                try list.addText(.{
-                    .x = content_x,
-                    .y = center_y,
-                    .w = content_w,
-                    .h = 16.0,
-                }, .{
-                    .text = "No images loaded.",
-                    .color = withAlpha(theme.red, progress),
-                    .font_size = 13,
-                    .font_id = 0,
-                });
-            } else if (raw_str.len == 0) {
-                try list.addText(.{
-                    .x = content_x,
-                    .y = line1_y,
-                    .w = content_w,
-                    .h = 16.0,
-                }, .{
-                    .text = "Enter image number, then press Enter to apply.",
-                    .color = withAlpha(theme.subtext0, progress),
-                    .font_size = 13,
-                    .font_id = 0,
-                });
-                const range_str = if (ui_model.current_index) |idx|
-                    try frame_allocator.print(
-                        "Allowed range: 1 to {} (current: {})",
-                        .{ total_count, idx + 1 },
-                    )
-                else
-                    try frame_allocator.print(
-                        "Allowed range: 1 to {} (current: none)",
-                        .{total_count},
+        .prompt => |kind| switch (kind) {
+            .go_to_image => {
+                if (total_count == 0) {
+                    try list.addText(.{
+                        .x = content_x,
+                        .y = center_y,
+                        .w = content_w,
+                        .h = 16.0,
+                    }, .{
+                        .text = "No images loaded.",
+                        .color = withAlpha(theme.red, progress),
+                        .font_size = 13,
+                        .font_id = 0,
+                    });
+                } else if (raw_str.len == 0) {
+                    try list.addText(.{
+                        .x = content_x,
+                        .y = line1_y,
+                        .w = content_w,
+                        .h = 16.0,
+                    }, .{
+                        .text = "Enter image number, " ++
+                            "then press Enter to apply.",
+                        .color = withAlpha(theme.subtext0, progress),
+                        .font_size = 13,
+                        .font_id = 0,
+                    });
+                    const range_str = if (ui_model.current_index) |idx|
+                        try frame_allocator.print(
+                            "Allowed range: 1 to {} (current: {})",
+                            .{ total_count, idx + 1 },
+                        )
+                    else
+                        try frame_allocator.print(
+                            "Allowed range: 1 to {} (current: none)",
+                            .{total_count},
+                        );
+                    try list.addText(.{
+                        .x = content_x,
+                        .y = line2_y,
+                        .w = content_w,
+                        .h = 14.0,
+                    }, .{
+                        .text = range_str,
+                        .color = withAlpha(theme.subtext1, progress),
+                        .font_size = 11,
+                        .font_id = 0,
+                    });
+                } else {
+                    try renderGoToImageFeedback(
+                        list,
+                        .{
+                            .x = content_x,
+                            .y = center_y,
+                            .w = content_w,
+                            .h = 16.0,
+                        },
+                        raw_str,
+                        total_count,
+                        ui_model,
+                        frame_allocator,
+                        measure_data,
+                        progress,
                     );
-                try list.addText(.{
-                    .x = content_x,
-                    .y = line2_y,
-                    .w = content_w,
-                    .h = 14.0,
-                }, .{
-                    .text = range_str,
-                    .color = withAlpha(theme.subtext1, progress),
-                    .font_size = 11,
-                    .font_id = 0,
-                });
-            } else {
-                try renderGoToImageFeedback(
-                    list,
-                    .{
+                }
+            },
+            .slideshow_interval => {
+                if (raw_str.len == 0) {
+                    try list.addText(.{
                         .x = content_x,
-                        .y = center_y,
+                        .y = line1_y,
                         .w = content_w,
                         .h = 16.0,
-                    },
-                    raw_str,
-                    total_count,
-                    ui_model,
-                    frame_allocator,
-                    measure_data,
-                    progress,
-                );
-            }
-        },
-        .set_slideshow_interval => {
-            if (raw_str.len == 0) {
-                try list.addText(.{
-                    .x = content_x,
-                    .y = line1_y,
-                    .w = content_w,
-                    .h = 16.0,
-                }, .{
-                    .text = "Enter delay in seconds, " ++
-                        "then press Enter to start.",
-                    .color = withAlpha(theme.subtext0, progress),
-                    .font_size = 13,
-                    .font_id = 0,
-                });
-                try list.addText(.{
-                    .x = content_x,
-                    .y = line2_y,
-                    .w = content_w,
-                    .h = 14.0,
-                }, .{
-                    .text = "Example: 3 for 3 seconds per slide",
-                    .color = withAlpha(theme.subtext1, progress),
-                    .font_size = 11,
-                    .font_id = 0,
-                });
-            } else {
-                try renderSlideshowIntervalFeedback(
-                    list,
-                    .{
+                    }, .{
+                        .text = "Enter delay in seconds, " ++
+                            "then press Enter to start.",
+                        .color = withAlpha(theme.subtext0, progress),
+                        .font_size = 13,
+                        .font_id = 0,
+                    });
+                    try list.addText(.{
                         .x = content_x,
-                        .y = center_y,
+                        .y = line2_y,
+                        .w = content_w,
+                        .h = 14.0,
+                    }, .{
+                        .text = "Example: 3 for 3 seconds per slide",
+                        .color = withAlpha(theme.subtext1, progress),
+                        .font_size = 11,
+                        .font_id = 0,
+                    });
+                } else {
+                    try renderSlideshowIntervalFeedback(
+                        list,
+                        .{
+                            .x = content_x,
+                            .y = center_y,
+                            .w = content_w,
+                            .h = 16.0,
+                        },
+                        raw_str,
+                        frame_allocator,
+                        progress,
+                    );
+                }
+            },
+            .edit_param => |param| {
+                if (raw_str.len == 0) {
+                    try list.addText(.{
+                        .x = content_x,
+                        .y = line1_y,
                         .w = content_w,
                         .h = 16.0,
-                    },
-                    raw_str,
-                    frame_allocator,
-                    progress,
-                );
-            }
-        },
-        .set_brightness,
-        .set_contrast,
-        .set_contrast_blend,
-        .set_highlights,
-        .set_shadows,
-        .set_whites,
-        .set_blacks,
-        .set_temperature,
-        .set_tint,
-        .set_vibrance,
-        .set_saturation,
-        .set_clarity,
-        .set_texture,
-        => {
-            if (raw_str.len == 0) {
-                try list.addText(.{
-                    .x = content_x,
-                    .y = line1_y,
-                    .w = content_w,
-                    .h = 16.0,
-                }, .{
-                    .text = "Enter a number, then press Enter to apply.",
-                    .color = withAlpha(theme.subtext0, progress),
-                    .font_size = 13,
-                    .font_id = 0,
-                });
-                const bounds = palette.mode.getTextInputBounds() orelse
-                    intents.TextInputBounds{ .min = -1.0, .max = 1.0 };
-                const range_str = try frame_allocator.print(
-                    "Allowed range: {d:.1} to {d:.1}",
-                    .{ bounds.min, bounds.max },
-                );
-                try list.addText(.{
-                    .x = content_x,
-                    .y = line2_y,
-                    .w = content_w,
-                    .h = 14.0,
-                }, .{
-                    .text = range_str,
-                    .color = withAlpha(theme.subtext1, progress),
-                    .font_size = 11,
-                    .font_id = 0,
-                });
-            } else {
-                try renderFloatInputFeedback(
-                    list,
-                    .{
+                    }, .{
+                        .text = "Enter a number, then press Enter to apply.",
+                        .color = withAlpha(theme.subtext0, progress),
+                        .font_size = 13,
+                        .font_id = 0,
+                    });
+                    const spec = intents.getSpec(param);
+                    const range_str = try frame_allocator.print(
+                        "Allowed range: {d:.1} to {d:.1}",
+                        .{ spec.min, spec.max },
+                    );
+                    try list.addText(.{
                         .x = content_x,
-                        .y = center_y,
+                        .y = line2_y,
                         .w = content_w,
-                        .h = 16.0,
-                    },
-                    raw_str,
-                    palette.mode,
-                    frame_allocator,
-                    progress,
-                );
-            }
+                        .h = 14.0,
+                    }, .{
+                        .text = range_str,
+                        .color = withAlpha(theme.subtext1, progress),
+                        .font_size = 11,
+                        .font_id = 0,
+                    });
+                } else {
+                    try renderFloatInputFeedback(
+                        list,
+                        .{
+                            .x = content_x,
+                            .y = center_y,
+                            .w = content_w,
+                            .h = 16.0,
+                        },
+                        raw_str,
+                        palette.mode,
+                        frame_allocator,
+                        progress,
+                    );
+                }
+            },
         },
         .files, .actions, .directory_navigator, .inactive => {},
     }
@@ -1236,23 +1214,7 @@ fn renderSelectionList(
                 "No matching subfolders found"
             else
                 "0 subfolders found",
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            .go_to_image,
-            .set_slideshow_interval,
-            .inactive,
-            => "",
+            .prompt, .inactive => "",
         };
         const msg_dims =
             text_utils.measureText(no_match_msg, 0, 13, measure_data);
@@ -1353,23 +1315,7 @@ fn renderSelectionList(
                 measure_data,
                 progress,
             ),
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            .go_to_image,
-            .set_slideshow_interval,
-            .inactive,
-            => {},
+            .prompt, .inactive => {},
         }
 
         match_count += 1;

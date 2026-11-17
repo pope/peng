@@ -26,6 +26,7 @@ pub const KeyModifiers = keys.KeyModifiers;
 pub const OptionId = actions.OptionId;
 pub const PaletteMode = types.PaletteMode;
 pub const ParamSpec = types.ParamSpec;
+pub const PromptKind = types.PromptKind;
 pub const scale_modes_string = types.scale_modes_string;
 pub const specs = types.specs;
 pub const StepDirection = types.StepDirection;

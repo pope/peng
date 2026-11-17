@@ -428,52 +428,30 @@ pub const AdjustIntent = union(enum) {
     set_compare: bool,
 };
 
+/// Sub-mode for single-line text or numeric input prompt dialogs.
+pub const PromptKind = union(enum) {
+    go_to_image,
+    slideshow_interval,
+    edit_param: EditParam,
+};
+
 /// Active modal command palette or interactive numeric dialog mode.
-pub const PaletteMode = enum {
+pub const PaletteMode = union(enum) {
     inactive,
     files,
     actions,
-    set_brightness,
-    set_contrast,
-    set_contrast_blend,
-    set_highlights,
-    set_shadows,
-    set_whites,
-    set_blacks,
-    set_temperature,
-    set_tint,
-    set_vibrance,
-    set_saturation,
-    set_clarity,
-    set_texture,
-    go_to_image,
     directory_navigator,
-    set_slideshow_interval,
+    prompt: PromptKind,
 
     /// Returns the associated EditParam if this mode adjusts a photographic
     /// parameter, or null otherwise.
     pub fn toEditParam(self: PaletteMode) ?EditParam {
         return switch (self) {
-            .set_brightness => .brightness,
-            .set_contrast => .contrast,
-            .set_contrast_blend => .contrast_blend,
-            .set_highlights => .highlights,
-            .set_shadows => .shadows,
-            .set_whites => .whites,
-            .set_blacks => .blacks,
-            .set_temperature => .temperature,
-            .set_tint => .tint,
-            .set_vibrance => .vibrance,
-            .set_saturation => .saturation,
-            .set_clarity => .clarity,
-            .set_texture => .texture,
-            .inactive,
-            .files,
-            .actions,
-            .go_to_image,
-            .directory_navigator,
-            .set_slideshow_interval,
-            => null,
+            .prompt => |kind| switch (kind) {
+                .edit_param => |param| param,
+                .go_to_image, .slideshow_interval => null,
+            },
+            .inactive, .files, .actions, .directory_navigator => null,
         };
     }
 
@@ -481,22 +459,7 @@ pub const PaletteMode = enum {
     /// input validation.
     pub fn isTextInputDialog(self: PaletteMode) bool {
         return switch (self) {
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            .go_to_image,
-            .set_slideshow_interval,
-            => true,
+            .prompt => true,
             .inactive, .files, .actions, .directory_navigator => false,
         };
     }
@@ -505,30 +468,15 @@ pub const PaletteMode = enum {
     /// or search palette.
     pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
         return switch (self) {
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            => blk: {
-                const spec = getSpec(self.toEditParam().?);
-                break :blk .{ .min = spec.min, .max = spec.max };
+            .prompt => |kind| switch (kind) {
+                .edit_param => |param| blk: {
+                    const spec = getSpec(param);
+                    break :blk .{ .min = spec.min, .max = spec.max };
+                },
+                .slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
+                .go_to_image => null,
             },
-            .set_slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
-            .go_to_image,
-            .inactive,
-            .files,
-            .actions,
-            .directory_navigator,
-            => null,
+            .inactive, .files, .actions, .directory_navigator => null,
         };
     }
 };
@@ -608,6 +556,7 @@ pub const AppIntent = union(enum) {
 
     // Slideshow controls
     start_slideshow,
+    start_slideshow_interval: f32,
     stop_slideshow,
 
     // Manga mode controls
@@ -683,4 +632,44 @@ test "ParamSpec - fromSlug lookup returns exact EditParam for all 13 slugs" {
     }
     try std.testing.expect(fromSlug("nonexistent") == null);
     try std.testing.expect(fromSlug("") == null);
+}
+
+test "PaletteMode - PromptKind methods cover all variants" {
+    const bright: PaletteMode = .{ .prompt = .{ .edit_param = .brightness } };
+    const contrast: PaletteMode = .{ .prompt = .{ .edit_param = .contrast } };
+    const goto: PaletteMode = .{ .prompt = .go_to_image };
+    const slide: PaletteMode = .{ .prompt = .slideshow_interval };
+    const inactive: PaletteMode = .inactive;
+    const files: PaletteMode = .files;
+    const actions: PaletteMode = .actions;
+    const dir_nav: PaletteMode = .directory_navigator;
+
+    try std.testing.expectEqual(
+        @as(?EditParam, .brightness),
+        bright.toEditParam(),
+    );
+    try std.testing.expectEqual(
+        @as(?EditParam, .contrast),
+        contrast.toEditParam(),
+    );
+    try std.testing.expectEqual(@as(?EditParam, null), goto.toEditParam());
+    try std.testing.expectEqual(@as(?EditParam, null), slide.toEditParam());
+    try std.testing.expectEqual(@as(?EditParam, null), files.toEditParam());
+
+    try std.testing.expect(bright.isTextInputDialog());
+    try std.testing.expect(goto.isTextInputDialog());
+    try std.testing.expect(slide.isTextInputDialog());
+    try std.testing.expect(!inactive.isTextInputDialog());
+    try std.testing.expect(!files.isTextInputDialog());
+    try std.testing.expect(!actions.isTextInputDialog());
+    try std.testing.expect(!dir_nav.isTextInputDialog());
+
+    const c_bounds = contrast.getTextInputBounds().?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), c_bounds.min, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), c_bounds.max, 0.001);
+    const s_bounds = slide.getTextInputBounds().?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), s_bounds.min, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 3600.0), s_bounds.max, 0.001);
+    try std.testing.expect(goto.getTextInputBounds() == null);
+    try std.testing.expect(actions.getTextInputBounds() == null);
 }

@@ -629,7 +629,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set brightness (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_brightness } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .brightness },
+                },
+            },
+        },
     },
     .{
         .id = .set_contrast_dialog,
@@ -638,7 +644,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set exact contrast (0.0 to 3.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_contrast } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .contrast },
+                },
+            },
+        },
     },
     .{
         .id = .set_contrast_blend_dialog,
@@ -647,7 +659,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog for contrast blend (0.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_contrast_blend } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .contrast_blend },
+                },
+            },
+        },
     },
     .{
         .id = .set_highlights_dialog,
@@ -656,7 +674,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set highlights (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_highlights } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .highlights },
+                },
+            },
+        },
     },
     .{
         .id = .set_shadows_dialog,
@@ -665,7 +689,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set shadows (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_shadows } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .shadows },
+                },
+            },
+        },
     },
     .{
         .id = .set_whites_dialog,
@@ -674,7 +704,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set exact whites (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_whites } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .whites },
+                },
+            },
+        },
     },
     .{
         .id = .set_blacks_dialog,
@@ -683,7 +719,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set exact blacks (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_blacks } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .blacks },
+                },
+            },
+        },
     },
     .{
         .id = .set_temperature_dialog,
@@ -692,7 +734,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set temperature (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_temperature } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .temperature },
+                },
+            },
+        },
     },
     .{
         .id = .set_tint_dialog,
@@ -701,7 +749,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set exact tint (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_tint } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .tint },
+                },
+            },
+        },
     },
     .{
         .id = .set_vibrance_dialog,
@@ -710,7 +764,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set vibrance (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_vibrance } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .vibrance },
+                },
+            },
+        },
     },
     .{
         .id = .set_saturation_dialog,
@@ -719,7 +779,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set saturation (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_saturation } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .saturation },
+                },
+            },
+        },
     },
     .{
         .id = .set_clarity_dialog,
@@ -728,7 +794,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set clarity (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_clarity } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .clarity },
+                },
+            },
+        },
     },
     .{
         .id = .set_texture_dialog,
@@ -737,7 +809,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to set texture (-1.0 to 1.0)",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_texture } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .{ .edit_param = .texture },
+                },
+            },
+        },
     },
     .{
         .id = .go_to_image_dialog,
@@ -746,7 +824,13 @@ pub const actions = [_]ActionDef{
         .description = "Open numeric input dialog to jump to image number",
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_g, .mod = .{ .shift = true } }},
-        .intent = .{ .set_palette = .{ .mode = .go_to_image } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .go_to_image,
+                },
+            },
+        },
     },
     .{
         .id = .command_palette,
@@ -771,7 +855,13 @@ pub const actions = [_]ActionDef{
         .description = "Open slideshow interval dialog and start automatic playback",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_palette = .{ .mode = .set_slideshow_interval } },
+        .intent = .{
+            .set_palette = .{
+                .mode = .{
+                    .prompt = .slideshow_interval,
+                },
+            },
+        },
     },
     .{
         .id = .stop_slideshow,
