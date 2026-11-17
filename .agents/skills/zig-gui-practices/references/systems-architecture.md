@@ -2,25 +2,20 @@
 
 ## System Pass Pipeline Architecture
 
-System passes under `src/app/systems/` follow a deterministic linear pipeline:
-
-- **Pattern 1 — Update Phase Execution (`runUpdatePhase`)**:
-  - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop tick in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase (runUpdatePhase)` -> `Render Phase`).
-  - Never add out-of-band system calls inside state mutation methods (`AppState`) or input event handlers.
-  - The system passes execute sequentially in deterministic order:
-    01. `sysUpdateAnimations(ctx)`: Ticks active SoA animation channels forward by `delta_time_ms`.
-    02. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
-    03. `sysProcessPaletteInput(ctx)`: Handles command palette query, item selection & click-outside -> `pending_intents`.
-    04. `sysProcessInput(ctx, palette_closed)`: Maps keyboard input & file drop events -> `pending_intents`.
-    05. `sysProcessUiInteractions(ctx, palette_closed)`: Resolves pointer hover/click interactions for UI close buttons and sliders -> `pending_intents`.
-    06. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
-    07. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued
-        discrete intents.
-    08. `sysSyncWindow(ctx)`: Synchronizes OS window title and display
-        fullscreen/state.
-    09. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads (`src/app/systems/asset_upload.zig`).
-    10. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
-    11. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
+- **Pattern 1 — Update Phase Execution (`runUpdatePhase` in `src/app/systems/root.zig`)**:
+  - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase` -> `Render Phase`), never via out-of-band calls inside `AppState` or input handlers:
+    01. `sysSyncWindowVisibility(ctx)` — Syncs minimize/occlude state before animation/slideshow passes.
+    02. `sysUpdateAnimations(ctx)` — Ticks active SoA animation channels by `delta_time_ms`.
+    03. `sysExecuteIpcCommands(ctx)` — Parses queued IPC socket commands -> `pending_intents`.
+    04. `sysProcessPaletteInput(ctx)` — Handles palette query, selection & click-outside -> `pending_intents`.
+    05. `sysProcessInput(ctx, palette_closed)` — Maps keyboard shortcuts & file drops -> `pending_intents`.
+    06. `sysProcessUiInteractions(ctx, palette_closed)` — Resolves overlay button & slider pointer hits -> `pending_intents`.
+    07. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)` — Updates pan/zoom glide & slideshow timers -> `pending_intents`.
+    08. `sysExecuteIntents(ctx)` — Single-pass execution of all queued `AppIntent` items.
+    09. `sysSyncWindow(ctx)` — Syncs OS window title and display state.
+    10. `sysProcessAssetUploads(ctx)` — Updates EXIF rotation, paces GPU texture uploads, and decays oversized staging buffers (> 32 MiB after 5s idle).
+    11. `sysUpdateCache(ctx)` — Enforces VRAM budget, evicts slots, and spawns `DecodeMode` / `DecodePriority` workers.
+    12. `sysSyncMetrics(ctx)` — Snapshots worker counters & telemetry into `ViewerStats`.
 
 ______________________________________________________________________
 
@@ -92,12 +87,13 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## Standardized System Docstrings
+## System Pass Documentation
 
-- **Pattern 5 — Standardized Function & System Pass Documentation (`///`)**:
-  - Every system pass entry point (`sysXxx`) must feature a standardized Zig docstring (`/// System Pass: ...`).
-  - System pass docstrings must detail numbered `Responsibilities:` (e.g. 1. Ingest input, 2. Filter matches, 3. Rebuild overlays).
-  - Internal helper functions must document `Pre-conditions:`, `Parameters:`, return value contracts, and memory ownership / `errdefer` cleanup rules.
+- **Pattern 5 — Concise System Pass Docstrings (`///`)**:
+  - Prefix every public system pass entry point (`pub fn sysXxx`) with a concise
+    `/// System Pass: ...` doc comment summarizing its frame responsibility.
+  - Keep internal helpers private (`fn`) without verbose multi-section docstring
+    templates unless documenting non-obvious ownership or safety contracts.
 
 ______________________________________________________________________
 

@@ -1,198 +1,87 @@
+---
+trigger: glob
+globs: '**/src/ui/**, **/src/gpu/**, **/src/state/**, **/src/geom/**, **/src/viewer.zig, **/src/main.zig'
+description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/zoom math, frame wait sleeping, crossfades, progressive aspect stability, and shader invariants.
+---
+
 # UI Rendering & Performance Rules
 
-## 1. 2-Pass GPU Render Pipeline, Unified Font Atlas & Scissor Safety
+## 1. 2-Pass `RenderPacket`, Unified Font Atlas & Scissor Safety
 
-- **2-Pass UI `RenderPacket` Pipeline (`src/ui/renderer.zig`,
-  `src/gpu/pass.zig`)**:
-  1. **Extraction Pass (`buildRenderPacket`)**: Traverses the immediate-mode
-     `UiCommand` list (`UiDrawList`) to populate vertex arrays, scissor rects,
-     and batched draw commands (`RenderPacket`), ensuring the unified `1024x1024`
-     UI + glyph atlas (`ensureUiAtlasTexture`) and rasterizing uncached
-     codepoints on demand via `getOrRasterizeGlyph` (`src/gpu/pass.zig`) while
-     deferring all GPU render passes.
-  2. **Execution Pass (`executeRenderPacket` / `FrameTarget`)**: Orchestrated
-     inside `executeFrame` / `executeRenderPacket` against a `FrameTarget`
-     (`.window: sdl.Window` or `.headless: PhysicalDims`), uploads geometry via
-     double-buffered transfer buffers, runs the 2-pass quarter-resolution Dual
-     Kawase backdrop blur (`tex.scene` -> `tex.blur_down` -> `tex.blur`, gated
-     on `enable_blur` and `.blurred_surface` batches), and issues batched GPU
-     draw calls before submitting the command buffer.
-- **Unified UI + Per-Glyph Font Atlas & Vertex Color Modulation**:
-  - `TextCache` (`src/gpu/text_cache.zig`) maintains a single `1024x1024`
-    `RGBA8_UNORM` GPU atlas texture (`atlas_texture`) whose top-left `4x4`
-    block at `(0, 0)` is initialized to opaque white (`0xFFFFFFFF`). Solid UI
-    rectangles, rounded rectangles, borders, and arcs sample `uv = (0.0, 0.0)`
-    from this same texture (`gpu_res.uiTexture()`), collapsing UI chrome and
-    text within the same scissor region into a single GPU draw call.
-  - `GlyphCacheKey` MUST index strictly by `(font_id, font_size, codepoint)`.
-    Always rasterize glyphs in pure white `(255, 255, 255, 255)` with a 1px
-    transparent-white (`0x00FFFFFF`) border and modulate full RGBA color
-    dynamically via `Vertex.color` (`packRgba255(color)`) to prevent font
-    re-rasterization and cache thrashing across colors, dynamic counters, or
-    fades.
-- **Zero-Area Scissor Skipping & SIMD Bounds Safety**:
-  - Clip scissor rects against physical framebuffer bounds and skip any draw
-    with `scissor.w <= 0` or `scissor.h <= 0`.
-  - Verify slice alignment and bounds (`offset + 4 <= slice.len`) before
-    casting pixel slices into SIMD vectors (`@ptrCast(&slice[offset])`).
+- **2-Pass Render Pipeline (`src/ui/renderer.zig`, `src/gpu/pass.zig`)**:
+  1. `buildRenderPacket`: Extracts `UiDrawList` into vertices, scissors, and
+     batches (`RenderPacket`), ensuring the `1024x1024` UI+glyph atlas and
+     rasterizing uncached glyphs via `getOrRasterizeGlyph` with zero render passes.
+  2. `executeFrame` / `executeRenderPacket`: Uploads geometry via double-buffered
+     transfer buffers, runs lazy 2-pass quarter-res Dual Kawase blur
+     (`BlurResources`: `tex.scene` -> `tex.blur_down` -> `tex.blur` when
+     `enable_blur` and `.blurred_surface` batches exist), and submits draws.
+- **Unified `1024x1024` UI + Per-Glyph Atlas (`src/gpu/text_cache.zig`)**:
+  - Reserve top-left `4x4` opaque white (`0xFFFFFFFF`) at `uv = (0, 0)` for solid
+    UI primitives (`gpu_res.uiTexture()`) so chrome and text merge into single
+    scissor batches.
+  - Key glyphs strictly by `GlyphCacheKey{ .font_id, .font_size, .codepoint }`,
+    rasterized once in pure white `(255, 255, 255, 255)` with a 1px `0x00FFFFFF`
+    gutter, and modulate RGBA via `Vertex.color` (`packRgba255`).
+- **Scissor & SIMD Bounds**: Clip scissors to physical bounds, skip draws with
+  `scissor.w <= 0` or `scissor.h <= 0`, and check `offset + 4 <= slice.len`
+  before SIMD `@ptrCast`.
 
-## 2. DPI Scaling, Universal Zoom & Viewport Invariants
+## 2. HiDPI Coordinates, Universal Zoom & Panning
 
-- **Logical Window Points vs. Physical Framebuffer Pixels**:
-  - Immediate-mode `RectCut` UI layout (`geom.FRect`) and overlay drag positions
-    operate in logical window points (`LogicalDims`, `LogicalPoint`), whereas
-    GPU framebuffers, `ViewportParams.pan_x/y`, `getBaseScale`, and
-    `isImageOverflowing` operate in physical pixels (`PhysicalDims`,
-    `PhysicalPoint`, `PositiveDimsU32`, converted via `DpiScale` in
-    `src/geom/root.zig`).
-  - Pass strongly typed coordinate/dimension structs (`LogicalDims`,
-    `PhysicalDims`, `PositiveDimsU32`, `LogicalPoint`, `PhysicalPoint`) across
-    function boundaries rather than raw `w, h` or `x, y` scalar pairs, and pass
-    `PhysicalDims` (`logical_dims.toPhysical(scale)`) directly when a callee
-    only needs physical pixel dimensions rather than pairing `LogicalDims` +
-    `DpiScale`.
-  - Evaluate `computeViewDims` in physical framebuffer space via
-    `view_transform.computeLogicalDrawDims` and convert the resulting draw
-    bounds back to `LogicalDims` for UI layout.
-  - Multiply UI panel width deductions (e.g. docked edit panel) by the display
-    scale factor $S = \\text{pix_w} / \\text{win_w}$ before subtracting from
-    physical framebuffer dimensions.
-- **Pre-Scaled Layout Rectangles vs. Manual Zoom Quads**:
-  - In preset modes (`.fit`, `.fill`), layout `rect.w` and `rect.h`
-    (`computeDrawDims`) are already scaled to screen dimensions; never multiply
-    them by $Z\_{\\text{base}}$ a second time.
-  - In manual zoom mode and outgoing crossfade quads
-    (`ImageTransitionPrevQuad`), compute physical quad dimensions directly from
-    unrotated source dimensions and `ZoomFactor` (`dst_w = sw * z`,
-    `dst_h = sh * z`), guarded by `std.math.isFinite(z) and z > 0.0` and
-    `dst_w > 0 and dst_h > 0`.
-- **Zoom Synchronization, Detents & Overflow Panning**:
-  - Call `self.updateCurrentRotation()` *before* synchronizing
-    `vp.zoom_factor = ZoomFactor.init(self.getBaseScale())` on navigation and
-    rotation intents so preset zoom reflects the active slide's orientation.
-  - For discrete zoom steps (`i`/`o`) and smooth `ZoomController` glides, detect
-    100% ($Z = 1.0$) detents via boundary crossing
-    (`(old < 1.0 and target >= 1.0) or (old > 1.0 and target <= 1.0)`), never a
-    narrow epsilon band.
-  - Switch `h`/`j`/`k`/`l` and arrow keys between image navigation and viewport
-    panning strictly on `isImageOverflowing()`, never on `zoom > 1.0`.
+- **Logical Points vs. Physical Pixels (`src/geom/root.zig`)**:
+  - UI `RectCut` (`FRect`) and overlay drags use logical points (`LogicalDims`,
+    `LogicalPoint`); framebuffers, `ViewportParams.pan_x/y`, `getBaseScale`, and
+    `isImageOverflowing` use physical pixels (`PhysicalDims`, `PhysicalPoint`,
+    `PositiveDimsU32`, converted via `DpiScale`). Pass typed wrappers rather than
+    raw `w, h` / `x, y` scalars, and scale docked UI deductions by `DpiScale`
+    before subtracting from physical dimensions.
+- **Zoom Sizing, Detents & Overflow Routing**:
+  - Never multiply `.fit`/`.fill` `computeDrawDims` bounds by $Z\_{\\text{base}}$ a
+    second time; compute manual/outgoing transition quads from unrotated source
+    dims $\\times$ `ZoomFactor` guarded by `isFinite(z) and z > 0`.
+  - Call `updateCurrentRotation()` *before* `ZoomFactor.init(getBaseScale())`.
+  - Detect $1.0\\times$ zoom detents via boundary crossing (`(old < 1 and new >= 1)`
+    or `(old > 1 and new <= 1)`), and switch `h/j/k/l`/arrows between navigation
+    and panning strictly on `isImageOverflowing()`.
 
-## 3. UI Interaction, Animations & Event Loop Polling
+## 3. Event Loop Sleeping, Modal Dismissal & Crossfades
 
-- **Event Loop Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
-  - When `self.display == .hidden` (resident `--server` mode with the window
-    closed), `computeFrameWaitStrategy` immediately returns `.wait_indefinite`
-    (unless `had_bg_events` is true) so the resident daemon blocks at 0% CPU
-    until woken by an IPC command or OS event.
-  - When `.visible`, `computeFrameWaitStrategy` (`src/app/state.zig`) selects
-    `.poll` when pre-wait background events were drained, or schedules a bounded
-    `8ms` tick when `self.isBusy()` (active SoA animations, active slideshow,
-    active workers), `is_current_loading`, `drag_state != .none`,
-    `pan_controller.isBusy()`, `zoom_controller.isBusy()`,
-    `has_unpopulated_cache`, or `window_resized` is true.
-  - When idle, `getWaitTimeoutMs` schedules a bounded `waitEventTimeout` for
-    active transient overlay deadlines (`title_display == .transient` or
-    `snackbar.notification == .active`), active `ScrollCadence` settle
-    windows (`navigation.cadence.settleTimeoutMs(now)` across `35ms`
-    `.single_step`, `200ms` `.brisk_scroll`, and `251ms` promotion boundaries),
-    and oversized staging buffer decay deadlines
-    (`upload_staging.decayTimeoutMs(now)`), and
-    otherwise enters 0% CPU blocking `wait_indefinite` (including when the
-    command palette is open and idle, or once oversized staging buffers decay).
-- **Modal Dismissal Input Decoupling & Held-Key Suppression**:
-  - Animated overlays (such as `PaletteState`) MUST decouple input focus from
-    close animations via `isAcceptingInput()`
-    (`mode != .inactive and !is_closing`) and pass `captures_pointer = false` to
-    `InteractionState.setPaletteModalRect` while closing so background controls
-    respond immediately.
-  - When opening a modal or clicking UI controls, suppress held directional and
-    zoom keys (`pan_controller.suppress`, `zoom_controller.suppress`) so held
-    keys do not bleed into the viewport upon modal dismissal.
-- **Immediate-Mode Scroll Containers vs. Pointer Controls**:
-  - Update edit panel scroll offsets in `InteractionState.syncFrameInput`
-    strictly from mouse wheel deltas over `edit_scroll_list`, and palette
-    scroll offsets via `InteractionState.syncPaletteScroll` /
-    `PaletteConfig.resolveScrollOffsetY` (never pointer drag-scrolling).
-  - Zero `scroll_delta` while a slider drag is active (`drag_state == .slider`
-    or `active_slider != null`) to prevent container jitter.
-- **Image Crossfade & Scrubbing Invariants**:
-  - **Snap-and-Cut on Scrubbing/Interruption**: Never retarget duration across
-    three textures. If navigation steps occur within $< 200\\text{ms}$
-    (`ScrollCadence.shouldBypassCrossfade`) or interrupt an in-flight
-    crossfade, immediately snap (`setImmediate(.image_crossfade, 1.0)`,
-    `image_transition = .none`) and cut.
-  - **GPU Residency & Mutual Exclusion**: Only start a crossfade if the outgoing
-    slide is `.loaded_gpu` and the incoming slide did not fail. Never run a
-    thumbnail crossfade concurrently with an active `image_transition` or during
-    pair stream promotion, and protect both active and outgoing
-    (`getTransitionPrevIndex()`) slots in `enforceVramBudget`.
-- **UI Modularization & Single-Source-of-Truth State Binding**:
-  - Decompose UI views into private `RectCut` helpers that preserve exact
-    sizing, padding, corner radii, border widths, and
-    `theme.withAlpha(color, progress)` multipliers.
-  - Bind UI overlays and "Stats for Nerds" (`src/ui/stats.zig`) directly to
-    canonical domain state fields through `UiViewModel`, never to duplicate
-    shadow fields.
+- **Frame Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
+  - Return `.wait_indefinite` (0% CPU) when `.hidden` or settled idle; `.poll`
+    when background events were drained; `8ms` tick when `isBusy()`, loading,
+    dragging, gliding (`pan_controller`/`zoom_controller`), unpopulated prefetch
+    cache, or resized; and `getWaitTimeoutMs` for transient overlays,
+    `ScrollCadence.settleTimeoutMs` (`35ms` `.single_step`, `200ms`
+    `.brisk_scroll`, `251ms` promotion), and `upload_staging.decayTimeoutMs`.
+- **Modal Input Decoupling & Scroll Containers**:
+  - Gate modal input on `isAcceptingInput()` (`mode != .inactive and !is_closing`),
+    pass `captures_pointer = false` while closing, and call `suppress` on
+    `pan_controller`/`zoom_controller` when opening modals or clicking UI chrome.
+  - Drive scroll containers strictly from wheel deltas (never pointer drag), and
+    zero `scroll_delta` during active slider drags.
+- **Image Crossfade Invariants**:
+  - Snap-and-cut (`setImmediate(.image_crossfade, 1.0)`, `image_transition = .none`)
+    when `< 200ms` (`shouldBypassCrossfade`) or interrupting an active dissolve.
+  - Require outgoing `.loaded_gpu` and non-failed target; never run
+    `thumb_crossfade` alongside `image_transition` or pair promotion; protect
+    `getTransitionPrevIndex()` in `enforceVramBudget`.
 
-## 4. Progressive Loading & Aspect Ratio Stability
+## 4. Progressive Aspect Stability & Shader/Test Determinism
 
-- **Raw Bayer Sensor Stream Exclusion**:
-  - RAW header probes (`probe.probeRawFileHeader`, `decodeRawFile`) MUST
-    exclude unprocessed raw sensor streams so `metadata.full_dims` and
-    `source_dims` reflect true visible photo
-    dimensions rather than optical-black sensor dimensions (see
-    [vram-preloading.md][vram-preload] §2 for format-specific TIFF tags).
-- **No Worker Thumbnail Dimension Fallback**:
-  - Decode workers (`decodeRawFile`, `decodeWorker`) MUST leave
-    `full_dims = null` when true full dimensions are unknown; never substitute
-    thumbnail dimensions (`t_surf.w()`), which poisons cache aspect ratios.
-- **Monotonic Area Updates & `only_has_thumb` Guard**:
-  - Guard asynchronous dimension updates (`applyProbedMetadata`,
-    `CacheEntry.updateFullDims(dims: PhysicalDims)`) with monotonic area checks
-    (`cand_area > cur_area`) so lower-tier previews never downgrade
-    authoritative dimensions.
-  - Guard `.shrink` -> `.full` placeholder promotion in `computeDrawDims` with
-    `only_has_thumb` (`full_dims == null`,
-    `raw_metadata.getSensorDims() == null`, and `thumbnail != .none`) so small
-    icons with known dimensions never blow up to fill the viewport.
-- **Case-Insensitive Deterministic Sorting**:
-  - Sort all filesystem scans, archives, and directory lists with
-    `std.ascii.lessThanIgnoreCase`.
+- **Dimension Stability**: Exclude raw Bayer CFA/LinearRaw streams from RAW
+  probes; keep `full_dims = null` when unknown (never substitute thumbnail dims);
+  enforce monotonic area updates (`cand_area > cur_area`); guard `.shrink -> .full`
+  with `only_has_thumb`; sort lists via `std.ascii.lessThanIgnoreCase`.
+- **Shader & `--test-mode` Invariants (`src/gpu/shaders/image.frag.glsl`)**:
+  - Bypass sRGB \<-> linear math via uniform `if (ubo.has_adjustments != 0)` when
+    `ImageEdits.hasEdits()` is false; clamp `max(..., 0.0)` before `pow(c, 2.4)`;
+    use even-symmetric 2nd-order sharpening, explicit LOD/gradients for
+    nearest/AA-nearest, and bilinear `Y_ref` for bilateral taps; apply `0.18`
+    middle-gray contrast *before* $\\exp_2(\\text{brightness} \\times 2.0)$.
+  - `--test-mode` disables `auto_title`, `snackbar`, and `crossfade`; test
+    blurred overlays via `SnackbarTrigger.testing` without mutating viewport zoom.
 
-## 5. GPU Shader & Visual Regression Test Invariants
-
-*(See [shader-optimization.md][shader-opt] for full mathematical formulas,
-filter kernels, and color science equations.)*
-
-- **Shader Numerical & Identity Invariants**
-  (`src/gpu/shaders/image.frag.glsl`):
-  1. **CPU-Gated Identity Bypass**: Check the dynamically uniform
-     `if (ubo.has_adjustments != 0)` flag (computed via `ImageEdits.hasEdits()`
-     across all 13 edit parameters) to completely bypass sRGB \<-> linear
-     conversions when edits are neutral, preserving bit-exact golden baselines.
-  2. **Pre-`pow` Ringing Clamping**: Negative-lobe filters (Mitchell-Netravali,
-     Lanczos3) can ring below `0.0`; always clamp `max(..., 0.0)` before
-     fractional `pow(c, 2.4)` in `srgb_to_linear` to prevent `NaN` propagation.
-  3. **Zero-Phase Filter Symmetry, Explicit LOD & Bilinear Center Reference**:
-     Never add odd-symmetric 1st derivatives with static positive weights in
-     sharpening passes (use even-symmetric 2nd-order curvature), use explicit
-     LOD/gradients for nearest and AA-nearest sampling, and compare bilateral
-     detail ring taps against a consistent bilinear center reference `Y_ref`.
-  4. **Photometric Exposure Ordering & Monotonic Tonal Quad**: Apply contrast
-     around 18% linear middle gray (`0.18`) *before* optical stop exposure gain
-     $\\exp_2(\\text{brightness} \\times 2.0)$, and keep root-space tonal curves
-     within monotonic derivative bounds.
-- **Headless Test Mode (`--test-mode`) & Overlay Isolation**:
-  - Disable non-instant animations and transient overlays in test mode
-    (`src/main.zig`):
-    ```zig
-    state.viewer.ui.overlays.auto_title = !parsed.test_mode;
-    state.viewer.ui.snackbar.enabled = !parsed.test_mode;
-    state.viewer.navigation.crossfade = !parsed.test_mode;
-    ```
-  - When testing glassmorphic or blurred UI overlays, use synthetic triggers
-    (`SnackbarTrigger.testing`) rather than mutating viewport zoom/filter/edit
-    state so background pixels beneath the overlay remain invariant.
-
-[shader-opt]: ../skills/zig-gui-practices/references/shader-optimization.md
-[vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md
+*(Deep recipes: [sdl3-gpu-rendering.md](../skills/zig-gui-practices/references/sdl3-gpu-rendering.md),
+[dpi-layout-math.md](../skills/zig-gui-practices/references/dpi-layout-math.md),
+[shader-optimization.md](../skills/zig-gui-practices/references/shader-optimization.md))*

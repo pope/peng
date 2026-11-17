@@ -6,17 +6,6 @@
   When computing VRAM memory footprints, account for the base RGBA32 texture size ($W \\times H \\times 4\\text{ bytes}$, including 24-bit RGB/BGR surfaces unpacked to `RGBA8` on the GPU) plus the $+33%$ mipmap pyramid overhead ($\\frac{4}{3} \\times \\text{base size}$). Ensure budget caps (e.g. $1024\\text{ MB}$) can accommodate multiple high-resolution ($24\\text{MP}-50\\text{MP}$) images simultaneously, and dynamically cap the neighbor prefetch radius ($2 \\to 1 \\to 0$) in `sysUpdateCache` when the $\\pm 2$ window exceeds `max_vram_bytes`.
 - **ViewMode-Aware Neighbor & Transition Slot Protection**:
   In `sysUpdateCache` and `enforceVramBudget`, resolve visible neighbors via `NavigationState.getVisibleNeighbors()` (`VisibleNeighbors`) so prefetching and eviction protection respect active `ViewMode` filtering (`.default`, `.picks`, `.rejects`, `.all`) alongside `getTransitionPrevIndex()`.
-- **Worker Concurrency & Lifecycle Synchronization**:
-  Quiesce and clean up background worker tasks and queues (`state.workers.deinit(self.allocator, self.io)`) in the top-level owner lifecycle method (`AppState.deinit()`).
-- **HashMap String Key Lifetimes**:
-  Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:
-  ```zig
-  var rot_iter = self.rotation_map.keyIterator();
-  while (rot_iter.next()) |key| {
-      self.allocator.free(key.*);
-  }
-  self.rotation_map.clearRetainingCapacity();
-  ```
 - **Resident `--server` Mode Reclamation & Cross-Thread C Decoder Arena Trimming (`sdl.reclaimProcessHeap`)**:
   - When `decodeWorker` decodes images via `SDL_image` / `stb_image` on background worker threads and transfers the resulting `SDL_Surface` to the main thread (`handleImageDecodedEvent`, `prepareCacheTextures` in `src/app/systems/asset_upload.zig`), `SDL_DestroySurface` frees those multi-megabyte pixel buffers back into the worker threads' glibc `ptmalloc2` non-main arenas (`64MB` `mmap` heaps). Because glibc dynamically raises `M_MMAP_THRESHOLD` (up to `32MB`) and `M_TRIM_THRESHOLD` (up to `64MB`) after the first large free, worker thread arenas retain 100MB+ of dirty anonymous pages unless explicitly trimmed via `sdl.reclaimProcessHeap()` (`malloc_trim(0)` on Linux/glibc).
   - **Contention Guard**: Because `malloc_trim(0)` acquires every per-thread glibc arena lock across the process, NEVER call `sdl.reclaimProcessHeap()` on `.thumb_decoded` events during rapid scrolling or while `workers.active_decode_threads.load(.acquire) > 0` during normal viewing. Invoke `sdl.reclaimProcessHeap()` only when:
@@ -175,11 +164,12 @@ ______________________________________________________________________
   ingestion in `IngestTelemetry` using zero-sentinel tagged unions
   (`ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`).
 - **Demand-First Settled Preload & GPU Upload Gating**:
-  Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is
+  Once navigation settles ($\\ge 35\\text{ms}$ for `.single_step` or
+  $\\ge 200\\text{ms}$ for `.brisk_scroll`) AND the active slot is
   `.loaded_gpu` / `.promoting_gpu` (or `.loaded_cpu` in headless mode, or
   `.failed`), `sysUpdateCache` dispatches visible neighbor prefetch workers
-  ($\\pm 1, \\pm 2$). Completed surfaces are staged in
-  `ResidentAsset.loaded_cpu` (`CpuAsset`) or `.promoting_gpu`
+  ($\\pm 1, \\pm 2$) with `DecodePriority.background`. Completed surfaces are
+  staged in `ResidentAsset.loaded_cpu` (`CpuAsset`) or `.promoting_gpu`
   (`PromotingGpuComponent`), then trickled to the GPU at 1 texture per frame
   (active slot first, then closest neighbor) in `prepareCacheTextures`
   (`src/app/systems/asset_upload.zig`).

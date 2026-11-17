@@ -1,64 +1,36 @@
 ---
 name: zig-gui-practices
 description: >-
-  Best practices for Zig GUI development with immediate-mode RectCut UI, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
-  Trigger immediately for:
-  - Layout & DPI: RectCut UI layout, High-DPI/Retina scaling, zoom-to-mouse math, aspect fit/fill calculations.
-  - Image & Memory: EXIF header dimension parsing, APP1 segment skipping, VRAM cache budgeting, navigation throttling, settled preloading.
-  - GPU & Shaders: SDL3 GPU/Vulkan text blitting recipe, hardware mipmapping, GLSL shader optimization, Horner's method, branchless GLSL math.
-  DO NOT trigger for:
-  - Non-GUI backend scripts, database SQL, pure CLI parsing without UI.
+  Procedural recipes and mathematical references for Peng's immediate-mode
+  RectCut UI, HiDPI/zoom math, SDL3 GPU rendering (glyph atlas, RGB24 compute
+  unpack, Dual Kawase blur), EXIF/RAW progressive streaming, VRAM/staging
+  budgets, and GLSL shaders. Use when modifying UI layout, viewport transforms,
+  image probing/caching, or GPU pipelines/shaders.
 ---
 
-# Best Practices for Zig GUI & Graphics Development
+# Zig GUI & Graphics Reference Index
 
-This guide provides modular procedural recipes and mathematical reference guides for Peng Image Viewer development:
+Read only the specific reference file needed for your current task:
 
-______________________________________________________________________
-
-## Technical Reference Guides
-
-- **[Systems Architecture & Execution Rules](references/systems-architecture.md)**
-
-  - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
-  - Read-only `UiViewModel` (`src/ui/view_model.zig`) snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
-  - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`) with intra-frame LIFO deallocation.
-  - Frame-arena string lifetime invariants for `UiDrawList` layout labels (`layout.zig`, `edit_panel.zig`, `palette.zig`).
-  - Declarative capabilities (`actions.zig`), zero-allocation `SnackbarState` (`src/state/snackbar.zig`), and `MultiArrayList` SoA SIMD navigation.
-
-- **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**
-
-  - High-DPI / Retina scale factors (`scale_x`, `scale_y`) for viewports and mouse inputs.
-  - Zoom-to-mouse panning math and aspect ratio fitting (`full`, `crop`, `shrink`).
-  - Immediate-mode `FRect` bounding box recording and hit-testing
-    (`src/state/interaction.zig`) for interactive widgets and sliders.
-  - Compound row badge alignment and normalized `[0.0, 1.0]` theme alpha invariants.
-
-- **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
-
-  - Unified `1024x1024` UI + per-glyph font atlas (`TextCache`, `FontSizePage`, `ShelfPacker`) and zero-allocation glyph metrics measurement (`TTF_GetGlyphMetrics`).
-  - GPU compute RGB24/BGR24 unpack pipeline (`unpack_rgb.comp.glsl` & `UploadStagingBuffer` with 32 MiB warm cap and 5s idle decay) with hardware mipmap generation.
-  - 2-pass quarter-resolution Dual Kawase backdrop blur pipeline (`blur_down.frag.glsl`, `blur_up.frag.glsl`) for glassmorphic overlays.
-
-- **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
-
-  - VRAM cache memory footprint math (+33% mipmap overhead), active/transition/neighbor slot protection, and 32 MiB staging buffer warm cap with 5s idle decay + `getWaitTimeoutMs` wake scheduling.
-  - Off-main-thread Stage-1 header probing (`DecodeMode`, 256KB bounded read) & single-pass `std.Io` in-memory decoding.
-  - Camera RAW format quirks table (Adobe DNG / Ricoh GR III, Canon CR2 IFD0/2/3 disambiguation, Fujifilm RAF 12MP ceiling, Sony ARW Bayer CFA exclusion) and 4-tier RAW+JPEG progressive streaming.
-  - `ScrollCadence` navigation throttling (`35ms` `.single_step` / `200ms`
-    `.brisk_scroll` `DecodeMode.active_fast_scroll` / `.speculative_thumb`,
-    `200ms` crossfade bypass, `250ms` settled Fit promotion), tiered
-    `DecodePriority` worker scaling (`@max(1, @min(8, cpus -| 1))` base with
-    `.foreground` burst headroom and `.background` cap), and cooperative
-    `ImageCacheKey` (stable `MediaId` and generation) epoch pruning.
-
-- **[GPU Shader Optimization Recipes](references/shader-optimization.md)**
-
-  - Horner's method for polynomial splines and `#pragma unroll` SPIR-V / Metal compilation (`zig build shaders`).
-  - Branchless per-pixel math (`greaterThan()`, `step()`, `mix()`) vs dynamically uniform branches (`if (ubo.has_adjustments != 0)`).
-  - 7-filter resampling suite (`Nearest`, `Bilinear`, `AA-Nearest`, `Mitchell-Netravali`, `Lanczos3`, `AMD FSR 1.0`, `Tiny CNN`).
-  - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle
-    gray contrast, monotonic root-space tonal quad, post-contrast exposure
-    ($2^{2\\cdot\\text{EV}}$), skin-protected vibrance, 8-tap $R=2\\text{px}$
-    bilateral Texture, 5-tap $R=12\\text{px}$ ($\\text{Lod } 3.0$) bilateral
-    Clarity, and rational highlight soft-knee.
+- **[Systems Architecture & Execution Patterns](references/systems-architecture.md)**:
+  3-phase frame loop, 12-step `runUpdatePhase`, `FrameContext` arena lifetimes,
+  `ImageCacheKey` & `SlotBound` generation envelopes, `Orientation` `enum(u2)`
+  math, `actions.zig` 4-way projections, `MultiArrayList` 256-bit SIMD triage
+  scans, `SnackbarState`, `AdjustIntent`/`PaletteMode`, and overlapped startup.
+- **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**:
+  `LogicalDims`/`PhysicalDims`/`DpiScale` conversions, annular arc geometry,
+  zoom-to-cursor anchor math (`zoomAtPoint`), Wayland/touchscreen pinch math,
+  `InteractionState` `FRect` hit-testing, and right-cut badge truncation.
+- **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**:
+  Unified `1024x1024` UI + `GlyphCacheKey` font atlas, `FontSizePage` ASCII
+  measurement & CJK fallback, `unpack_rgb.comp.glsl` staging, lazy 2-pass Dual
+  Kawase blur (`BlurResources`), and Vulkan `Device.reclaimMemory()` flush.
+- **[VRAM Budgeting, EXIF/RAW Parsing & Throttling](references/vram-preloading.md)**:
+  VRAM mipmap budgeting, 32 MiB/5s staging decay, `malloc_trim` contention
+  guards, Stage-1 `DecodeMode` & Freedesktop thumbnail cache, camera RAW quirks
+  table & 4-tier RAW+JPEG streaming, `ScrollCadence` & `DecodePriority`, and
+  SIMD DCT letterbox crop detection (`scaleRgba32Smooth`).
+- **[GPU Shader Optimization Recipes](references/shader-optimization.md)**:
+  Horner's method, branchless vs uniform GLSL branching, 7-filter resampling
+  suite (Nearest, Bilinear, AA-Nearest, Mitchell, Lanczos3, FSR 1.0, Tiny CNN),
+  and the 13-parameter linear photographic color & bilateral presence pipeline.
