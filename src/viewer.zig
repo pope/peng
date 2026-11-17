@@ -71,7 +71,10 @@ pub fn updateFrame(
             (app_state.viewer.drag_state == .slider) or
             (app_state.viewer.ui.overlays.edit_panel.active_slider != null);
 
-        ui.interaction.syncFrameInput(input, is_slider_active);
+        app_state.viewer.ui.interaction.syncFrameInput(
+            input,
+            is_slider_active,
+        );
     }
 
     // Phase 2: Update Phase — Run all systems sequentially
@@ -125,6 +128,7 @@ pub fn updateFrame(
     else
         .{ .headless = input.logicalWinDims().toPhysical(input.dpiScale()) };
     ui.layout.renderFrame(
+        &app_state.viewer.ui.interaction,
         ui_model,
         resources,
         input,

@@ -56,8 +56,8 @@
     `IpcServer` handle, and UDS socket helpers (`readLineTimeout`,
     `readLineTimeoutAlloc`).
   - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`,
-    `AnimationState`, `SnackbarState`, `PanController`, `ZoomController`).
-    Zero SDL3, zero C library linkage, zero I/O.
+    `InteractionState`, `AnimationState`, `SnackbarState`, `PanController`,
+    `ZoomController`). Zero SDL3, zero C library linkage, zero I/O.
   - `src/config/`: CLI argument parsing (`cli.zig`).
   - `src/gpu/`: GPU pipelines, geometry tessellation, render image commands,
     render pass execution and frame lifecycle (`pass.zig`), texture cache,
@@ -67,9 +67,8 @@
   - `src/ui/`: Immediate-mode `RectCut` UI layout builders (`layout.zig`,
     `palette.zig`, `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation
     snapshot (`view_model.zig`), `UiDrawList` & 2-pass GPU packet builder
-    (`renderer.zig`), text utilities (`text_utils.zig`), theme styling
-    (`theme.zig`), and immediate-mode interaction / hit-testing
-    (`interaction.zig`). Strictly 100% zero-SDL linkage or imports (zero
+    (`renderer.zig`), text utilities (`text_utils.zig`), and theme styling
+    (`theme.zig`). Strictly 100% zero-SDL linkage or imports (zero
     `@import("sdl")`). Tested via `zig build test-ui`.
   - `src/app/`: Application state (`state.zig`), worker event ingestion
     (`events.zig`), sequential Phase 2 systems (`systems/`), and background
@@ -191,7 +190,7 @@
     `pub fn`. In `src/ui/`, only top-level render orchestrators (`renderFrame`,
     `renderPalette`, `renderEditPanel`, `renderStatsOverlay`,
     `buildRenderPacket`, `hasBlurredSurface`), layout geometry
-    (`computeDrawDims`), and `interaction`/`text_utils`/`theme` APIs are
+    (`computeDrawDims`), and `text_utils`/`theme` APIs are
     `pub fn`. In executable roots, only `pub fn main` is public.
   - Same-file `test` blocks can access private declarations directly; never mark
     a symbol `pub` solely for same-file tests.

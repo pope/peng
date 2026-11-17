@@ -1,7 +1,6 @@
 const edit_panel = @import("edit_panel.zig");
 const geom = @import("geom");
 const intents = @import("intents");
-const interaction = @import("interaction.zig");
 const renderer = @import("renderer.zig");
 const state = @import("state");
 const std = @import("std");
@@ -156,6 +155,7 @@ fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
 }
 
 fn renderInfoOverlay(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     ui_model: UiViewModel,
     draw_dims: LogicalDims,
@@ -476,6 +476,7 @@ fn renderInfoOverlay(
 }
 
 fn renderAtlasOverlay(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     ui_model: UiViewModel,
     win_dims: LogicalDims,
@@ -607,6 +608,7 @@ fn renderAtlasOverlay(
 
 /// Emits UI draw commands for the image metadata panel and performance overlay.
 pub fn renderStatsOverlay(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     ui_model: UiViewModel,
     win_dims: LogicalDims,
@@ -615,6 +617,7 @@ pub fn renderStatsOverlay(
     measure_data: *const MeasureTextUserData,
 ) !void {
     try renderInfoOverlay(
+        interaction,
         list,
         ui_model,
         draw_dims,
@@ -622,6 +625,7 @@ pub fn renderStatsOverlay(
         measure_data,
     );
     try renderAtlasOverlay(
+        interaction,
         list,
         ui_model,
         win_dims,
@@ -958,12 +962,11 @@ test "getRawContainerName - format detection" {
 }
 
 test "floating HUD overlay card geometry and hit rects" {
-    interaction.resetInteractionState();
-    defer interaction.resetInteractionState();
+    var interaction_inst: state.InteractionState = .{};
 
     const card_rect = FRect{ .x = 10, .y = 10, .w = 380, .h = 200 };
     const close_rect = FRect{ .x = 360, .y = 22, .w = 24, .h = 24 };
-    interaction.setInfoPanelRects(card_rect, close_rect);
+    interaction_inst.setInfoPanelRects(card_rect, close_rect);
 
     try std.testing.expect(card_rect.contains(.{ .x = 20, .y = 20 }));
     try std.testing.expect(close_rect.contains(.{ .x = 365, .y = 25 }));

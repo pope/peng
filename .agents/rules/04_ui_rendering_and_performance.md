@@ -98,15 +98,16 @@
   - Animated overlays (such as `PaletteState`) MUST decouple input focus from
     close animations via `isAcceptingInput()`
     (`mode != .inactive and !is_closing`) and pass `captures_pointer = false` to
-    `interaction.setPaletteModalRect` while closing so background controls
+    `InteractionState.setPaletteModalRect` while closing so background controls
     respond immediately.
   - When opening a modal or clicking UI controls, suppress held directional and
     zoom keys (`pan_controller.suppress`, `zoom_controller.suppress`) so held
     keys do not bleed into the viewport upon modal dismissal.
 - **Immediate-Mode Scroll Containers vs. Pointer Controls**:
-  - Update palette and edit panel scroll offsets in
-    `interaction.updatePointerAndScroll` strictly from mouse wheel deltas over
-    `palette_list` or `edit_scroll_list` (never pointer drag-scrolling).
+  - Update edit panel scroll offsets in `InteractionState.syncFrameInput`
+    strictly from mouse wheel deltas over `edit_scroll_list`, and palette
+    scroll offsets via `InteractionState.syncPaletteScroll` /
+    `PaletteConfig.resolveScrollOffsetY` (never pointer drag-scrolling).
   - Zero `scroll_delta` while a slider drag is active (`drag_state == .slider`
     or `active_slider != null`) to prevent container jitter.
 - **Image Crossfade & Scrubbing Invariants**:

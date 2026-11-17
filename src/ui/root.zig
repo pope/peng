@@ -6,9 +6,6 @@
 /// Image adjustment and EXIF metadata editing panels.
 pub const edit_panel = @import("edit_panel.zig");
 
-/// Immediate-mode interaction state, hit-testing, and scroll tracking.
-pub const interaction = @import("interaction.zig");
-
 /// UI layout generation and viewport hierarchy declaration.
 pub const layout = @import("layout.zig");
 
@@ -41,7 +38,6 @@ pub const UiViewModel = view_model.UiViewModel;
 
 test {
     _ = edit_panel;
-    _ = interaction;
     _ = layout;
     _ = palette;
     _ = renderer;

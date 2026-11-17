@@ -6,7 +6,6 @@ const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
 const triage = @import("triage");
-const ui_pkg = @import("ui");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
@@ -1957,7 +1956,7 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     app_st.viewer.navigation.stack_raw_jpeg = true;
     app_st.viewer.navigation.triage.view_mode = .picks;
 
-    ui_pkg.interaction.setPaletteScrollY(120.0);
+    app_st.viewer.ui.interaction.palette_scroll_y = 120.0;
 
     // .quit in server_mode hides the window, stops slideshow, resets all
     // session settings back to startup defaults, and unloads cache and
@@ -1997,7 +1996,7 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     );
     try std.testing.expectEqual(
         @as(f32, 0.0),
-        ui_pkg.interaction.getPaletteScrollY(),
+        app_st.viewer.ui.interaction.palette_scroll_y,
     );
     try std.testing.expect(!app_st.viewer.navigation.manga_mode);
     try std.testing.expect(app_st.viewer.navigation.crossfade);

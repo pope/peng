@@ -618,7 +618,7 @@ pub const AppState = struct {
         self.viewer.ui.palette.current_dir_image_count = 0;
         self.viewer.ui.palette.shrinkToWarmCapacity();
         self.viewer.resetToDefaults();
-        ui.interaction.resetInteractionState();
+        self.viewer.ui.interaction.reset();
 
         _ = self.cache.advanceGeneration();
         _ = self.workers.precache_generation.fetchAdd(1, .acq_rel);

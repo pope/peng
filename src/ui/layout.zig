@@ -3,7 +3,6 @@ const edit_panel = @import("edit_panel.zig");
 const geom = @import("geom");
 const gpu_pkg = @import("gpu");
 const intents = @import("intents");
-const interaction = @import("interaction.zig");
 const palette = @import("palette.zig");
 const palette_pkg = @import("palette");
 const renderer = @import("renderer.zig");
@@ -74,6 +73,7 @@ pub fn computeDrawDims(
 /// Builds the complete UI layout hierarchy, accumulates immediate-mode draw
 /// commands, and submits the frame render pass.
 pub fn renderFrame(
+    interaction: *state.InteractionState,
     ui_model: UiViewModel,
     gpu_res: *RenderResources,
     input: FrameInput,
@@ -117,6 +117,7 @@ pub fn renderFrame(
     );
 
     try renderViewport(
+        interaction,
         &draw_list,
         ui_model,
         current_entry,
@@ -130,6 +131,7 @@ pub fn renderFrame(
 
     if (edit_progress > 0.001) {
         try renderEditPanel(
+            interaction,
             &draw_list,
             ui_model,
             FRect{
@@ -154,6 +156,7 @@ pub fn renderFrame(
     );
 
     try renderStatsOverlay(
+        interaction,
         &draw_list,
         ui_model,
         view_dims,
@@ -163,6 +166,7 @@ pub fn renderFrame(
     );
 
     try renderPalette(
+        interaction,
         &draw_list,
         ui_model,
         LogicalDims{ .w = width, .h = height },
@@ -918,6 +922,7 @@ fn renderDissolvePrevQuad(
 }
 
 fn renderViewport(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     ui_model: UiViewModel,
     current_entry: anytype,
@@ -930,7 +935,7 @@ fn renderViewport(
 ) !void {
     const viewport_rect =
         FRect{ .x = 0.0, .y = 0.0, .w = view_dims.w, .h = view_dims.h };
-    interaction.setViewportRect(viewport_rect);
+    interaction.viewport = viewport_rect;
 
     try list.pushScissor(viewport_rect);
     defer list.popScissor() catch {};
@@ -1114,8 +1119,7 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
 }
 
 test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
-    interaction.resetInteractionState();
-    defer interaction.resetInteractionState();
+    var interaction_inst: state.InteractionState = .{};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1161,9 +1165,10 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         .current_time_ms = 100,
     };
 
-    interaction.beginFrameLayout();
+    interaction_inst.beginFrameLayout();
     var draw_list = UiDrawList{ .allocator = arena.allocator() };
     try renderViewport(
+        &interaction_inst,
         &draw_list,
         model,
         model.current_entry,
@@ -1175,8 +1180,8 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         &data,
     );
 
-    interaction.setPointerStateForTest(.{ .x = 500.0, .y = 400.0 }, false);
-    try std.testing.expect(interaction.isPointerOverViewport());
+    interaction_inst.setPointerStateForTest(.{ .x = 500.0, .y = 400.0 });
+    try std.testing.expect(interaction_inst.isPointerOverViewport());
 }
 
 test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {

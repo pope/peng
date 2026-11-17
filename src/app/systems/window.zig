@@ -3,7 +3,6 @@ const context = @import("context.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const ui = @import("ui");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
@@ -60,7 +59,7 @@ pub fn sysSyncWindowVisibility(ctx: FrameContext) void {
         state.display.setOccluded(occluded);
     }
     if (!was_suspended and state.display.isSuspended()) {
-        ui.interaction.resetInteractionState();
+        state.viewer.ui.interaction.reset();
         state.viewer.animations.settleAll();
         state.viewer.animations.setImmediate(.image_crossfade, 1.0);
         state.viewer.image_transition = .none;

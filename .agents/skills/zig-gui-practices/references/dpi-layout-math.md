@@ -116,10 +116,11 @@ ______________________________________________________________________
     `.fill` mode, seed $Z\_{\\text{old}}$ from `state.getBaseScale()` rather than
     an uninitialized or static multiplier.
   - **Dynamic Viewport Center**: Focus coordinates must anchor relative to the
-    dynamic center queried from `ui.interaction.resolveViewportCenter(...)`
-    (backed by `InteractionState.viewport` inside `src/ui/interaction.zig`)
-    rather than assuming static window center, ensuring correct anchor
-    positioning when side panels are docked.
+    dynamic center queried from
+    `state.viewer.ui.interaction.resolveViewportCenter(...)` (backed by
+    `InteractionState.viewport` inside `src/state/interaction.zig`) rather than
+    assuming static window center, ensuring correct anchor positioning when
+    side panels are docked.
   - **Viewport Anchor Call**:
     `ViewportParams.zoomAtPoint(`
     `new_zoom, focus, logical_center.toPhysical(scale))`
@@ -134,16 +135,17 @@ ______________________________________________________________________
   drag coordinates using fixed window dimensions or static offsets. Layout
   dimensions change dynamically due to side panels, animations, or DPI changes.
 
-- **Record Bounds During Layout & Query in `src/ui/interaction.zig`**:
+- **Record Bounds During Layout & Query in `src/state/interaction.zig`**:
   During the immediate-mode `RectCut` layout pass (`renderFrame`,
   `renderEditPanel`, `renderPalette`, `renderStatsOverlay`), record widget
   `FRect` bounds into `InteractionState` (`setSliderRects`, `setEditPanelRects`,
-  `setPaletteModalRect`, `recordPaletteItem`, `setInfoOverlayRects`,
-  `setStatsOverlayRects`), and query them in `src/ui/interaction.zig`
-  (`getHoveredSliderTrack`, `isSliderResetHovered`, `getHoveredPaletteItem`):
+  `setPaletteModalRect`, `recordPaletteItem`, `setInfoPanelRects`,
+  `setStatsPanelRects`), and query them on `InteractionState` in
+  `src/state/interaction.zig` (`hitTestEditPanel`, `hitTestPaletteClick`,
+  `isHovered`):
 
   ```zig
-  // src/ui/interaction.zig: hit-test against recorded slider track FRect
+  // src/state/interaction.zig: hit-test against recorded slider track FRect
   pub fn getHoveredSliderTrack() ?SliderTrackHit {
       if (!state.has_layout) return null;
       if (!state.edit_scroll_list.contains(state.pointer)) return null;

@@ -30,7 +30,8 @@ ______________________________________________________________________
 
   - High-DPI / Retina scale factors (`scale_x`, `scale_y`) for viewports and mouse inputs.
   - Zoom-to-mouse panning math and aspect ratio fitting (`full`, `crop`, `shrink`).
-  - Immediate-mode `FRect` bounding box recording and hit-testing (`src/ui/interaction.zig`) for interactive widgets and sliders.
+  - Immediate-mode `FRect` bounding box recording and hit-testing
+    (`src/state/interaction.zig`) for interactive widgets and sliders.
   - Compound row badge alignment and normalized `[0.0, 1.0]` theme alpha invariants.
 
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**

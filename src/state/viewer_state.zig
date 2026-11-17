@@ -98,6 +98,7 @@ pub const ViewerState = struct {
         self.pan_controller.reset();
         self.zoom_controller.reset();
         self.touch_tracker.reset();
+        self.ui.interaction.reset();
     }
 
     /// Returns the protected previous image index if an image dissolve

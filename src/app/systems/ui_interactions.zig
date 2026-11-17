@@ -3,7 +3,6 @@ const context = @import("context.zig");
 const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
-const ui = @import("ui");
 
 const AppState = app_state.AppState;
 const EditParam = intents.EditParam;
@@ -28,7 +27,7 @@ fn computeSliderValue(
 }
 
 fn processEditPanelClicks(self: *AppState, input: FrameInput) !void {
-    const hit = ui.interaction.hitTestEditPanel(input.win_w) orelse return;
+    const hit = self.viewer.ui.interaction.hitTestEditPanel() orelse return;
     switch (hit) {
         .close => try self.pushIntent(.{ .set_edit_panel = false }),
         .reset_all => try self.pushIntent(.{ .adjust = .reset_all }),
@@ -108,17 +107,17 @@ pub fn sysProcessUiInteractions(
 
     // Floating Overlays Close Buttons
     if (self.viewer.ui.overlays.info_panel.visible and
-        ui.interaction.isPointerOverInfoCloseBtn())
+        self.viewer.ui.interaction.isPointerOverInfoCloseBtn())
     {
         try self.pushIntent(.{ .set_info = false });
     }
     if (self.viewer.ui.overlays.stats_panel.visible and
-        ui.interaction.isPointerOverStatsCloseBtn())
+        self.viewer.ui.interaction.isPointerOverStatsCloseBtn())
     {
         try self.pushIntent(.{ .set_stats = false });
     }
     if (self.viewer.ui.overlays.atlas_panel.visible and
-        ui.interaction.isPointerOverAtlasCloseBtn())
+        self.viewer.ui.interaction.isPointerOverAtlasCloseBtn())
     {
         try self.pushIntent(.{ .set_atlas = false });
     }

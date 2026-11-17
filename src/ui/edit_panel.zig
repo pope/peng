@@ -5,7 +5,6 @@
 
 const geom = @import("geom");
 const intents = @import("intents");
-const interaction = @import("interaction.zig");
 const renderer = @import("renderer.zig");
 const state = @import("state");
 const std = @import("std");
@@ -123,6 +122,7 @@ fn clipRect(r: FRect, sc: FRect) FRect {
 /// Renders an interactive slider row with parameter title, value readout,
 /// background groove, relative fill bar, landmark notch, and thumb knob.
 pub fn renderSlider(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     param: EditParam,
     current_val: f32,
@@ -287,6 +287,7 @@ pub fn renderSlider(
 /// Renders the complete Edit Side Panel layout tree including header,
 /// quick action buttons, and adjustment sliders.
 pub fn renderEditPanel(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     ui_model: UiViewModel,
     panel_rect: FRect,
@@ -456,7 +457,7 @@ pub fn renderEditPanel(
     try list.pushScissor(scroll_rect);
     defer list.popScissor() catch {};
 
-    var cur_y = scroll_rect.y + interaction.getEditScrollY();
+    var cur_y = scroll_rect.y + interaction.edit_scroll_y;
     const active_sl = ui_model.overlays.edit_panel.active_slider;
 
     inline for (
@@ -494,6 +495,7 @@ pub fn renderEditPanel(
                 );
                 const is_active = !is_comparing and active_sl == spec.param;
                 try renderSlider(
+                    interaction,
                     list,
                     spec.param,
                     val,
@@ -526,8 +528,8 @@ pub fn renderEditPanel(
 
     cur_y += 16.0 + 16.0;
     const total_content_h = cur_y -
-        (scroll_rect.y + interaction.getEditScrollY());
-    interaction.setEditContentHeight(total_content_h);
+        (scroll_rect.y + interaction.edit_scroll_y);
+    interaction.edit_content_h = total_content_h;
 }
 
 test "formatValue string lifetimes" {
@@ -614,8 +616,11 @@ test "floating slider knob commands are clipped by scroll container scissor" {
         .h = 400,
     };
 
+    var interaction_inst: state.InteractionState = .{};
+
     try list.pushScissor(scroll_rect);
     try renderSlider(
+        &interaction_inst,
         &list,
         .brightness,
         0.5,

@@ -1,8 +1,8 @@
 const geom = @import("geom");
 const intents = @import("intents");
-const interaction = @import("interaction.zig");
 const palette_pkg = @import("palette");
 const renderer = @import("renderer.zig");
+const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
@@ -1201,6 +1201,7 @@ fn renderFileListItem(
 }
 
 fn renderSelectionList(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     list_rect: FRect,
     ui_model: UiViewModel,
@@ -1215,15 +1216,14 @@ fn renderSelectionList(
     const actual_item_h: f32 = if (palette.mode == .files) 54.0 else 46.0;
     const viewport_height = list_rect.h;
 
-    const current_scroll_y = interaction.getPaletteScrollY();
+    const current_scroll_y = interaction.palette_scroll_y;
     const resolved_scroll_y = cfg.resolveScrollOffsetY(
         current_scroll_y,
         matching_indices.items.len,
         palette.selected_idx,
         palette.selection_dirty,
     );
-    interaction.setPaletteScrollY(resolved_scroll_y);
-    interaction.setPaletteListRect(list_rect);
+    interaction.palette_scroll_y = resolved_scroll_y;
 
     try list.pushScissor(list_rect);
     defer list.popScissor() catch {};
@@ -1471,6 +1471,7 @@ fn renderDirectoryLegend(
 /// box, header title, match counter, and virtualized scrollable result list)
 /// corresponding to the active palette mode.
 pub fn renderPalette(
+    interaction: *state.InteractionState,
     list: *UiDrawList,
     ui_model: UiViewModel,
     win_dims: LogicalDims,
@@ -1571,6 +1572,7 @@ pub fn renderPalette(
         );
     } else {
         try renderSelectionList(
+            interaction,
             list,
             list_rect,
             ui_model,
@@ -1594,8 +1596,7 @@ pub fn renderPalette(
 }
 
 test "renderPalette - closing palette passes pointer through to parent" {
-    interaction.resetInteractionState();
-    defer interaction.resetInteractionState();
+    var interaction_inst: state.InteractionState = .{};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1636,12 +1637,12 @@ test "renderPalette - closing palette passes pointer through to parent" {
 
     // 1. Open palette captures pointer over center -> viewport is not hit
     {
-        interaction.beginFrameLayout();
-        interaction.setViewportRect(
-            .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 },
-        );
+        interaction_inst.beginFrameLayout();
+        interaction_inst.viewport =
+            .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 };
         var draw_list = UiDrawList{ .allocator = arena.allocator() };
         try renderPalette(
+            &interaction_inst,
             &draw_list,
             model,
             win_dims,
@@ -1649,19 +1650,19 @@ test "renderPalette - closing palette passes pointer through to parent" {
             &data,
         );
 
-        interaction.setPointerStateForTest(.{ .x = 500.0, .y = 350.0 }, false);
-        try std.testing.expect(!interaction.isPointerOverViewport());
+        interaction_inst.setPointerStateForTest(.{ .x = 500.0, .y = 350.0 });
+        try std.testing.expect(!interaction_inst.isPointerOverViewport());
     }
 
     // 2. Closing palette passes pointer through -> viewport is hit
     {
         pal_state.is_closing = true;
-        interaction.beginFrameLayout();
-        interaction.setViewportRect(
-            .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 },
-        );
+        interaction_inst.beginFrameLayout();
+        interaction_inst.viewport =
+            .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 };
         var draw_list = UiDrawList{ .allocator = arena.allocator() };
         try renderPalette(
+            &interaction_inst,
             &draw_list,
             model,
             win_dims,
@@ -1669,7 +1670,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
             &data,
         );
 
-        interaction.setPointerStateForTest(.{ .x = 500.0, .y = 350.0 }, false);
-        try std.testing.expect(interaction.isPointerOverViewport());
+        interaction_inst.setPointerStateForTest(.{ .x = 500.0, .y = 350.0 });
+        try std.testing.expect(interaction_inst.isPointerOverViewport());
     }
 }

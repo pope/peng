@@ -3,7 +3,6 @@ const context = @import("context.zig");
 const intents = @import("intents");
 const state_pkg = @import("state");
 const std = @import("std");
-const ui = @import("ui");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
@@ -392,13 +391,11 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     }
 
     // 3. Selection Scrolling Synchronization
-    ui.interaction.syncPaletteScroll(&self.viewer.ui.palette);
+    self.viewer.ui.interaction.syncPaletteScroll(&self.viewer.ui.palette);
     // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
     if (input.mouse_left_clicked) {
-        const click_hit = ui.interaction.hitTestPaletteClick(
-            &self.viewer.ui.palette,
-        );
+        const click_hit = self.viewer.ui.interaction.hitTestPaletteClick();
         switch (click_hit) {
             .inside_unmatched => {},
             .outside => {
