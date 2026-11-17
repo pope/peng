@@ -15,6 +15,7 @@ const workers_mod = @import("workers/root.zig");
 const AppIntent = intents.AppIntent;
 const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = cache.CacheEntry;
+const DecodeMode = workers_mod.DecodeMode;
 const DisplayState = core.display.DisplayState;
 const getParentDirBuf = vfs.getParentDirBuf;
 const ImageCache = cache.ImageCache;
@@ -860,7 +861,7 @@ pub const AppState = struct {
         self: *AppState,
         id: MediaId,
         entry_item: MediaEntry,
-        thumb_only: bool,
+        mode: DecodeMode,
         pair_target: PairStreamTarget,
         now_ms: u64,
     ) !void {
@@ -918,7 +919,7 @@ pub const AppState = struct {
             .entry = dup_entry,
             .has_gpu_device = has_gpu_device,
             .pixel_format = self.display.getPixelFormat(),
-            .thumb_only = thumb_only,
+            .mode = mode,
             .pair_target = pair_target,
             .current_generation = &self.cache.generation,
         };
@@ -1084,7 +1085,7 @@ pub const AppState = struct {
                 try self.spawnSlotDecode(
                     initial_id,
                     .{ .filesystem = .{ .path = dup } },
-                    false,
+                    .full,
                     pair_target,
                     sdl.timer.getTicks(),
                 );

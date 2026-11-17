@@ -6,54 +6,16 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
+const workers_mod = @import("../workers/root.zig");
 
 const AppState = app_state.AppState;
+const DecodeMode = workers_mod.DecodeMode;
 const FrameContext = context.FrameContext;
 const ImageCache = cache.ImageCache;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
 const RawMetadata = probe.RawMetadata;
-
-fn probeActiveSlotMetadata(
-    state: *AppState,
-    key: cache.ImageCacheKey,
-) void {
-    const media_item = state.viewer.navigation.getMediaEntryById(key.id) orelse
-        return;
-    const meta = cache.probeMediaMetadata(state.io, media_item) orelse {
-        if (state.cache.get(key)) |entry| {
-            entry.resident.thumbnail.markNotAvailableIfUnresolved();
-        }
-        return;
-    };
-    {
-        const entry = state.cache.get(key) orelse return;
-        entry.applyProbedMetadata(
-            meta.dims,
-            meta.orientation,
-            meta.raw_metadata,
-        );
-        switch (entry.resident.thumbnail) {
-            .none => {
-                const can_use_thumb_cache =
-                    state.workers.thumb_cache_config != .disabled and
-                    !media_item.isArchive();
-                entry.resident.thumbnail =
-                    if (meta.has_embedded_thumbnail or can_use_thumb_cache)
-                        .pending
-                    else
-                        .not_available;
-            },
-            .pending, .staged_cpu, .not_available, .unloaded, .loaded => {},
-        }
-    }
-    if (state.viewer.navigation.getCurrentMediaId()) |cur_id| {
-        if (key.id == cur_id) {
-            state.updateCurrentRotation();
-        }
-    }
-}
 
 fn checkPairPromotion(
     state: *AppState,
@@ -98,7 +60,7 @@ fn checkPairPromotion(
         state.spawnSlotDecode(
             key.id,
             media_item,
-            false,
+            .full,
             .standalone_jpeg,
             now,
         ) catch |err| {
@@ -259,23 +221,6 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
 
         if (state.cache.getEntry(key)) |entry| {
-            const thumb_is_none = switch (entry.resident.thumbnail) {
-                .none => true,
-                .pending,
-                .staged_cpu,
-                .not_available,
-                .unloaded,
-                .loaded,
-                => false,
-            };
-            const needs_dimensions = entry.metadata.full_dims == null and
-                thumb_is_none;
-            if (needs_dimensions) {
-                probeActiveSlotMetadata(state, key);
-            }
-        }
-
-        if (state.cache.getEntry(key)) |entry| {
             const is_active_slot = (d_id == cur_id);
             const is_decoding = if (entry.inflight) |inf|
                 (switch (inf.stage) {
@@ -286,8 +231,8 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 false;
             if (is_decoding) {
                 const thumb_ready = switch (entry.resident.thumbnail) {
-                    .not_available, .loaded => true,
-                    .none, .pending, .staged_cpu, .unloaded => false,
+                    .not_available, .staged_cpu, .loaded => true,
+                    .none, .pending, .unloaded => false,
                 };
                 const thumb_loaded = switch (entry.resident.thumbnail) {
                     .loaded => true,
@@ -334,16 +279,24 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         };
         if (!awaiting_decode) continue;
 
-        const thumb_not_available = switch (entry.resident.thumbnail) {
-            .not_available => true,
-            .none, .pending, .staged_cpu, .unloaded, .loaded => false,
-        };
-        const thumb_only = is_fast_scrolling and !thumb_not_available;
+        const decode_mode: DecodeMode = if (is_fast_scrolling) blk: {
+            if (req.id == cur_id) {
+                const thumb_not_available = switch (entry.resident.thumbnail) {
+                    .not_available => true,
+                    .none, .pending, .staged_cpu, .unloaded, .loaded => false,
+                };
+                break :blk if (thumb_not_available)
+                    .full
+                else
+                    .active_fast_scroll;
+            }
+            break :blk .speculative_thumb;
+        } else .full;
 
         state.spawnSlotDecode(
             req.id,
             req.entry,
-            thumb_only,
+            decode_mode,
             inf.target,
             ctx.now_ms,
         ) catch |err| {
@@ -604,13 +557,12 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     try std.testing.expect(state.cache.get(state.cache.activeKey(id4)) != null);
 }
 
-test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
+test "sysUpdateCache - defers header probing off render thread" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    // Add a real PNG (no embedded thumbnail) to navigation list
     const dup = try state.viewer.navigation.directory_arena.allocator().dupe(
         u8,
         "testfiles/golden-screenshots/init.png",
@@ -627,21 +579,23 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
 
     const entry = state.cache.get(state.cache.activeKey(id0));
     try std.testing.expect(entry != null);
-    // Because test_0_init.png has no embedded thumbnail, synchronous probe
-    // on Frame 1 sets .not_available!
+    // Main thread must not synchronously probe headers; thumbnail remains .none
+    // until background decode worker completes and events are drained.
     try std.testing.expectEqual(
-        cache.ThumbnailState.not_available,
+        cache.ThumbnailState.none,
         entry.?.resident.thumbnail,
     );
+    try std.testing.expect(entry.?.inflight != null);
+    try std.testing.expect(entry.?.inflight.?.has_thread);
 }
 
-test "sysUpdateCache - active image without thumbnail spawns full decode during fast scrolling" {
+test "sysUpdateCache - active image without thumb decodes in fast scroll" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    // Add image with no thumbnail
+    // Add image with no embedded thumbnail
     const dup = try state.viewer.navigation.directory_arena.allocator().dupe(
         u8,
         "testfiles/golden-screenshots/init.png",
@@ -665,12 +619,20 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     const entry = state.cache.get(state.cache.activeKey(id0));
     try std.testing.expect(entry != null);
     try std.testing.expectEqual(
-        cache.ThumbnailState.not_available,
+        cache.ThumbnailState.none,
         entry.?.resident.thumbnail,
     );
-    // Active slot 0 should have has_thread = true (decode worker was spawned, not skipped!)
     try std.testing.expect(entry.?.inflight != null);
     try std.testing.expect(entry.?.inflight.?.has_thread);
+
+    // Await the .active_fast_scroll worker and verify single-pass fallthrough
+    state.workers.group.await(io) catch {};
+    var image_seen = false;
+    while (state.workers.event_queue.pop()) |*ev| {
+        defer ev.deinit(allocator);
+        if (ev.* == .image_decoded) image_seen = true;
+    }
+    try std.testing.expect(image_seen);
 }
 
 test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
@@ -1106,7 +1068,7 @@ test "AppState.spawnSlotDecode stamps now_ms and job ticket on inflight" {
     try state.spawnSlotDecode(
         id0,
         .{ .filesystem = .{ .path = dup } },
-        false,
+        .full,
         .adaptive,
         4200,
     );

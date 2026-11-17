@@ -358,10 +358,7 @@ fn executeIntent(
                 const exif_rot = if (self.getCurrentEntry()) |e|
                     e.metadata.orientation
                 else
-                    (probe.readJpegExifOrientation(
-                        self.io,
-                        path,
-                    ) orelse .normal);
+                    .normal;
                 vp.rotation_angle = exif_rot.toDegrees();
                 if (vp.mode != .manual) {
                     vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());

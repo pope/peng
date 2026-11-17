@@ -43,9 +43,9 @@ ______________________________________________________________________
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
 
   - VRAM cache memory footprint math (+33% mipmap overhead) and active/transition/neighbor slot protection.
-  - Synchronous main-thread header probing (< 0.1ms, 256KB RAW / 128KB standard) & single-pass `std.Io` in-memory decoding.
+  - Off-main-thread Stage-1 header probing (`DecodeMode`, 256KB bounded read) & single-pass `std.Io` in-memory decoding.
   - Camera RAW format quirks table (Adobe DNG / Ricoh GR III, Canon CR2 IFD0/2/3 disambiguation, Fujifilm RAF 12MP ceiling, Sony ARW Bayer CFA exclusion) and 4-tier RAW+JPEG progressive streaming.
-  - `ScrollCadence` navigation throttling (`35ms` fast-scroll `thumb_only`,
+  - `ScrollCadence` navigation throttling (`35ms` fast-scroll `DecodeMode.active_fast_scroll` / `.speculative_thumb`,
     `200ms` crossfade bypass, `250ms` settled Fit promotion), dynamic worker
     scaling (`@max(1, @min(8, cpus -| 1))`), and cooperative `ImageCacheKey`
     (stable `MediaId` and generation) epoch pruning.

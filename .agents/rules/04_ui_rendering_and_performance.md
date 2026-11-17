@@ -134,8 +134,9 @@
 ## 4. Progressive Loading & Aspect Ratio Stability
 
 - **Raw Bayer Sensor Stream Exclusion**:
-  - Header probes (`probeMediaMetadata`) MUST exclude unprocessed raw sensor
-    streams so `metadata.full_dims` and `source_dims` reflect true visible photo
+  - RAW header probes (`probe.probeRawFileHeader`, `decodeRawFile`) MUST
+    exclude unprocessed raw sensor streams so `metadata.full_dims` and
+    `source_dims` reflect true visible photo
     dimensions rather than optical-black sensor dimensions (see
     [vram-preloading.md][vram-preload] §2 for format-specific TIFF tags).
 - **No Worker Thumbnail Dimension Fallback**:

@@ -26,12 +26,14 @@
 
 ______________________________________________________________________
 
-## 2. Synchronous Header Probing, Camera RAW Streaming & Progressive Loading
+## 2. Asynchronous Header Probing, Camera RAW Streaming & Progressive Loading
 
 - **Two-Stage Header-First Read & In-Memory Decoding (`DecodePayload`, `decodeWorker`)**:
   `DecodePayload.openStagedFile` (`Stage = union(enum) { staged_file: std.Io.File, complete }`) performs a single `statFile` + `openFile` and reads Stage 1 (`@min(target_read_size, 256 * 1024)` bytes) via `readRangePositional`. `decodeWorker` parses orientation, probes dimensions, and extracts/emits `.thumb_decoded` (from the Stage 1 header slice or via a positional read on `.staged_file` when an EXIF thumbnail sits beyond 256KB) *before* reading the remaining file bytes in `DecodePayload.readRemaining()` (Stage 2) and closing the file descriptor prior to `sdl.Surface.loadConstMemOpt`.
-- **Fast-Scrolling Bounded Header Read (`thumb_only = true`)**:
-  When `thumb_only = true`, `DecodePayload.openStagedFile` caps allocation at `@min(file_size, 256 * 1024)` bytes while keeping `.staged_file` open if `file_size > 256KB` so thumbnails located past 256KB can still be extracted via positional read before `defer payload.deinit()` closes the file.
+- **Single-Pass `DecodeMode` Staging (`full`, `active_fast_scroll`, `speculative_thumb`)**:
+  - `.speculative_thumb`: Caps allocation at `@min(file_size, 256 * 1024)` bytes (and CBZ decompression at `header_probe_limit`), extracts a small placeholder thumbnail (`thumb_only = true`) or emits `dimensions_probed` (`thumb_only = true`) if none exists, and returns without Stage 2 decode.
+  - `.active_fast_scroll`: Reads Stage 1 (`256KB`) while keeping `.staged_file` open if `file_size > 256KB`. If a thumbnail IS found (embedded header/positional, RAW thumb, or XDG cache), emits `thumb_decoded` (`thumb_only = true`) and returns immediately, deferring full decode until `ScrollCadence` settles. If NO thumbnail exists (e.g. PNG/WebP without cached thumb), falls straight through from Stage 1 to Stage 2 full decode via `readRemaining()` in the **same open-file pass**.
+  - `.full`: Emits a fast placeholder thumbnail when available (`thumb_only = false`) and proceeds directly to Stage 2 full decode.
 - **Same-Batch Thumbnail Upload Skip (`hasSubsequentImageDecoded`)**:
   When an image decodes quickly and `.thumb_decoded` and `.image_decoded`
   arrive in the same `drainWorkerEvents` batch, `handleExifThumbnailEvent`
@@ -56,10 +58,9 @@ ______________________________________________________________________
     `Thumb::MTime`, `Thumb::Size`, `Thumb::Mimetype`,
     `Thumb::Image::Width`/`Height`, `Software`) immediately after the 33-byte
     `IHDR`, and writes via `0600` temp file + atomic `rename`.
-- **Main-Thread Synchronous Header Probing (`probeMediaMetadata`)**:
-  - Reads up to **256KB** into a stack buffer for Camera RAW files and **128KB** for non-RAW images (< 0.1ms, 0 heap allocations) before spawning background decode workers.
-  - Extracts target canvas dimensions (`metadata.full_dims` / `source_dims`), EXIF orientation, and `has_embedded_thumbnail: bool` on Frame 1 so `getBaseScale` and aspect ratio fitting size `ImageCanvas` immediately.
-  - For containers without embedded thumbnails (PNG, WebP, GIF, SVG, BMP, non-EXIF JPEG) or when probing fails/returns `null`, immediately set `entry.resident.thumbnail = .not_available` so `needs_dimensions` (`entry.resident.thumbnail == .none`) never re-triggers a hot-loop 256KB read on subsequent frames.
+- **Off-Main-Thread Header Probing (`DecodeMode`)**:
+  - All file header opens, dimension probes, and EXIF orientation reads run exclusively on background `decodeWorker` threads via Stage 1 (`header_probe_limit = 256 * 1024`), eliminating blocking filesystem/archive I/O from `sysUpdateCache` and `executeIntent(.reset_rotation)` (which reads `entry.metadata.orientation` directly from `getCurrentEntry()`, defaulting to `.normal`).
+  - When `.speculative_thumb` finds no thumbnail or `.active_fast_scroll` completes Stage 2 full decode, main-thread event handlers set `entry.resident.thumbnail = .not_available` so subsequent frames never re-spawn thumbnail-only probes.
 - **Loading Grace Period (`LOADING_GRACE_PERIOD_MS = 35`)**:
   When `entry.resident.asset == .none` (or `.inflight`) and no thumbnail is ready, `renderViewport` sizes `ImageCanvas` to `.fixed(draw_w)` / `.fixed(draw_h)` and delays the `"Loading image..."` text until `elapsed >= 35ms` (~2 frames at 60Hz), preventing UI text flashes on fast decodes.
 - **EXIF APP1 & TIFF Rules**:
@@ -86,8 +87,8 @@ Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`
 
 ### Progressive 4-Tier RAW+JPEG Pipeline & Dimension Invariants
 
-1. **Tier 1 (Small Thumbnail, $\\le 512\\text{KB}$)**: Decoded in ~0.17ms directly from the resident 256KB header slice during rapid scrubbing (`thumb_only = true`).
-2. **Tier 2 (Medium Preview, $\\le 2\\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`thumb_only = false`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset +| prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
+1. **Tier 1 (Small Thumbnail, $\\le 512\\text{KB}$)**: Decoded in ~0.17ms directly from the resident 256KB header slice during rapid scrubbing (`DecodeMode.active_fast_scroll` / `.speculative_thumb`).
+2. **Tier 2 (Medium Preview, $\\le 2\\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`DecodeMode.full`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset +| prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
 3. **Tier 3 (Full-Resolution RAW Preview, e.g. 6240x4160)**: Decoded in the background via positional read and crossfaded over Tier 2.
 4. **Tier 4 (Companion Full-Resolution JPEG)**: Deferred until physical pixel demand exceeds the embedded preview resolution:
    $$M\_{\\text{tex}} = Z \\times \\max\\left(\\frac{W\_{\\text{auth}}}{W\_{\\text{loaded}}}, \\frac{H\_{\\text{auth}}}{H\_{\\text{loaded}}}\\right) > 1.05$$
@@ -128,11 +129,8 @@ ______________________________________________________________________
   - **`ScrollCadence.FAST_SCROLL_MS = 35` (`LOADING_GRACE_PERIOD_MS`)**:
     When `NavigationState.cadence.isFastScrolling(now)` is true (elapsed since
     `.active` timestamp is $< 35\\text{ms}$), `is_fast_scrolling` is true:
-    1. *Embedded Thumbnails Available*: Workers run with `thumb_only = true` (~0.17ms). Once the active thumbnail is ready (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the next single thumbnail (`speculative_idx`) along `direction` (`NavDirection`: `.forward` / `.backward`).
-    2. *Non-Thumbnail Formats*: If `entry.resident.thumbnail == .not_available`
-       (e.g. PNG), `sysUpdateCache` spawns a full decode (`thumb_only = false`)
-       for the active slot immediately while withholding neighbor decodes until
-       navigation settles ($\\ge 35\\text{ms}$).
+    1. *Active Slot (`cur_id`)*: Unless `entry.resident.thumbnail == .not_available` (in which case `sysUpdateCache` spawns `DecodeMode.full`), workers run with `DecodeMode.active_fast_scroll`. If a thumbnail is present, Stage 1 emits `thumb_decoded` (~0.17ms) and exits; if none exists, Stage 1 falls straight through to Stage 2 full decode in the same open-file pass.
+    2. *Speculative Neighbor*: Once the active thumbnail is ready (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the next single neighbor (`speculative_idx`) along `direction` (`NavDirection`: `.forward` / `.backward`) using `DecodeMode.speculative_thumb`, deferring full decodes until navigation settles ($\\ge 35\\text{ms}$).
   - **`ScrollCadence.CROSSFADE_BYPASS_MS = 200` (`shouldBypassCrossfade`)**:
     Navigation steps within $< 200\\text{ms}$ (`src/app/systems/intents.zig`)
     bypass image crossfade animations (snapping immediately) and trigger the
@@ -209,7 +207,7 @@ ______________________________________________________________________
       entry: MediaEntry,
       has_gpu_device: bool,
       pixel_format: u32,
-      thumb_only: bool = false,
+      mode: DecodeMode = .full,
       pair_target: PairStreamTarget = .adaptive,
       current_generation: *const std.atomic.Value(usize),
 

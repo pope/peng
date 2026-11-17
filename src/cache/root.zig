@@ -19,7 +19,6 @@ const PairStreamTarget = vfs.PairStreamTarget;
 const parseImageDimensions = probe.parseImageDimensions;
 const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
-const ProbedImageMetadata = probe.ProbedImageMetadata;
 const RawMetadata = probe.RawMetadata;
 const readLocationBytes = probe.readLocationBytes;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
@@ -892,38 +891,6 @@ pub const ImageCache = struct {
     }
 };
 
-/// Synchronously probes container headers for image dimensions, EXIF rotation,
-/// and embedded thumbnail presence in < 0.1ms before spawning background decode
-/// workers, eliminating Frame-1 layout jumps and UI flicker.
-pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
-    return switch (media) {
-        .filesystem => |f| probe.probeFileHeaderMetadata(
-            io,
-            f.path,
-            isRawFile(f.path),
-        ),
-        .pair => |p| probe.probeCompanionJpegHeaderMetadata(
-            io,
-            p.jpeg_path,
-            p.raw_path,
-            isRawFile(p.raw_path),
-        ),
-        .archive_entry => |a| switch (a.seek_info) {
-            .indexed => |seek| if (seek.compression_method == .store)
-                probe.probeStoredZipHeaderMetadata(
-                    io,
-                    a.archive_path,
-                    a.entry_name,
-                    seek.file_offset,
-                    isRawFile(a.entry_name),
-                )
-            else
-                null,
-            .unindexed => null,
-        },
-    };
-}
-
 /// Extracted thumbnail surface along with orientation, full-resolution
 /// dimensions, RAW metadata, and DCT block snapping detection.
 pub const ExtractedThumbnail = struct {
@@ -1627,90 +1594,6 @@ test "ImageCache.setResidentAsset and setInFlight" {
     try std.testing.expectEqual(
         @as(?InFlightDecode, null),
         cache.slots.items(.entry)[1].inflight,
-    );
-}
-
-test "probeMediaMetadata - dispatches filesystem, pair, and archive_entry" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    // 1. .filesystem
-    const fs_meta = probeMediaMetadata(io, .{
-        .filesystem = .{ .path = "testfiles/images/000_0_1024x682.jpg" },
-    });
-    try std.testing.expect(fs_meta != null);
-    if (fs_meta) |m| {
-        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
-        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
-        try std.testing.expectEqual(Orientation.normal, m.orientation);
-    }
-
-    // 2. .pair
-    const pair_meta = probeMediaMetadata(io, .{
-        .pair = .{
-            .raw_path = "testfiles/images/000_0_1024x682.jpg",
-            .jpeg_path = "testfiles/images/000_0_1024x682.jpg",
-        },
-    });
-    try std.testing.expect(pair_meta != null);
-    if (pair_meta) |m| {
-        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
-        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
-        try std.testing.expect(m.has_embedded_thumbnail);
-        try std.testing.expect(m.raw_metadata.isRaw());
-    }
-
-    // 3. .archive_entry (.store)
-    const stored_meta = probeMediaMetadata(io, .{
-        .archive_entry = .{
-            .archive_path = "testfiles/images/000_0_1024x682.jpg",
-            .entry_name = "test.jpg",
-            .seek_info = .{
-                .indexed = .{
-                    .header_zip_offset = 0,
-                    .file_offset = 0,
-                    .uncompressed_size = 1000,
-                    .compression_method = .store,
-                },
-            },
-        },
-    });
-    try std.testing.expect(stored_meta != null);
-    if (stored_meta) |m| {
-        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
-        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
-    }
-
-    // 4. .archive_entry (.deflate) -> null
-    const deflate_meta = probeMediaMetadata(io, .{
-        .archive_entry = .{
-            .archive_path = "testfiles/images/000_0_1024x682.jpg",
-            .entry_name = "test.jpg",
-            .seek_info = .{
-                .indexed = .{
-                    .header_zip_offset = 0,
-                    .file_offset = 0,
-                    .uncompressed_size = 1000,
-                    .compression_method = .deflate,
-                },
-            },
-        },
-    });
-    try std.testing.expectEqual(
-        @as(?ProbedImageMetadata, null),
-        deflate_meta,
-    );
-
-    // 5. .archive_entry (.unindexed) -> null
-    const unindexed_meta = probeMediaMetadata(io, .{
-        .archive_entry = .{
-            .archive_path = "testfiles/images/000_0_1024x682.jpg",
-            .entry_name = "test.jpg",
-            .seek_info = .unindexed,
-        },
-    });
-    try std.testing.expectEqual(
-        @as(?ProbedImageMetadata, null),
-        unindexed_meta,
     );
 }
 

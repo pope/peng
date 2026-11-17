@@ -66,9 +66,8 @@
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/cache/`: Dedicated image slot cache (`ImageCache`, `CacheEntry`,
     `ImageCacheKey`, `ResidentAsset`, `ThumbnailState`, `InFlightDecode`),
-    header metadata probing (`probeMediaMetadata`), and thumbnail extraction
-    and surface scaling (imports `geom`, `probe`, `sdl`, `state`, `triage`,
-    `vfs`). Tested via `zig build test-cache`.
+    thumbnail extraction, and surface scaling (imports `geom`, `probe`, `sdl`,
+    `state`, `triage`, `vfs`). Tested via `zig build test-cache`.
   - `src/ui/`: Immediate-mode `RectCut` UI layout builders (`layout.zig`,
     `palette.zig`, `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation
     snapshot (`view_model.zig`), `UiDrawList` & 2-pass GPU packet builder
@@ -179,9 +178,10 @@
 - **Exhaustive Enum & Tagged Union Pattern Matching (Anti-`else => ...`)**:
   - `switch` statements on core domain enums and tagged unions (`PaletteMode`,
     `PromptKind`, `EditParam`, `EditDomain`, `AppIntent`, `AdjustIntent`,
-    `IpcCommand`, `IpcMode`, `ZoomPreset`, `TextureScaleMode`, `ResidentAsset`,
-    `InFlightStage`, `ThumbnailState`, `DisplayState`, `DragState`,
-    `MediaEntry`, `DirectoryEntry`, `BackgroundEvent`) MUST exhaustively
+    `IpcCommand`, `IpcMode`, `ZoomPreset`, `TextureScaleMode`, `DecodeMode`,
+    `ResidentAsset`, `InFlightStage`, `ThumbnailState`, `DisplayState`,
+    `DragState`, `MediaEntry`, `DirectoryEntry`, `BackgroundEvent`) MUST
+    exhaustively
     list all variants without wildcard `else => ...` branches (including
     `else => {}`, `else => null`, `else => false`, `else => 0`, or
     `else => return`) so adding or modifying a variant triggers compile-time

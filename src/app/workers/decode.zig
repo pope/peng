@@ -31,6 +31,14 @@ const ThumbCacheKey = thumbcache.ThumbCacheKey;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 const WorkerManager = manager.WorkerManager;
 
+/// Controls how far a background `decodeWorker` job proceeds during a single
+/// open-file pass.
+pub const DecodeMode = enum {
+    full,
+    active_fast_scroll,
+    speculative_thumb,
+};
+
 /// Contextual arguments and configuration passed to background image decoding
 /// worker threads.
 pub const DecodeArgs = struct {
@@ -44,7 +52,7 @@ pub const DecodeArgs = struct {
     entry: MediaEntry,
     has_gpu_device: bool,
     pixel_format: u32,
-    thumb_only: bool = false,
+    mode: DecodeMode = .full,
     pair_target: PairStreamTarget = .adaptive,
     current_generation: *const std.atomic.Value(usize),
 
@@ -406,19 +414,34 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     var had_embedded_thumb = (thumb_loc_opt != null) or (med_loc_opt != null);
     var probe_outcome: CacheProbeOutcome = .not_probed;
 
+    const prefer_small_thumb = switch (args.mode) {
+        .full => false,
+        .active_fast_scroll, .speculative_thumb => true,
+    };
+    const should_try_thumb = switch (args.mode) {
+        .full => args.has_gpu_device and args.pair_target == .adaptive,
+        .active_fast_scroll, .speculative_thumb => true,
+    };
+    const emit_thumb_only = switch (args.mode) {
+        .full => false,
+        .active_fast_scroll, .speculative_thumb => true,
+    };
+
     // Fast scrubbing & instant placeholder thumbnail path
-    if ((args.has_gpu_device and args.pair_target == .adaptive) or
-        args.thumb_only)
-    {
+    if (should_try_thumb) {
         var thumb_surf: ?sdl.Surface = null;
         var thumb_source: ThumbnailSource = .embedded_header;
         var cached_dims: ?PhysicalDims = null;
         const target_loc_opt = raw_probe.selectPlaceholder(
-            args.thumb_only,
+            prefer_small_thumb,
             file_size,
         );
 
         if (target_loc_opt) |tloc| {
+            const placeholder_max: u32 = switch (args.mode) {
+                .full => 2 * 1024 * 1024,
+                .active_fast_scroll, .speculative_thumb => 512 * 1024,
+            };
             var loc_bytes = readLocationBytes(
                 alloc,
                 file,
@@ -427,7 +450,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 header_slice,
                 file_size,
                 tloc,
-                if (args.thumb_only) 512 * 1024 else 2 * 1024 * 1024,
+                placeholder_max,
             ) catch |err| blk: {
                 if (err == error.Canceled or cancel.isCanceled()) return true;
                 break :blk null;
@@ -496,32 +519,38 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 t_surf,
                 source_dims,
                 orientation,
-                args.thumb_only,
+                emit_thumb_only,
                 thumb_source,
                 raw_meta,
             );
 
-            if (args.thumb_only) {
-                return true;
+            switch (args.mode) {
+                .active_fast_scroll, .speculative_thumb => return true,
+                .full => {},
             }
-        } else if (args.thumb_only) {
-            if (is_pair) return false;
-            // If no small thumbnail available, emit dimensions_probed
-            // to immediately establish canvas aspect ratio on Frame 1
-            // without decoding pixels
-            if (cancel.isCanceled()) return true;
-            pushDimensionsProbed(
-                workers,
-                alloc,
-                io,
-                key,
-                args.job_epoch,
-                PhysicalDims.initPositive(raw_w, raw_h),
-                orientation,
-                true,
-                RawMetadata.init(raw_w, raw_h),
-            );
-            return true;
+        } else {
+            switch (args.mode) {
+                .speculative_thumb => {
+                    if (is_pair) return false;
+                    // If no small thumbnail available, emit dimensions_probed
+                    // to immediately establish canvas aspect ratio on Frame 1
+                    // without decoding pixels
+                    if (cancel.isCanceled()) return true;
+                    pushDimensionsProbed(
+                        workers,
+                        alloc,
+                        io,
+                        key,
+                        args.job_epoch,
+                        PhysicalDims.initPositive(raw_w, raw_h),
+                        orientation,
+                        true,
+                        RawMetadata.init(raw_w, raw_h),
+                    );
+                    return true;
+                },
+                .full, .active_fast_scroll => {},
+            }
         }
     }
 
@@ -715,7 +744,10 @@ const DecodePayload = struct {
         args: *DecodeArgs,
         arch: ArchiveMediaEntry,
     ) ?DecodePayload {
-        const max_bytes: ?usize = if (args.thumb_only) header_probe_limit else null;
+        const max_bytes: ?usize = switch (args.mode) {
+            .speculative_thumb => header_probe_limit,
+            .full, .active_fast_scroll => null,
+        };
         const dec_res = decompressCbzMediaEntry(
             args.allocator,
             args.io,
@@ -811,10 +843,10 @@ const DecodePayload = struct {
         };
 
         const stage1_target = @min(file_size, header_probe_limit);
-        const target_read_size: usize = if (args.thumb_only)
-            stage1_target
-        else
-            file_size;
+        const target_read_size: usize = switch (args.mode) {
+            .speculative_thumb => stage1_target,
+            .full, .active_fast_scroll => file_size,
+        };
 
         const bytes = alloc.alloc(u8, target_read_size) catch |err| {
             file.close(io);
@@ -1046,7 +1078,12 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             ) orelse return;
         },
         .pair => |pair| blk: {
-            if (args.thumb_only or args.pair_target != .standalone_jpeg) {
+            const allow_raw = args.pair_target != .standalone_jpeg;
+            const try_raw = switch (args.mode) {
+                .full, .active_fast_scroll => allow_raw,
+                .speculative_thumb => true,
+            };
+            if (try_raw) {
                 if (decodeRawFile(args, pair.raw_path, true)) {
                     return;
                 }
@@ -1073,12 +1110,12 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (is_raw_archive) {
         const raw_bytes = payload.readRemaining(args) orelse return;
         const raw_probe = probe.probeRawBuffer(raw_bytes, mime_type);
-        const target_prev = if (args.thumb_only)
-            (raw_probe.thumbnail orelse
+        const target_prev = switch (args.mode) {
+            .full, .active_fast_scroll => raw_probe.preview,
+            .speculative_thumb => raw_probe.thumbnail orelse
                 raw_probe.medium orelse
-                raw_probe.preview)
-        else
-            raw_probe.preview;
+                raw_probe.preview,
+        };
         if (target_prev) |ploc| {
             raw_preview_slice = ploc.sliceInBounds(raw_bytes);
         }
@@ -1112,10 +1149,15 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     // placeholder preview
     const can_try_thumb = (valid_jpeg_thumb_loc != null) or
         (workers.thumb_cache_config != .disabled and payload.mtime_sec != null);
-    if (can_try_thumb and
-        (args.has_gpu_device or args.thumb_only) and
-        args.pair_target == .adaptive)
-    {
+    const should_try_thumb = switch (args.mode) {
+        .full => args.has_gpu_device and args.pair_target == .adaptive,
+        .active_fast_scroll, .speculative_thumb => true,
+    };
+    const emit_thumb_only = switch (args.mode) {
+        .full => false,
+        .active_fast_scroll, .speculative_thumb => true,
+    };
+    if (can_try_thumb and should_try_thumb) {
         const thumb_res = payload.loadThumbnailSurface(
             args,
             valid_jpeg_thumb_loc,
@@ -1140,13 +1182,14 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     t_surf,
                     source_dims,
                     orientation,
-                    args.thumb_only,
+                    emit_thumb_only,
                     loaded_thumb.source,
                     .none,
                 );
 
-                if (args.thumb_only) {
-                    return;
+                switch (args.mode) {
+                    .active_fast_scroll, .speculative_thumb => return,
+                    .full => {},
                 }
             },
             .miss => |outcome| {
@@ -1156,30 +1199,33 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }
     }
 
-    if (args.thumb_only) {
-        if (cancel.isCanceled()) return;
-        const source_dims = full_dims;
-        const raw_metadata: RawMetadata = if (is_raw_archive)
-            (if (raw_sensor_dims) |d|
-                RawMetadata.fromDims(d)
-            else if (source_dims) |sd|
-                RawMetadata.fromDims(sd)
+    switch (args.mode) {
+        .speculative_thumb => {
+            if (cancel.isCanceled()) return;
+            const source_dims = full_dims;
+            const raw_metadata: RawMetadata = if (is_raw_archive)
+                (if (raw_sensor_dims) |d|
+                    RawMetadata.fromDims(d)
+                else if (source_dims) |sd|
+                    RawMetadata.fromDims(sd)
+                else
+                    .none)
             else
-                .none)
-        else
-            .none;
-        pushDimensionsProbed(
-            workers,
-            alloc,
-            io,
-            key,
-            args.job_epoch,
-            source_dims,
-            orientation,
-            true,
-            raw_metadata,
-        );
-        return;
+                .none;
+            pushDimensionsProbed(
+                workers,
+                alloc,
+                io,
+                key,
+                args.job_epoch,
+                source_dims,
+                orientation,
+                true,
+                raw_metadata,
+            );
+            return;
+        },
+        .full, .active_fast_scroll => {},
     }
 
     if (cancel.isCanceled()) return;
@@ -1280,7 +1326,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 }
 
-test "decodeWorker - thumb_only does not do full decompression on JPEG" {
+test "decodeWorker - speculative_thumb skips full decompression on JPEG" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -1301,7 +1347,7 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
         .entry = entry,
         .has_gpu_device = false,
         .pixel_format = sdl.PixelFormat.rgba32,
-        .thumb_only = true,
+        .mode = .speculative_thumb,
     };
 
     _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1327,7 +1373,15 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
             .image_decoded => {
                 image_decoded_seen = true;
             },
-            else => {},
+            .exif_orientation_parsed,
+            .thumb_decoded,
+            .decode_failed,
+            .path_discovered,
+            .directory_scan_result,
+            .palette_folder_count,
+            .precache_completed,
+            .ipc_command,
+            => {},
         }
     }
 
@@ -1335,7 +1389,7 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
     try std.testing.expect(!image_decoded_seen);
 }
 
-test "decodeWorker - thumb_only does not do full decompression on PNG" {
+test "decodeWorker - speculative_thumb skips full decompression on PNG" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -1356,7 +1410,7 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
         .entry = entry,
         .has_gpu_device = true,
         .pixel_format = sdl.PixelFormat.rgba32,
-        .thumb_only = true,
+        .mode = .speculative_thumb,
     };
 
     _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1379,7 +1433,15 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
             .image_decoded => {
                 image_decoded_seen = true;
             },
-            else => {},
+            .exif_orientation_parsed,
+            .thumb_decoded,
+            .decode_failed,
+            .path_discovered,
+            .directory_scan_result,
+            .palette_folder_count,
+            .precache_completed,
+            .ipc_command,
+            => {},
         }
     }
 
@@ -1407,7 +1469,7 @@ test "decodeWorker - prunes early when current_generation does not match key.gen
         .entry = entry,
         .has_gpu_device = true,
         .pixel_format = sdl.PixelFormat.rgba32,
-        .thumb_only = false,
+        .mode = .full,
         .current_generation = &current_gen,
     };
 
@@ -1473,7 +1535,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
         .{tmp.sub_path},
     );
 
-    // Test 1: Full decode (thumb_only = false)
+    // Test 1: Full decode (.full)
     {
         var workers = WorkerManager{};
         defer workers.deinit(allocator, io);
@@ -1491,7 +1553,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
         };
 
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1524,7 +1586,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
         try std.testing.expect(image_decoded_seen);
     }
 
-    // Test 2: Thumb only decode (thumb_only = true)
+    // Test 2: Speculative thumb decode (.speculative_thumb)
     {
         var workers = WorkerManager{};
         defer workers.deinit(allocator, io);
@@ -1542,7 +1604,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = true,
+            .mode = .speculative_thumb,
         };
 
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1637,7 +1699,7 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
         .entry = entry,
         .has_gpu_device = true,
         .pixel_format = sdl.PixelFormat.rgba32,
-        .thumb_only = false,
+        .mode = .full,
     };
 
     _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1737,7 +1799,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
 
     var current_gen: std.atomic.Value(usize) = .init(1);
 
-    // Case 1: Fast scrubbing (thumb_only = true) -> receives IFD1 (1024x576)
+    // Case 1: Fast scrubbing (.speculative_thumb) -> receives IFD1 (1024x576)
     {
         const p = try allocator.dupe(u8, arw_path);
         const entry = MediaEntry{ .filesystem = .{ .path = p } };
@@ -1751,7 +1813,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = true,
+            .mode = .speculative_thumb,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
         _ = workers.active_threads.fetchAdd(1, .monotonic);
@@ -1778,7 +1840,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
         try std.testing.expect(thumb_seen);
     }
 
-    // Case 2: Settled viewing (thumb_only = false) -> receives IFD0 medium
+    // Case 2: Settled viewing (.full) -> receives IFD0 medium
     // placeholder (1024x380), then IFD2 full preview (1024x682)
     {
         const p = try allocator.dupe(u8, arw_path);
@@ -1793,7 +1855,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
         _ = workers.active_threads.fetchAdd(1, .monotonic);
@@ -1877,7 +1939,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
     defer workers.deinit(allocator, io);
     var current_gen: std.atomic.Value(usize) = .init(1);
 
-    // 1. thumb_only decodes RAW thumbnail
+    // 1. active_fast_scroll decodes RAW thumbnail and returns early
     {
         const pair = FilePair{
             .raw_path = try allocator.dupe(u8, raw_file),
@@ -1894,7 +1956,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = true,
+            .mode = .active_fast_scroll,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1931,7 +1993,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
             .pair_target = .standalone_jpeg,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -1969,7 +2031,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
             .entry = entry,
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -2016,7 +2078,7 @@ test "decodeWorker - canceled RAW pair exits without fallback" {
         .entry = .{ .pair = pair },
         .has_gpu_device = false,
         .pixel_format = sdl.PixelFormat.rgba32,
-        .thumb_only = false,
+        .mode = .full,
     };
 
     try std.testing.expect(decodeRawFile(args, pair.raw_path, true));
@@ -2146,7 +2208,8 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
     defer workers.deinit(allocator, io);
     var current_gen: std.atomic.Value(usize) = .init(1);
 
-    // Case 1: thumb_only = true with thumbnail past 256 KB succeeds via Stage 1 open file
+    // Case 1: .speculative_thumb with thumbnail past 256 KB succeeds via
+    // Stage 1 open file
     {
         const args = try allocator.create(DecodeArgs);
         args.* = .{
@@ -2155,10 +2218,12 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
             .io = io,
             .key = .{ .id = MediaId.fromU32(1), .generation = 1 },
             .current_generation = &current_gen,
-            .entry = .{ .filesystem = .{ .path = try allocator.dupe(u8, mock_path) } },
+            .entry = .{
+                .filesystem = .{ .path = try allocator.dupe(u8, mock_path) },
+            },
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = true,
+            .mode = .speculative_thumb,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -2209,7 +2274,8 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
         try std.testing.expect(thumb_seen);
     }
 
-    // Case 2: thumb_only = false emits orientation + thumb in Stage 1, then full image in Stage 2
+    // Case 2: .full emits orientation + thumb in Stage 1, then full image
+    // in Stage 2
     {
         const args = try allocator.create(DecodeArgs);
         args.* = .{
@@ -2218,10 +2284,12 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
             .io = io,
             .key = .{ .id = MediaId.fromU32(2), .generation = 1 },
             .current_generation = &current_gen,
-            .entry = .{ .filesystem = .{ .path = try allocator.dupe(u8, mock_path) } },
+            .entry = .{
+                .filesystem = .{ .path = try allocator.dupe(u8, mock_path) },
+            },
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -2288,7 +2356,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
             .entry = .{ .filesystem = .{ .path = try allocator.dupe(u8, hdr_path) } },
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -2361,7 +2429,7 @@ test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
             },
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -2422,7 +2490,7 @@ test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
             },
             .has_gpu_device = true,
             .pixel_format = sdl.PixelFormat.rgba32,
-            .thumb_only = false,
+            .mode = .full,
             .pair_target = .adaptive,
         };
         _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
@@ -2453,5 +2521,313 @@ test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
         try std.testing.expect(batch.items[1] == .image_decoded);
         const img = batch.items[1].image_decoded.unwrapForTest();
         try std.testing.expect(img.thumb_write_mtime_sec == null);
+    }
+}
+
+test "decodeWorker - active_fast_scroll thumb hit returns early" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const main_jpg_path = "testfiles/images/000_0_1024x682.jpg";
+    const thumb_jpg_path = "testfiles/images/063_63_1024x576.jpg";
+
+    const readAll = struct {
+        fn run(alloc: std.mem.Allocator, io_inst: std.Io, p: []const u8) ![]u8 {
+            var f = try std.Io.Dir.openFile(
+                std.Io.Dir.cwd(),
+                io_inst,
+                p,
+                .{},
+            );
+            defer f.close(io_inst);
+            const st = try std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                io_inst,
+                p,
+                .{},
+            );
+            const buf = try alloc.alloc(u8, @intCast(st.size));
+            errdefer alloc.free(buf);
+            var slices = [_][]u8{buf};
+            _ = try f.readPositional(io_inst, &slices, 0);
+            return buf;
+        }
+    }.run;
+
+    const main_jpg = try readAll(allocator, io, main_jpg_path);
+    defer allocator.free(main_jpg);
+    const thumb_jpg = try readAll(allocator, io, thumb_jpg_path);
+    defer allocator.free(thumb_jpg);
+
+    const app1_payload_len: usize = 6 + 56 + thumb_jpg.len;
+    const app1_total_len: usize = 4 + app1_payload_len;
+    const tiff_start_off: usize = 2 + 4 + 6;
+    const file_buf = try allocator.alloc(
+        u8,
+        app1_total_len + main_jpg.len,
+    );
+    defer allocator.free(file_buf);
+    @memset(file_buf, 0);
+
+    file_buf[0] = 0xFF;
+    file_buf[1] = 0xD8;
+    file_buf[2] = 0xFF;
+    file_buf[3] = 0xE1;
+    std.mem.writeInt(
+        u16,
+        file_buf[4..6],
+        @intCast(2 + app1_payload_len),
+        .big,
+    );
+    @memcpy(file_buf[6..12], "Exif\x00\x00");
+
+    const tiff = file_buf[tiff_start_off .. tiff_start_off + 56];
+    tiff[0] = 'I';
+    tiff[1] = 'I';
+    std.mem.writeInt(u16, tiff[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, tiff[4..8], 8, .little);
+    std.mem.writeInt(u16, tiff[8..10], 1, .little);
+    std.mem.writeInt(u16, tiff[10..12], 0x0112, .little);
+    std.mem.writeInt(u16, tiff[12..14], 3, .little);
+    std.mem.writeInt(u32, tiff[14..18], 1, .little);
+    std.mem.writeInt(u16, tiff[18..20], 1, .little);
+    std.mem.writeInt(u32, tiff[22..26], 26, .little);
+    std.mem.writeInt(u16, tiff[26..28], 2, .little);
+    std.mem.writeInt(u16, tiff[28..30], 0x0201, .little);
+    std.mem.writeInt(u16, tiff[30..32], 4, .little);
+    std.mem.writeInt(u32, tiff[32..36], 1, .little);
+    std.mem.writeInt(u32, tiff[36..40], 56, .little);
+    std.mem.writeInt(u16, tiff[40..42], 0x0202, .little);
+    std.mem.writeInt(u16, tiff[42..44], 4, .little);
+    std.mem.writeInt(u32, tiff[44..48], 1, .little);
+    std.mem.writeInt(u32, tiff[48..52], @intCast(thumb_jpg.len), .little);
+    std.mem.writeInt(u32, tiff[52..56], 0, .little);
+    @memcpy(
+        file_buf[tiff_start_off + 56 .. tiff_start_off + 56 + thumb_jpg.len],
+        thumb_jpg,
+    );
+    @memcpy(
+        file_buf[2 + app1_total_len .. 2 + app1_total_len + (main_jpg.len - 2)],
+        main_jpg[2..],
+    );
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "fast_thumb_hit.jpg", .{});
+    var wr_slices = [_][]const u8{file_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}/fast_thumb_hit.jpg",
+        .{tmp.sub_path},
+    );
+
+    var workers = WorkerManager{};
+    defer workers.deinit(allocator, io);
+    var current_gen: std.atomic.Value(usize) = .init(1);
+
+    const args = try allocator.create(DecodeArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .key = .{ .id = MediaId.fromU32(1), .generation = 1 },
+        .current_generation = &current_gen,
+        .entry = .{
+            .filesystem = .{ .path = try allocator.dupe(u8, mock_path) },
+        },
+        .has_gpu_device = true,
+        .pixel_format = sdl.PixelFormat.rgba32,
+        .mode = .active_fast_scroll,
+        .pair_target = .adaptive,
+    };
+    _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    decodeWorker(args);
+
+    var thumb_seen = false;
+    var image_seen = false;
+    var dims_seen = false;
+    while (workers.event_queue.pop()) |*ev| {
+        defer ev.deinit(allocator);
+        switch (ev.*) {
+            .thumb_decoded => |t_evt| {
+                const t = t_evt.unwrapForTest();
+                thumb_seen = true;
+                try std.testing.expect(t.thumb_only);
+                try std.testing.expectEqual(@as(f32, 1024.0), t.w);
+                try std.testing.expectEqual(@as(f32, 576.0), t.h);
+            },
+            .image_decoded => image_seen = true,
+            .dimensions_probed => dims_seen = true,
+            .exif_orientation_parsed,
+            .decode_failed,
+            .path_discovered,
+            .directory_scan_result,
+            .palette_folder_count,
+            .precache_completed,
+            .ipc_command,
+            => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expect(thumb_seen);
+    try std.testing.expect(!image_seen);
+    try std.testing.expect(!dims_seen);
+}
+
+test "decodeWorker - active_fast_scroll miss falls through to full decode" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.deinit(allocator, io);
+    var current_gen: std.atomic.Value(usize) = .init(1);
+
+    // 1. Small PNG without thumbnail falls through directly to full decode
+    {
+        const path = try allocator.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .id = MediaId.fromU32(1), .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{ .filesystem = .{ .path = path } },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .mode = .active_fast_scroll,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        var image_seen = false;
+        var thumb_seen = false;
+        var dims_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            switch (ev.*) {
+                .image_decoded => |img_evt| {
+                    const img = img_evt.unwrapForTest();
+                    image_seen = true;
+                    try std.testing.expect(img.surface != null);
+                    try std.testing.expect(img.w > 0.0 and img.h > 0.0);
+                },
+                .thumb_decoded => thumb_seen = true,
+                .dimensions_probed => dims_seen = true,
+                .exif_orientation_parsed,
+                .decode_failed,
+                .path_discovered,
+                .directory_scan_result,
+                .palette_folder_count,
+                .precache_completed,
+                .ipc_command,
+                => return error.TestUnexpectedResult,
+            }
+        }
+        try std.testing.expect(image_seen);
+        try std.testing.expect(!thumb_seen);
+        try std.testing.expect(!dims_seen);
+    }
+
+    // 2. Staged file > 256 KB without thumbnail reads Stage 2 in same pass
+    {
+        const jpg_path = "testfiles/images/000_0_1024x682.jpg";
+        var src = try std.Io.Dir.openFile(
+            std.Io.Dir.cwd(),
+            io,
+            jpg_path,
+            .{},
+        );
+        defer src.close(io);
+        const st = try std.Io.Dir.statFile(
+            std.Io.Dir.cwd(),
+            io,
+            jpg_path,
+            .{},
+        );
+        const jpg_bytes = try allocator.alloc(u8, @intCast(st.size));
+        defer allocator.free(jpg_bytes);
+        var j_slices = [_][]u8{jpg_bytes};
+        _ = try src.readPositional(io, &j_slices, 0);
+
+        const total_len = header_probe_limit + 32 * 1024;
+        const padded = try allocator.alloc(u8, total_len);
+        defer allocator.free(padded);
+        @memset(padded, 0);
+        @memcpy(padded[0..jpg_bytes.len], jpg_bytes);
+
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var mock_file = try tmp.dir.createFile(io, "staged_miss.jpg", .{});
+        var wr_slices = [_][]const u8{padded};
+        _ = try mock_file.writePositional(io, &wr_slices, 0);
+        mock_file.close(io);
+
+        var path_buf: [128]u8 = undefined;
+        const mock_path = try std.mem.print(
+            &path_buf,
+            ".zig-cache/tmp/{s}/staged_miss.jpg",
+            .{tmp.sub_path},
+        );
+
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .id = MediaId.fromU32(2), .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{
+                .filesystem = .{ .path = try allocator.dupe(u8, mock_path) },
+            },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .mode = .active_fast_scroll,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        var image_seen = false;
+        var thumb_seen = false;
+        var dims_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            switch (ev.*) {
+                .image_decoded => |img_evt| {
+                    const img = img_evt.unwrapForTest();
+                    image_seen = true;
+                    try std.testing.expectEqual(@as(f32, 1024.0), img.w);
+                    try std.testing.expectEqual(@as(f32, 682.0), img.h);
+                    try std.testing.expectEqual(
+                        @as(u64, total_len),
+                        img.size_bytes,
+                    );
+                },
+                .thumb_decoded => thumb_seen = true,
+                .dimensions_probed => dims_seen = true,
+                .exif_orientation_parsed,
+                .decode_failed,
+                .path_discovered,
+                .directory_scan_result,
+                .palette_folder_count,
+                .precache_completed,
+                .ipc_command,
+                => return error.TestUnexpectedResult,
+            }
+        }
+        try std.testing.expect(image_seen);
+        try std.testing.expect(!thumb_seen);
+        try std.testing.expect(!dims_seen);
     }
 }

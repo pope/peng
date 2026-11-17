@@ -177,10 +177,18 @@
     (overlapped `openPath` slot 0, `sysUpdateCache`, and pair promotion) spawn
     via `AppState.spawnSlotDecode`, acquiring a `cache.allocJob()` epoch ticket
     with `has_gpu_device = (gpu_device != null) or gpu_enabled`.
-- **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache**:
-  - Issue single `statFile` and `openFile` per worker pass. Read 256KB Stage 1
-    header via `probe.readRangePositional` for metadata probing and thumbnail
-    extraction before `DecodePayload.readRemaining()` executes Stage 2.
+- **Two-Stage Header-First I/O, `DecodeMode` & Freedesktop Thumbnail Cache**:
+  - Issue single `statFile` and `openFile` per worker pass and keep ALL header
+    probing and EXIF orientation reads off the main thread
+    (`executeIntent(.reset_rotation)` reads `entry.metadata.orientation`
+    directly). Read 256KB Stage 1 header via `probe.readRangePositional` for
+    metadata probing and thumbnail extraction before
+    `DecodePayload.readRemaining()` executes Stage 2.
+  - Select `DecodeMode` per slot in `sysUpdateCache`: `.speculative_thumb` for
+    fast-scroll neighbors (exiting after Stage 1), `.active_fast_scroll` for
+    active fast-scroll slots (returning early on thumbnail hit or falling
+    through to Stage 2 full decode in the same open-file pass on miss), and
+    `.full` when settled/idle or when `thumbnail == .not_available`.
   - Fall back to `$XDG_CACHE_HOME/thumbnails/` when no embedded preview is
     present, noting cached Freedesktop PNGs are pre-oriented upright.
   - Background thumbnail writes (`thumbWriterWorker`) are bounded to
