@@ -109,9 +109,7 @@ fn probeActiveSlotMetadata(
         return;
     const meta = image.probeMediaMetadata(state.io, media_item) orelse {
         if (state.cache.get(key)) |entry| {
-            if (entry.resident.thumbnail == .none) {
-                entry.resident.thumbnail = .not_available;
-            }
+            entry.resident.thumbnail.markNotAvailableIfUnresolved();
         }
         return;
     };
@@ -122,15 +120,18 @@ fn probeActiveSlotMetadata(
             meta.orientation,
             meta.raw_metadata,
         );
-        if (entry.resident.thumbnail == .none) {
-            const can_use_thumb_cache =
-                state.workers.thumb_cache_config != .disabled and
-                !media_item.isArchive();
-            entry.resident.thumbnail =
-                if (meta.has_embedded_thumbnail or can_use_thumb_cache)
-                    .pending
-                else
-                    .not_available;
+        switch (entry.resident.thumbnail) {
+            .none => {
+                const can_use_thumb_cache =
+                    state.workers.thumb_cache_config != .disabled and
+                    !media_item.isArchive();
+                entry.resident.thumbnail =
+                    if (meta.has_embedded_thumbnail or can_use_thumb_cache)
+                        .pending
+                    else
+                        .not_available;
+            },
+            .pending, .staged_cpu, .not_available, .unloaded, .loaded => {},
         }
     }
     if (state.viewer.navigation.getCurrentMediaId()) |cur_id| {
@@ -150,10 +151,9 @@ fn checkPairPromotion(
     if (!media_item.isPair()) return;
     const entry_val = state.cache.getEntry(key) orelse return;
     if (entry_val.inflight != null) return;
-    if (entry_val.resident.asset != .loaded_gpu and
-        entry_val.resident.asset != .loaded_cpu)
-    {
-        return;
+    switch (entry_val.resident.asset) {
+        .loaded_gpu, .loaded_cpu => {},
+        .none, .promoting_gpu, .failed => return,
     }
 
     if (!entry_val.metadata.raw_metadata.isRaw()) return;
@@ -262,14 +262,12 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             }
         }
 
-        if (in_desired) {
-            i += 1;
-        } else if (entry.resident.asset == .loaded_gpu) {
-            // Retain loaded GPU textures beyond ±2 window until VRAM budget
-            // requires eviction
-            i += 1;
-        } else if (dev_opt == null and entry.resident.asset == .loaded_cpu) {
-            // Retain loaded CPU surfaces in headless mode
+        const keep_entry = in_desired or switch (entry.resident.asset) {
+            .loaded_gpu, .promoting_gpu => true,
+            .loaded_cpu => dev_opt == null,
+            .none, .failed => false,
+        };
+        if (keep_entry) {
             i += 1;
         } else {
             state.cache.removeAndDeinit(i, dev_opt);
@@ -291,12 +289,13 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     // Resource protection: check whether the current image is fully ready or
     // failed. When false, background decode workers are restricted strictly
     // to the active image `cur_id`. In headless/mock mode (no GPU device),
-    // .loaded_cpu is terminal ready; with GPU, .loaded_gpu is required.
+    // .loaded_cpu is terminal ready; with GPU, .loaded_gpu or .promoting_gpu
+    // is required.
     const is_current_ready = blk: {
         const cur_key = state.cache.activeKey(cur_id);
-        if (state.cache.get(cur_key)) |cur_entry| {
+        if (state.cache.getEntry(cur_key)) |cur_entry| {
             break :blk switch (cur_entry.resident.asset) {
-                .loaded_gpu, .failed => true,
+                .loaded_gpu, .promoting_gpu, .failed => true,
                 .loaded_cpu => state.gpu_device == null,
                 .none => false,
             };
@@ -309,10 +308,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     // next image only runs if active image thumbnail is already ready.
     const is_active_thumb_ready = blk: {
         const cur_key = state.cache.activeKey(cur_id);
-        if (state.cache.get(cur_key)) |cur_entry| {
+        if (state.cache.getEntry(cur_key)) |cur_entry| {
             break :blk switch (cur_entry.resident.thumbnail) {
                 .loaded, .not_available => true,
-                .none, .pending, .unloaded => is_current_ready,
+                .none, .pending, .staged_cpu, .unloaded => is_current_ready,
             };
         }
         break :blk false;
@@ -348,10 +347,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
         const key = state.cache.activeKey(d_id);
         if (state.cache.get(key)) |entry| {
-            if (d == neighbors.current and
-                (entry.resident.asset == .loaded_cpu or
-                    entry.resident.asset == .loaded_gpu))
-            {
+            if (d == neighbors.current and entry.resident.asset.isLoaded()) {
                 hit = true;
             }
         } else {
@@ -368,8 +364,17 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
 
         if (state.cache.getEntry(key)) |entry| {
+            const thumb_is_none = switch (entry.resident.thumbnail) {
+                .none => true,
+                .pending,
+                .staged_cpu,
+                .not_available,
+                .unloaded,
+                .loaded,
+                => false,
+            };
             const needs_dimensions = entry.metadata.full_dims == null and
-                entry.resident.thumbnail == .none;
+                thumb_is_none;
             if (needs_dimensions) {
                 probeActiveSlotMetadata(state, key);
             }
@@ -378,19 +383,32 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         if (state.cache.getEntry(key)) |entry| {
             const is_active_slot = (d_id == cur_id);
             const is_decoding = if (entry.inflight) |inf|
-                inf.stage == .decoding and !inf.has_thread
+                (switch (inf.stage) {
+                    .decoding => !inf.has_thread,
+                    .uploading => false,
+                })
             else
                 false;
             if (is_decoding) {
-                const thumb_ready =
-                    entry.resident.thumbnail == .not_available or
-                    entry.resident.thumbnail == .loaded;
+                const thumb_ready = switch (entry.resident.thumbnail) {
+                    .not_available, .loaded => true,
+                    .none, .pending, .staged_cpu, .unloaded => false,
+                };
+                const thumb_loaded = switch (entry.resident.thumbnail) {
+                    .loaded => true,
+                    .none,
+                    .pending,
+                    .staged_cpu,
+                    .not_available,
+                    .unloaded,
+                    => false,
+                };
                 const skip_neighbor = d != neighbors.current and
                     is_fast_scrolling and
                     thumb_ready;
                 const skip_active = d == neighbors.current and
                     is_fast_scrolling and
-                    entry.resident.thumbnail == .loaded;
+                    thumb_loaded;
                 if (!skip_neighbor and !skip_active) {
                     if (state.viewer.navigation.getMediaEntryById(d_id)) |e| {
                         to_spawn.appendAssumeCapacity(.{
@@ -415,10 +433,17 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         const key = state.cache.activeKey(req.id);
         const entry = state.cache.get(key) orelse continue;
         const inf = entry.inflight orelse continue;
-        if (inf.has_thread or inf.stage != .decoding) continue;
+        const awaiting_decode = switch (inf.stage) {
+            .decoding => !inf.has_thread,
+            .uploading => false,
+        };
+        if (!awaiting_decode) continue;
 
-        const thumb_only = is_fast_scrolling and
-            entry.resident.thumbnail != .not_available;
+        const thumb_not_available = switch (entry.resident.thumbnail) {
+            .not_available => true,
+            .none, .pending, .staged_cpu, .unloaded, .loaded => false,
+        };
+        const thumb_only = is_fast_scrolling and !thumb_not_available;
 
         spawnCacheDecodeSlot(
             state,
@@ -493,10 +518,12 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
         return error.SurfaceFailed;
     state.cache.setResidentAsset(state.cache.activeKey(id0), .{
         .loaded_cpu = .{
-            .surface = surf,
-            .w = 100,
-            .h = 100,
-            .size_bytes = 1000,
+            .cpu = .{
+                .surface = surf,
+                .w = 100,
+                .h = 100,
+                .size_bytes = 1000,
+            },
         },
     }, null);
     state.cache.setInFlight(state.cache.activeKey(id0), null);
@@ -536,10 +563,12 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 100,
-                    .h = 100,
-                    .size_bytes = 1000,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 100,
+                        .h = 100,
+                        .size_bytes = 1000,
+                    },
                 },
             },
         },
@@ -778,10 +807,12 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 1616.0,
-                    .h = 1080.0,
-                    .size_bytes = 500_000,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 1616.0,
+                        .h = 1080.0,
+                        .size_bytes = 500_000,
+                    },
                 },
             },
         },
@@ -1071,20 +1102,14 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
 
-    const key0 = try state.cache.appendSlot(allocator, id0, .{
-        .resident = .{
-            .asset = .{
-                .loaded_gpu = .{
-                    .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
-                    .w = 1616.0,
-                    .h = 1080.0,
-                    .size_bytes = 500_000,
-                    .ingest = .{ .memory_size_bytes = 7_000_000 },
-                },
-            },
-        },
-        .inflight = null,
-    });
+    const key0 = try state.cache.appendSlot(
+        allocator,
+        id0,
+        image.CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 1616.0, .h = 1080.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        ),
+    );
     if (state.cache.get(key0)) |entry| {
         entry.metadata.full_dims = .{ .w = 1616.0, .h = 1080.0 };
         entry.metadata.raw_metadata =
@@ -1097,11 +1122,12 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
     checkPairPromotion(&state, key0, 1000);
 
     const entry = state.cache.get(key0).?;
-    try std.testing.expect(entry.resident.asset == .loaded_gpu);
-    try std.testing.expectEqual(
-        @as(f32, 1616.0),
-        entry.resident.asset.loaded_gpu.w,
-    );
+    switch (entry.resident.asset) {
+        .loaded_gpu => |g| try std.testing.expectEqual(@as(f32, 1616.0), g.w),
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    }
     try std.testing.expect(entry.inflight != null);
     try std.testing.expectEqual(
         image.InFlightStage.decoding,

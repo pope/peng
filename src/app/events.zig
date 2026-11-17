@@ -1,7 +1,6 @@
 const app_state = @import("state.zig");
 const core = @import("core");
 const geom = @import("geom");
-const gpu = @import("gpu");
 const ipc = @import("ipc");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -12,14 +11,12 @@ const vfs = @import("vfs");
 const AppState = app_state.AppState;
 const EntryScanState = vfs.EntryScanState;
 const events = core.events;
-const GpuUploadResult = gpu.GpuUploadResult;
 const image = core.image;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 const PhysicalDims = geom.PhysicalDims;
 const RawMetadata = probe.RawMetadata;
-const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail
 /// extractions, directory scans, folder count updates, and IPC commands) from
@@ -34,7 +31,8 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 
     var destroyed_full_surface = state.display.isHidden();
     for (state.event_batch.items, 0..) |*evt, evt_idx| {
-        defer evt.deinit(state.allocator);
+        var keep_event_resources = false;
+        defer if (!keep_event_resources) evt.deinit(state.allocator);
 
         switch (evt.*) {
             .exif_orientation_parsed => |*e| if (e.resolve(&state.cache)) |r| {
@@ -48,16 +46,16 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             },
             .thumb_decoded => |*t| {
                 if (t.resolve(&state.cache)) |r| {
-                    const skip_upload = hasSubsequentImageDecoded(
+                    const skip_staging = hasSubsequentImageDecoded(
                         state.event_batch.items[evt_idx + 1 ..],
                         r.key,
                         t.job_epoch,
                     );
-                    handleExifThumbnailEvent(
+                    keep_event_resources = handleExifThumbnailEvent(
                         state,
                         r.key,
                         r.payload.*,
-                        skip_upload,
+                        skip_staging,
                     );
                 }
             },
@@ -125,19 +123,18 @@ fn handleDecodeFailedEvent(
         }
     }
     entry.inflight = null;
-    if (entry.resident.asset != .loaded_gpu and
-        entry.resident.asset != .loaded_cpu)
-    {
-        entry.resident.asset = .failed;
-        if (is_current) {
-            state.viewer.image_transition = .none;
-            state.viewer.animations.setImmediate(.image_crossfade, 1.0);
-        }
-    }
-    if (entry.resident.thumbnail == .pending or
-        entry.resident.thumbnail == .none)
-    {
-        entry.resident.thumbnail = .not_available;
+    switch (entry.resident.asset) {
+        .loaded_gpu, .loaded_cpu, .promoting_gpu => {
+            entry.resident.thumbnail.markNotAvailableIfUnresolved();
+        },
+        .none, .failed => {
+            entry.resident.asset = .failed;
+            entry.resident.thumbnail.discardStagedAndMarkUnavailable();
+            if (is_current) {
+                state.viewer.image_transition = .none;
+                state.viewer.animations.setImmediate(.image_crossfade, 1.0);
+            }
+        },
     }
 }
 
@@ -215,11 +212,7 @@ fn handleDimensionsProbedEvent(
                 }
             }
         }
-        if (entry.resident.thumbnail == .none or
-            entry.resident.thumbnail == .pending)
-        {
-            entry.resident.thumbnail = .not_available;
-        }
+        entry.resident.thumbnail.markNotAvailableIfUnresolved();
     }
     state.updateCurrentRotation();
 }
@@ -255,10 +248,10 @@ fn handleExifThumbnailEvent(
     state: *AppState,
     key: image.ImageCacheKey,
     thumb_data: events.ThumbDecodedPayload,
-    skip_gpu_upload: bool,
-) void {
+    skip_staging: bool,
+) bool {
     const already_loaded = blk: {
-        const entry = state.cache.get(key) orelse return;
+        const entry = state.cache.get(key) orelse return false;
         entry.applyProbedMetadata(
             thumb_data.source_dims,
             thumb_data.orientation,
@@ -272,101 +265,28 @@ fn handleExifThumbnailEvent(
                 }
             }
         }
-        break :blk entry.resident.asset == .loaded_gpu or
-            entry.resident.asset == .loaded_cpu;
+        break :blk entry.resident.asset.isLoaded();
     };
     state.updateCurrentRotation();
-    if (skip_gpu_upload or already_loaded) {
-        return;
-    }
-
-    const surf = thumb_data.surface;
-    if (state.gpu_device) |gpu_dev| {
-        if (uploadSurfaceToGpu(
-            gpu_dev,
-            surf,
-            state.unpack_compute_pipeline,
-            &state.upload_staging,
-        )) |upload_res| {
-            const entry = state.cache.get(key) orelse {
-                gpu_dev.releaseTexture(upload_res.gpu_texture);
-                return;
-            };
-            switch (entry.resident.thumbnail) {
-                .loaded => |old_thumb| {
-                    gpu_dev.releaseTexture(old_thumb.texture);
-                },
-                .none, .pending, .not_available, .unloaded => {},
-            }
-            entry.resident.thumbnail = .{
-                .loaded = .{
-                    .texture = upload_res.gpu_texture,
-                    .info = .{
-                        .w = upload_res.w,
-                        .h = upload_res.h,
-                        .upload_time_ms = upload_res.ingest.upload_time_ms,
-                        .dct_snapped = thumb_data.dct_snapped,
-                        .source = thumb_data.source,
-                    },
-                },
-            };
-            state.updateCurrentRotation();
-        } else {
-            if (state.cache.get(key)) |entry| {
-                if (entry.resident.thumbnail == .none or
-                    entry.resident.thumbnail == .pending)
-                {
-                    entry.resident.thumbnail = .not_available;
-                }
-            }
-        }
-    } else {
-        if (state.cache.get(key)) |entry| {
-            if (entry.resident.thumbnail == .none or
-                entry.resident.thumbnail == .pending)
-            {
-                entry.resident.thumbnail = .not_available;
-            }
-        }
-    }
-}
-
-fn enqueueDecodedThumbWrite(
-    state: *AppState,
-    key: image.ImageCacheKey,
-    decoded_data: *const events.ImageDecodedPayload,
-    mtime_sec: i64,
-    surf: sdl.Surface,
-) bool {
-    if (state.workers.thumb_cache_config == .disabled) return false;
-    const entry = state.cache.getEntry(key) orelse return false;
-    const media = state.viewer.navigation.getMediaEntryById(key.id) orelse
+    if (skip_staging or already_loaded) {
         return false;
-    const path_slice: []const u8 = switch (media) {
-        .archive_entry => return false,
-        .filesystem => |f| f.path,
-        .pair => |p| if (entry.metadata.raw_metadata.isRaw())
-            p.raw_path
-        else
-            p.jpeg_path,
-    };
-    const owned_path = state.allocator.dupe(u8, path_slice) catch return false;
-    const auth = entry.getAuthoritativeDims();
-    const source_dims =
-        auth.asPositive() orelse
-        decoded_data.source_dims orelse
-        PhysicalDims.initPositive(decoded_data.w, decoded_data.h);
+    }
 
-    state.workers.enqueueThumbWrite(state.allocator, state.io, .{
-        .surface = surf,
-        .source_path = owned_path,
-        .mime_type = decoded_data.mime_type,
-        .file_size = decoded_data.size_bytes,
-        .mtime_sec = mtime_sec,
-        .orientation = decoded_data.orientation,
-        .source_dims = source_dims,
-    });
-    return true;
+    const entry = state.cache.get(key) orelse return false;
+    if (state.gpu_enabled or state.gpu_device != null) {
+        entry.resident.thumbnail.deinit(state.gpu_device);
+        entry.resident.thumbnail = .{
+            .staged_cpu = .{
+                .surface = thumb_data.surface,
+                .dct_snapped = thumb_data.dct_snapped,
+                .source = thumb_data.source,
+            },
+        };
+        return true;
+    }
+
+    entry.resident.thumbnail.markNotAvailableIfUnresolved();
+    return false;
 }
 
 fn handleImageDecodedEvent(
@@ -374,113 +294,59 @@ fn handleImageDecodedEvent(
     key: image.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
 ) void {
-    if (state.cache.get(key)) |entry| {
-        if (entry.inflight) |*inf| {
-            if (inf.has_thread) {
-                state.cache.releaseJob(inf.job_id);
-                inf.has_thread = false;
-            }
+    const entry = state.cache.get(key) orelse return;
+    if (entry.inflight) |*inf| {
+        if (inf.has_thread) {
+            state.cache.releaseJob(inf.job_id);
+            inf.has_thread = false;
         }
     }
     const surf = decoded_data.surface orelse return;
+    entry.inflight = null;
+    applyDecodedMetadata(entry, decoded_data);
+    entry.resident.thumbnail.discardStagedAndMarkUnavailable();
 
-    const is_current =
-        if (state.viewer.navigation.getCurrentMediaId()) |cur_id|
-            key.id == cur_id
+    const thumb_write: ?image.DeferredThumbWrite =
+        if (decoded_data.thumb_write_mtime_sec) |mtime_sec|
+            .{ .source_mtime_sec = mtime_sec }
         else
-            true;
+            null;
 
-    // Check if the current image is already loaded on GPU (or failed)
-    const is_current_ready = blk: {
-        const cur_id = state.viewer.navigation.getCurrentMediaId() orelse
-            break :blk true;
-        const cur_key = state.cache.activeKey(cur_id);
-        if (state.cache.getEntry(cur_key)) |cur_entry| {
-            break :blk switch (cur_entry.resident.asset) {
-                .loaded_gpu, .failed => true,
-                .loaded_cpu, .none => false,
-            };
-        }
-        break :blk false;
+    const cpu_asset = image.CpuAsset{
+        .cpu = .{
+            .surface = surf,
+            .w = decoded_data.w,
+            .h = decoded_data.h,
+            .size_bytes = decoded_data.size_bytes,
+            .mime_type = decoded_data.mime_type,
+            .decode = decoded_data.decode,
+        },
+        .thumb_write = thumb_write,
     };
 
-    // Demand-first GPU upload gating:
-    // Only upload immediately to the GPU if this IS the active image, OR if the
-    // active image is already on the GPU, OR if this slot already has a
-    // resident GPU texture (e.g. RAW promotion completing in the background).
-    const slot_already_has_gpu = blk: {
-        if (state.cache.getEntry(key)) |entry| {
-            break :blk entry.resident.asset == .loaded_gpu;
-        }
-        break :blk false;
-    };
-
-    const should_upload_gpu = (state.gpu_device != null) and
-        (is_current or is_current_ready or slot_already_has_gpu);
-
-    if (should_upload_gpu) {
-        const gpu_dev = state.gpu_device.?;
-        if (uploadSurfaceToGpu(
-            gpu_dev,
-            surf,
-            state.unpack_compute_pipeline,
-            &state.upload_staging,
-        )) |full_res| {
-            completeDecodedGpuUpload(
-                state,
-                key,
-                decoded_data,
-                surf,
-                full_res,
-                is_current,
-                gpu_dev,
-                image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
-            );
-        } else {
-            std.log.err(
-                "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
-                .{key},
-            );
-            handleDecodeFailedEvent(state, key, is_current);
-        }
-    } else {
-        {
-            const entry = state.cache.get(key) orelse return;
-            entry.inflight = null;
-            entry.resident.asset.deinit(state.gpu_device);
-            applyDecodedMetadata(entry, decoded_data);
-            if (entry.resident.thumbnail == .pending or
-                entry.resident.thumbnail == .none)
-            {
-                entry.resident.thumbnail = .not_available;
-            }
+    switch (entry.resident.asset) {
+        .none, .failed => {
+            entry.resident.asset = .{ .loaded_cpu = cpu_asset };
+        },
+        .loaded_cpu => |*old_cpu| {
+            old_cpu.deinit();
+            entry.resident.asset = .{ .loaded_cpu = cpu_asset };
+        },
+        .loaded_gpu => |gpu| {
             entry.resident.asset = .{
-                .loaded_cpu = .{
-                    .surface = decoded_data.surface.?,
-                    .w = decoded_data.w,
-                    .h = decoded_data.h,
-                    .size_bytes = decoded_data.size_bytes,
-                    .mime_type = decoded_data.mime_type,
-                    .decode = decoded_data.decode,
+                .promoting_gpu = .{
+                    .active = gpu,
+                    .staged = cpu_asset,
                 },
             };
-            decoded_data.surface = null;
-        }
-        state.updateCurrentRotation();
-        if (decoded_data.thumb_write_mtime_sec) |mtime_sec| {
-            if (surf.scale(surf.w(), surf.h(), .nearest)) |cloned| {
-                if (!enqueueDecodedThumbWrite(
-                    state,
-                    key,
-                    decoded_data,
-                    mtime_sec,
-                    cloned,
-                )) {
-                    cloned.destroy();
-                }
-            }
-        }
+        },
+        .promoting_gpu => |*promo| {
+            promo.staged.deinit();
+            promo.staged = cpu_asset;
+        },
     }
+    decoded_data.surface = null;
+    state.updateCurrentRotation();
 }
 
 fn applyDecodedMetadata(
@@ -503,117 +369,6 @@ fn applyDecodedMetadata(
             decoded_data.raw_metadata
     else
         .none;
-}
-
-fn triggerDecodedGpuCrossfades(
-    state: *AppState,
-    is_current: bool,
-    key: image.ImageCacheKey,
-) void {
-    if (!is_current) return;
-    const entry = state.cache.getEntry(key) orelse return;
-
-    const can_crossfade = entry.resident.thumbnail == .loaded and
-        !state.viewer.ui.overlays.debug_show_thumb and
-        !state.viewer.isSlideshowActive() and
-        state.viewer.image_transition == .none;
-    if (can_crossfade) {
-        state.viewer.animations.startFrom(
-            .thumb_crossfade,
-            0.0,
-            1.0,
-            state_pkg.DURATION_THUMB_CROSSFADE_MS,
-            .ease_out_quad,
-        );
-    }
-    if (state.viewer.image_transition != .none) {
-        if (state.viewer.animations.get(.image_crossfade) < 0.001) {
-            state.viewer.animations.startFrom(
-                .image_crossfade,
-                0.0,
-                1.0,
-                state_pkg.DURATION_IMAGE_DISSOLVE_MS,
-                .ease_in_out_cubic,
-            );
-        }
-    }
-}
-
-fn applyDecodedGpuTexture(
-    state: *AppState,
-    key: image.ImageCacheKey,
-    decoded_data: *events.ImageDecodedPayload,
-    full_res: GpuUploadResult,
-    is_current: bool,
-    gpu_dev: ?sdl.gpu.Device,
-) bool {
-    const was_loaded_gpu = blk: {
-        const entry = state.cache.get(key) orelse {
-            if (gpu_dev) |dev| dev.releaseTexture(full_res.gpu_texture);
-            return false;
-        };
-        const prev_gpu = entry.resident.asset == .loaded_gpu;
-        applyDecodedMetadata(entry, decoded_data);
-        entry.resident.asset.replaceGpuTexture(.{
-            .gpu_texture = full_res.gpu_texture,
-            .w = full_res.w,
-            .h = full_res.h,
-            .size_bytes = decoded_data.size_bytes,
-            .mime_type = decoded_data.mime_type,
-            .decode = decoded_data.decode,
-            .ingest = full_res.ingest,
-        }, gpu_dev);
-        if (entry.resident.thumbnail == .pending or
-            entry.resident.thumbnail == .none)
-        {
-            entry.resident.thumbnail = .not_available;
-        }
-        break :blk prev_gpu;
-    };
-    if (!was_loaded_gpu) {
-        triggerDecodedGpuCrossfades(state, is_current, key);
-    }
-    return true;
-}
-
-fn completeDecodedGpuUpload(
-    state: *AppState,
-    key: image.ImageCacheKey,
-    decoded_data: *events.ImageDecodedPayload,
-    surf: sdl.Surface,
-    full_res: GpuUploadResult,
-    is_current: bool,
-    gpu_dev: ?sdl.gpu.Device,
-    max_vram_bytes: usize,
-) void {
-    if (!applyDecodedGpuTexture(
-        state,
-        key,
-        decoded_data,
-        full_res,
-        is_current,
-        gpu_dev,
-    )) return;
-    state.updateCurrentRotation();
-    state.cache.enforceVramBudget(
-        gpu_dev,
-        &state.viewer.navigation,
-        state.viewer.navigation.getVisibleNeighbors(),
-        state.viewer.getTransitionPrevIndex(),
-        state.viewer.navigation.count(),
-        max_vram_bytes,
-    );
-    if (decoded_data.thumb_write_mtime_sec) |mtime_sec| {
-        if (enqueueDecodedThumbWrite(
-            state,
-            key,
-            decoded_data,
-            mtime_sec,
-            surf,
-        )) {
-            decoded_data.surface = null;
-        }
-    }
 }
 
 fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
@@ -1079,47 +834,28 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     _ = try state.cache.appendSlot(allocator, id0, .{
         .inflight = .{ .has_thread = true },
     });
-    const key1 = try state.cache.appendSlot(allocator, id1, .{
-        .resident = .{
-            .asset = .{
-                .loaded_gpu = .{
-                    .gpu_texture = .{ .ptr = @ptrFromInt(0x1000) },
-                    .w = 1600,
-                    .h = 1200,
-                    .size_bytes = 500_000,
-                    .mime_type = "image/jpeg",
-                    .decode = .{
-                        .read_time_ms = 1.0,
-                        .decode_time_ms = 2.0,
-                        .conversion_time_ms = 0.0,
-                    },
-                    .ingest = .{
-                        .upload_time_ms = 0.5,
-                        .memory_size_bytes = 8 * 1024 * 1024,
-                    },
-                },
-            },
-        },
-    });
+    const key1 = try state.cache.appendSlot(
+        allocator,
+        id1,
+        image.CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 1600, .h = 1200 },
+            .{ .w = 0, .h = 0 },
+        ),
+    );
+    const expected_vram: usize = 1600 * 1200 * 4;
     const entry1 = state.cache.get(key1).?;
     entry1.inflight = .{ .stage = .decoding };
-    try std.testing.expectEqual(
-        @as(usize, 8 * 1024 * 1024),
-        state.cache.getTotalVramBytes(),
-    );
+    try std.testing.expectEqual(expected_vram, state.cache.getTotalVramBytes());
 
-    // 1. If GPU upload of a promotion fails while .loaded_gpu, keep .loaded_gpu
-    // and clear inflight instead of clobbering with .failed.
+    // 1. If decode fails while .loaded_gpu, keep .loaded_gpu and clear
+    // inflight instead of clobbering with .failed.
     handleDecodeFailedEvent(&state, key1, true);
     try std.testing.expect(entry1.inflight == null);
-    try std.testing.expect(entry1.resident.asset == .loaded_gpu);
-    try std.testing.expectEqual(
-        @as(usize, 8 * 1024 * 1024),
-        state.cache.getTotalVramBytes(),
-    );
+    try std.testing.expect(entry1.resident.asset.hasGpuTexture());
+    try std.testing.expectEqual(expected_vram, state.cache.getTotalVramBytes());
 
-    // 2. When a promotion finishes while should_upload_gpu is false, replacing
-    // .loaded_gpu with .loaded_cpu clears inflight and drops VRAM bytes.
+    // 2. When a promotion finishes decoding on CPU, .loaded_gpu transitions
+    // to .promoting_gpu, keeping the active GPU texture and VRAM intact.
     entry1.inflight = .{ .stage = .decoding };
     const promoted_surf = sdl.Surface.create(
         32,
@@ -1145,14 +881,23 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
 
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expect(entry1.inflight == null);
-    try std.testing.expect(entry1.resident.asset == .loaded_cpu);
+    switch (entry1.resident.asset) {
+        .promoting_gpu => |*promo| {
+            try std.testing.expectEqual(@as(f32, 32.0), promo.staged.cpu.w);
+            promo.staged.deinit();
+            entry1.resident.asset = .none;
+        },
+        .none, .loaded_cpu, .loaded_gpu, .failed => {
+            return error.TestExpectedPromotingGpu;
+        },
+    }
     try std.testing.expectEqual(@as(usize, 0), state.cache.getTotalVramBytes());
 
-    // 3. Initial decode upload failure on slot 0 transitions to .failed
+    // 3. Initial decode failure on slot 0 transitions to .failed
     const key0 = state.cache.activeKey(id0);
     const entry0 = state.cache.get(key0).?;
     handleDecodeFailedEvent(&state, key0, true);
-    try std.testing.expect(entry0.resident.asset == .failed);
+    try std.testing.expect(entry0.resident.asset.isFailed());
 }
 
 test "drainWorkerEvents - monotonic full_dims on pair promotion" {
@@ -1287,10 +1032,12 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 16,
-                    .h = 16,
-                    .size_bytes = 1024,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 16,
+                        .h = 16,
+                        .size_bytes = 1024,
+                    },
                 },
             },
         },
@@ -1509,12 +1256,14 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = main_surf,
-                    .w = 32.0,
-                    .h = 32.0,
-                    .size_bytes = 4096,
-                    .mime_type = "image/jpeg",
-                    .decode = .{},
+                    .cpu = .{
+                        .surface = main_surf,
+                        .w = 32.0,
+                        .h = 32.0,
+                        .size_bytes = 4096,
+                        .mime_type = "image/jpeg",
+                        .decode = .{},
+                    },
                 },
             },
             .thumbnail = .{ .unloaded = .{
@@ -1690,153 +1439,11 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
     try std.testing.expect(!state.viewer.animations.isActive(.thumb_crossfade));
 }
 
-test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const dir_len = try tmp.dir.realPath(io, &dir_buf);
-    var cache_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const cache_path = try std.mem.print(
-        &cache_path_buf,
-        "{s}/thumbnails",
-        .{dir_buf[0..dir_len]},
-    );
-    const cache_dir = try allocator.dupe(u8, cache_path);
-    state.workers.thumb_cache_config = .{
-        .enabled = .{
-            .cache_dir = cache_dir,
-            .write_policy = .all_missing,
-            .write_tier = .large,
-        },
-    };
-
-    try tmp.dir.writeFile(io, .{
-        .sub_path = "img_5.arw",
-        .data = "dummy",
-    });
-
-    const arena = state.viewer.navigation.directory_arena.allocator();
-    for (0..6) |idx| {
-        var p_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        const p = try std.mem.print(
-            &p_buf,
-            "{s}/img_{d}.arw",
-            .{ dir_buf[0..dir_len], idx },
-        );
-        _ = try state.viewer.navigation.appendEntry(allocator, .{
-            .filesystem = .{ .path = try arena.dupe(u8, p) },
-        });
-    }
-    state.viewer.navigation.current_index = 5;
-
-    // Slot 0: distant GPU texture that will be evicted via swapRemove(0)
-    const id0 = state.viewer.navigation.getIdAt(0).?;
-    const id5 = state.viewer.navigation.getIdAt(5).?;
-    const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
-    _ = try state.cache.appendSlot(allocator, id0, .{
-        .resident = .{
-            .asset = .{
-                .loaded_gpu = .{
-                    .gpu_texture = dummy_tex,
-                    .w = 100.0,
-                    .h = 100.0,
-                    .size_bytes = 500,
-                    .ingest = .{ .memory_size_bytes = 500 },
-                },
-            },
-        },
-    });
-
-    // Slot 1 (tail of state.cache.slots): active index 5 being uploaded
-    const key5 = try state.cache.appendSlot(allocator, id5, .{
-        .inflight = .{ .has_thread = true },
-    });
-
-    const surf = sdl.Surface.create(32, 24, sdl.PixelFormat.rgba32).?;
-    var decoded = events.ImageDecodedPayload{
-        .surface = surf,
-        .w = 1616.0,
-        .h = 1080.0,
-        .size_bytes = 4096,
-        .mime_type = "image/x-sony-arw",
-        .orientation = .rotate_270,
-        .raw_metadata = RawMetadata.init(6000.0, 4000.0),
-        .decode = .{
-            .read_time_ms = 0.1,
-            .decode_time_ms = 1.0,
-            .conversion_time_ms = 0.0,
-        },
-        .thumb_write_mtime_sec = 1700000000,
-    };
-    defer if (decoded.surface) |s| s.destroy();
-
-    const full_res = GpuUploadResult{
-        .gpu_texture = dummy_tex,
-        .w = 1616.0,
-        .h = 1080.0,
-        .ingest = .{
-            .upload_time_ms = 0.1,
-            .memory_size_bytes = 500,
-        },
-    };
-
-    // Budget is 600 bytes; 500 + 500 = 1000 > 600, so enforceVramBudget will
-    // evict slot 0 via swapRemove(0), moving tail slot (key5) into index 0
-    // before enqueueDecodedThumbWrite resolves key5 via getEntry(key5).
-    completeDecodedGpuUpload(
-        &state,
-        key5,
-        &decoded,
-        surf,
-        full_res,
-        true,
-        null,
-        600,
-    );
-
-    try std.testing.expect(decoded.surface == null);
-    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
-    try std.testing.expectEqual(
-        @as(u64, 1),
-        state.workers.snapshotThumbStats().cache_writes,
-    );
-
-    // If a slot has expired or been evicted, enqueueDecodedThumbWrite safely
-    // returns false via getEntry(expired_key).
-    const expired_surf = sdl.Surface.create(8, 8, sdl.PixelFormat.rgba32).?;
-    defer expired_surf.destroy();
-    const expired_key = image.ImageCacheKey{
-        .id = id0,
-        .generation = key5.generation,
-    };
-    try std.testing.expect(!enqueueDecodedThumbWrite(
-        &state,
-        expired_key,
-        &decoded,
-        1700000000,
-        expired_surf,
-    ));
-}
-
-test "handleImageDecodedEvent - preserves loaded_gpu during promotion" {
+test "handleImageDecodedEvent - keeps loaded_gpu and stages promoting_gpu" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const dev_opt = sdl.gpu.Device.create(
-        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
-        true,
-    );
-    const dev = dev_opt orelse return;
-    defer dev.destroy();
-
     var state = try AppState.initHeadless(allocator, io);
-    state.gpu_device = dev;
     defer state.deinit();
 
     const dir_alloc = state.viewer.navigation.directory_arena.allocator();
@@ -1856,35 +1463,23 @@ test "handleImageDecodedEvent - preserves loaded_gpu during promotion" {
     });
 
     // Slide 1 (non-current) already has a loaded GPU texture
-    const surf_dummy = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
-        return;
-    defer surf_dummy.destroy();
-    const up_res = uploadSurfaceToGpu(
-        dev,
-        surf_dummy,
-        null,
-        &state.upload_staging,
-    ) orelse return;
-
-    const key1 = try state.cache.appendSlot(allocator, id1, .{
-        .resident = .{
-            .asset = .{
-                .loaded_gpu = .{
-                    .gpu_texture = up_res.gpu_texture,
-                    .w = up_res.w,
-                    .h = up_res.h,
-                    .size_bytes = 1024,
-                    .mime_type = "image/jpeg",
-                    .decode = .{
-                        .read_time_ms = 1,
-                        .decode_time_ms = 1,
-                        .conversion_time_ms = 1,
-                    },
-                    .ingest = up_res.ingest,
-                },
-            },
-        },
-    });
+    const key1 = try state.cache.appendSlot(
+        allocator,
+        id1,
+        image.CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 16.0, .h = 16.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        ),
+    );
+    defer {
+        if (state.cache.get(key1)) |e| {
+            switch (e.resident.asset) {
+                .promoting_gpu => |*promo| promo.staged.deinit(),
+                .none, .loaded_cpu, .loaded_gpu, .failed => {},
+            }
+            e.resident.asset = .none;
+        }
+    }
 
     // Promotion finishes decoding on CPU for slide 1
     const promo_surf = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse
@@ -1903,14 +1498,174 @@ test "handleImageDecodedEvent - preserves loaded_gpu during promotion" {
             .conversion_time_ms = 1.0,
         },
     };
+    defer if (decoded.surface) |s| s.destroy();
 
     handleImageDecodedEvent(&state, key1, &decoded);
 
-    // Verify slide 1 uploaded to GPU and is STILL .loaded_gpu
+    // Slide 1 transitions to .promoting_gpu keeping 16x16 active GPU and
+    // staging 32x32 CPU surface
     const entry1 = state.cache.get(key1).?;
-    try std.testing.expect(entry1.resident.asset == .loaded_gpu);
+    try std.testing.expect(decoded.surface == null);
+    switch (entry1.resident.asset) {
+        .promoting_gpu => |promo| {
+            try std.testing.expectEqual(@as(f32, 16.0), promo.active.w);
+            try std.testing.expectEqual(@as(f32, 32.0), promo.staged.cpu.w);
+        },
+        .none, .loaded_cpu, .loaded_gpu, .failed => {
+            return error.TestExpectedPromotingGpu;
+        },
+    }
+}
+
+test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+    state.gpu_enabled = true;
+
+    const id0 = MediaId.fromU32(1);
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .inflight = .{ .has_thread = true },
+    });
+
+    const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .thumb_decoded = .init(key0, 0, .{
+            .surface = thumb_surf,
+            .w = 16.0,
+            .h = 16.0,
+            .source_dims = .{ .w = 64.0, .h = 64.0 },
+            .orientation = .normal,
+            .thumb_only = false,
+            .dct_snapped = true,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+    const entry0 = state.cache.get(key0).?;
+    switch (entry0.resident.thumbnail) {
+        .staged_cpu => |st| try std.testing.expect(st.dct_snapped),
+        .none, .pending, .not_available, .unloaded, .loaded => {
+            return error.TestExpectedStagedCpu;
+        },
+    }
+
+    // Subsequent image_decoded discards staged_cpu and sets .loaded_cpu
+    const full_surf = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .init(key0, 0, .{
+            .surface = full_surf,
+            .w = 64.0,
+            .h = 64.0,
+            .size_bytes = 4096,
+            .mime_type = "image/jpeg",
+            .orientation = .normal,
+            .raw_metadata = .none,
+            .decode = .{},
+            .thumb_write_mtime_sec = 12345,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        @as(f32, 32.0),
-        entry1.resident.asset.loaded_gpu.w,
+        image.ThumbnailState.not_available,
+        entry0.resident.thumbnail,
     );
+    switch (entry0.resident.asset) {
+        .loaded_cpu => |asset| {
+            try std.testing.expectEqual(
+                @as(i64, 12345),
+                asset.thumb_write.?.source_mtime_sec,
+            );
+        },
+        .none, .loaded_gpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedCpu;
+        },
+    }
+}
+
+test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+    state.gpu_enabled = true;
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = try dir_alloc.dupe(u8, "active.jpg") },
+    });
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = try dir_alloc.dupe(u8, "corrupt.jpg") },
+    });
+    state.viewer.navigation.current_index = 0;
+
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const id1 = state.viewer.navigation.getIdAt(1).?;
+    const key0 = try state.cache.appendSlot(
+        allocator,
+        id0,
+        image.CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 16.0, .h = 16.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        ),
+    );
+    defer {
+        if (state.cache.get(key0)) |e| {
+            e.resident.asset = .none;
+        }
+    }
+
+    const key1 = try state.cache.appendSlot(allocator, id1, .{
+        .inflight = .{ .has_thread = true },
+    });
+
+    const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .thumb_decoded = .init(key1, 0, .{
+            .surface = thumb_surf,
+            .w = 16.0,
+            .h = 16.0,
+            .source_dims = .{ .w = 64.0, .h = 64.0 },
+            .orientation = .normal,
+            .thumb_only = false,
+            .dct_snapped = false,
+        }),
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+
+    const neighbors = state.viewer.navigation.getVisibleNeighbors().?;
+    const entry1_thumb = state.cache.get(key1).?.resident.thumbnail;
+    try std.testing.expect(entry1_thumb.isStagedCpu());
+    try std.testing.expect(state.cache.hasPendingCpuUploads(true));
+    try std.testing.expect(state.cache.hasUnreadyPrefetchSlots(
+        &state.viewer.navigation,
+        neighbors,
+        true,
+    ));
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .decode_failed = .init(key1, 0, .{}),
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+
+    const entry1 = state.cache.get(key1).?;
+    try std.testing.expectEqual(
+        image.ResidentAsset.failed,
+        entry1.resident.asset,
+    );
+    try std.testing.expectEqual(
+        image.ThumbnailState.not_available,
+        entry1.resident.thumbnail,
+    );
+    try std.testing.expect(!state.cache.hasPendingCpuUploads(true));
+    try std.testing.expect(!state.cache.hasUnreadyPrefetchSlots(
+        &state.viewer.navigation,
+        neighbors,
+        true,
+    ));
 }

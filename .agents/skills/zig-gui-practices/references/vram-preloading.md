@@ -33,11 +33,29 @@ ______________________________________________________________________
 - **Fast-Scrolling Bounded Header Read (`thumb_only = true`)**:
   When `thumb_only = true`, `DecodePayload.openStagedFile` caps allocation at `@min(file_size, 256 * 1024)` bytes while keeping `.staged_file` open if `file_size > 256KB` so thumbnails located past 256KB can still be extracted via positional read before `defer payload.deinit()` closes the file.
 - **Same-Batch Thumbnail Upload Skip (`hasSubsequentImageDecoded`)**:
-  When an image decodes quickly and `.thumb_decoded` and `.image_decoded` arrive in the same `drainWorkerEvents` batch, `handleExifThumbnailEvent` applies probed metadata but skips GPU upload so fast decodes never upload an unused thumbnail texture or trigger a 120ms blurry `thumb_crossfade`.
+  When an image decodes quickly and `.thumb_decoded` and `.image_decoded`
+  arrive in the same `drainWorkerEvents` batch, `handleExifThumbnailEvent`
+  applies probed metadata and skips staging `ThumbnailState.staged_cpu` (and
+  `handleImageDecodedEvent` discards any earlier `.staged_cpu`), so fast
+  decodes never upload an unused thumbnail texture or trigger a 120ms blurry
+  `thumb_crossfade`.
 - **Freedesktop Shared Thumbnail Cache (`src/thumbcache/root.zig` /
   `src/core/thumbcache.zig`)**:
   - **Stage-1 Read Fallback (`probeFreedesktopThumbCache`)**: When a file has no embedded thumbnail, workers compute the canonical `file://` URI (`std.Io.Dir.realPathFile`, RFC 3986 percent-encoding) and lowercase MD5 hex digest (`ThumbCacheKey`, excluding `/tmp/` and `cache_dir` itself), probing `$XDG_CACHE_HOME/thumbnails/` across `.normal` -> `.large` -> `.x_large` -> `.xx_large` and verifying `Thumb::MTime` matches `statFile` `mtime.toSeconds()`. Cached Freedesktop PNGs are pre-oriented upright on disk (`ThumbnailSource.freedesktop_cache.isPreOriented() == true`).
-  - **Idle-Gated Background Writer (`thumbWriterWorker`)**: On a full decode where `resolveThumbWriteMtime` returns a valid `mtime_sec` (`ThumbWritePolicy.all_missing`), `handleImageDecodedEvent` transfers the CPU `sdl.Surface` zero-copy into `WorkerManager.enqueueThumbWrite` (`MAX_QUEUED_THUMB_WRITES = 8`). `thumbWriterWorker` pops jobs under `thumb_write_mutex` (exiting immediately when empty), yields while `active_decode_threads > 0`, downscales to `.large` ($256\\times256$), applies orthogonal EXIF rotation (`scaleAndOrientSurface` in `src/core/thumbcache.zig`), splices `tEXt` metadata chunks (`Thumb::URI`, `Thumb::MTime`, `Thumb::Size`, `Thumb::Mimetype`, `Thumb::Image::Width`/`Height`, `Software`) immediately after the 33-byte `IHDR`, and writes via `0600` temp file + atomic `rename`.
+  - **Idle-Gated Background Writer (`thumbWriterWorker`)**: On a full decode
+    where `resolveThumbWriteMtime` returns a valid `mtime_sec`
+    (`ThumbWritePolicy.all_missing`), `prepareCacheTextures` /
+    `completeGpuUpload` (`src/app/systems/asset_upload.zig`) transfers the CPU
+    `sdl.Surface` zero-copy into `enqueueDecodedThumbWrite` ->
+    `WorkerManager.enqueueThumbWrite` (`MAX_QUEUED_THUMB_WRITES = 8`) after GPU
+    upload and `enforceVramBudget`. `thumbWriterWorker` pops jobs under
+    `thumb_write_mutex` (exiting immediately when empty), yields while
+    `active_decode_threads > 0`, downscales to `.large` ($256\\times256$),
+    applies orthogonal EXIF rotation (`scaleAndOrientSurface` in
+    `src/core/thumbcache.zig`), splices `tEXt` metadata chunks (`Thumb::URI`,
+    `Thumb::MTime`, `Thumb::Size`, `Thumb::Mimetype`,
+    `Thumb::Image::Width`/`Height`, `Software`) immediately after the 33-byte
+    `IHDR`, and writes via `0600` temp file + atomic `rename`.
 - **Main-Thread Synchronous Header Probing (`probeMediaMetadata`)**:
   - Reads up to **256KB** into a stack buffer for Camera RAW files and **128KB** for non-RAW images (< 0.1ms, 0 heap allocations) before spawning background decode workers.
   - Extracts target canvas dimensions (`metadata.full_dims` / `source_dims`), EXIF orientation, and `has_embedded_thumbnail: bool` on Frame 1 so `getBaseScale` and aspect ratio fitting size `ImageCanvas` immediately.
@@ -82,18 +100,25 @@ Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`
    - **Pair Promotion Guards**: When `args.pair_target != .adaptive`, skip
      embedded EXIF thumbnail extraction in `decodeStandardRasterFile`; in
      `events.zig`, ignore `.thumb_decoded` when
-     `entry.resident.asset == .loaded_gpu`/`.loaded_cpu` and gate
-     `triggerDecodedGpuCrossfades` on `!was_loaded_gpu` so promoting a pair never
-     flashes a blurry thumbnail over a sharp preview.
+     `entry.resident.asset.isLoaded()` (`.loaded_gpu`, `.loaded_cpu`, or
+     `.promoting_gpu`), and in `asset_upload.zig` gate `checkLoadedGpuCrossfade`
+     on `!was_loaded_gpu` so promoting a pair never flashes a blurry thumbnail
+     over a sharp preview.
    - **Small-Image Fitting Guard (`only_has_thumb`)**: In `computeDrawDims`, only
      promote `.shrink` to `.full` during background decode when
-     `entry.metadata.full_dims == null and entry.metadata.raw_metadata.getSensorDims() == null and entry.resident.thumbnail != .none`.
-   - **Main-Thread Stale Upload & Promotion Release Guard**: Resolve `SlotBound`
-     events via `evt.resolve(&state.cache)` before calling `uploadSurfaceToGpu`,
-     and explicitly release any existing `.loaded_gpu` texture
-     (`gpu_dev.releaseTexture`) or destroy `.loaded_cpu` surface
-     (`cpu.surface.destroy()`) before overwriting `entry.resident.asset` in
-     `applyDecodedGpuTexture` / `handleImageDecodedEvent` on in-place pair promotion.
+     `entry.metadata.full_dims == null`,
+     `entry.metadata.raw_metadata.getSensorDims() == null`, and
+     `entry.resident.thumbnail` is not `.none`.
+   - **Main-Thread Stale Upload & Promotion Release Guard**: Phase 1
+     (`drainWorkerEvents`) resolves `SlotBound` events via
+     `evt.resolve(&state.cache)` and stages decoded surfaces into
+     `ThumbnailState.staged_cpu` and `ResidentAsset.loaded_cpu` (`CpuAsset`) /
+     `.promoting_gpu` (`PromotingGpuComponent`) without calling
+     `uploadSurfaceToGpu` or destroying any existing `.loaded_gpu` texture.
+     Phase 2 (`prepareCacheTextures` / `completeGpuUpload` in
+     `src/app/systems/asset_upload.zig`) performs all GPU uploads, atomically
+     resolves `ImageCacheKey` via `getEntry` after `enforceVramBudget` before
+     transferring `surface` to `enqueueDecodedThumbWrite`.
 
 ______________________________________________________________________
 
@@ -114,11 +139,13 @@ ______________________________________________________________________
   (`ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`).
 - **Demand-First Settled Preload & GPU Upload Gating**:
   Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is
-  `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`),
-  `sysUpdateCache` dispatches visible neighbor prefetch workers
-  ($\\pm 1, \\pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while
-  the active image is in flight, then trickled to the GPU at 1 texture per frame
-  in `prepareCacheTextures` (`src/app/systems/asset_upload.zig`).
+  `.loaded_gpu` / `.promoting_gpu` (or `.loaded_cpu` in headless mode, or
+  `.failed`), `sysUpdateCache` dispatches visible neighbor prefetch workers
+  ($\\pm 1, \\pm 2$). Completed surfaces are staged in
+  `ResidentAsset.loaded_cpu` (`CpuAsset`) or `.promoting_gpu`
+  (`PromotingGpuComponent`), then trickled to the GPU at 1 texture per frame
+  (active slot first, then closest neighbor) in `prepareCacheTextures`
+  (`src/app/systems/asset_upload.zig`).
 
 ______________________________________________________________________
 

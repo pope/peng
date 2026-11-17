@@ -49,11 +49,19 @@ pub fn computeDrawDims(
     const auth = entry.getAuthoritativeDims();
 
     if (auth.w > 0 and auth.h > 0) {
-        const is_loading = entry.resident.asset != .loaded_gpu and
-            entry.resident.asset != .loaded_cpu;
+        const is_loading = !entry.resident.asset.isLoaded();
+        const has_thumb = switch (entry.resident.thumbnail) {
+            .none => false,
+            .pending,
+            .staged_cpu,
+            .not_available,
+            .unloaded,
+            .loaded,
+            => true,
+        };
         const only_has_thumb = entry.metadata.full_dims == null and
             entry.metadata.raw_metadata.getSensorDims() == null and
-            entry.resident.thumbnail != .none;
+            has_thumb;
         const effective_fit_mode: intents.ZoomPreset =
             if (fit_mode == .shrink and is_loading and only_has_thumb)
                 .full
@@ -432,8 +440,10 @@ fn renderBottomOverlayBar(
     if (total_images > 0) {
         if (ui_model.current_index) |raw_idx| {
             const count_buf = try frame_allocator.alloc(u8, 128);
-            const is_filtered =
-                ui_model.view_mode != .all and ui_model.view_mode != .default;
+            const is_filtered = switch (ui_model.view_mode) {
+                .default, .all => false,
+                .unflagged, .picks, .rejects => true,
+            };
             const vis_pos = ui_model.visible_position orelse (raw_idx + 1);
             const vis_cnt = ui_model.visible_count;
 
@@ -731,9 +741,11 @@ fn renderImageCanvas(
 ) !void {
     const draw_w = draw_dims.w;
     const draw_h = draw_dims.h;
-    if (ui_model.image_dissolve == .active and
-        entry.resident.asset != .loaded_gpu)
-    {
+    const is_image_dissolve = switch (ui_model.image_dissolve) {
+        .active => true,
+        .none => false,
+    };
+    if (is_image_dissolve and !entry.resident.asset.hasGpuTexture()) {
         return;
     }
     const is_thumb_crossfade = ui_model.is_thumb_crossfading;
@@ -745,25 +757,30 @@ fn renderImageCanvas(
         FRect{ .x = canvas_x, .y = canvas_y, .w = draw_w, .h = draw_h };
 
     if (is_thumb_crossfade) {
-        const thumb = entry.resident.thumbnail.loaded;
-        const thumb_tex = thumb.texture;
-        const thumb_uv = buildThumbnailUvRect(
-            entry,
-            thumb.info,
-            auth,
-            rotation_angle,
-        );
-        try list.addImage(canvas_rect, .{
-            .image_data = thumb_tex.asOpaque(),
-            .uv = thumb_uv,
-        });
+        switch (entry.resident.thumbnail) {
+            .loaded => |thumb| {
+                const thumb_tex = thumb.texture;
+                const thumb_uv = buildThumbnailUvRect(
+                    entry,
+                    thumb.info,
+                    auth,
+                    rotation_angle,
+                );
+                try list.addImage(canvas_rect, .{
+                    .image_data = thumb_tex.asOpaque(),
+                    .uv = thumb_uv,
+                });
+            },
+            .none, .pending, .staged_cpu, .not_available, .unloaded => {},
+        }
     }
 
     var drew_thumb = false;
     switch (entry.resident.thumbnail) {
         .loaded => |thumb| {
             const show_thumb = ui_model.debug_show_thumb or
-                (entry.resident.asset != .loaded_gpu and !is_thumb_crossfade);
+                (!entry.resident.asset.hasGpuTexture() and
+                    !is_thumb_crossfade);
             if (show_thumb) {
                 drew_thumb = true;
                 const thumb_tex = thumb.texture;
@@ -779,13 +796,17 @@ fn renderImageCanvas(
                 });
             }
         },
-        .none, .pending, .not_available, .unloaded => {},
+        .none, .pending, .staged_cpu, .not_available, .unloaded => {},
     }
 
     if (!drew_thumb) switch (entry.resident.asset) {
-        .loaded_gpu => |gpu| {
+        .loaded_gpu, .promoting_gpu => {
+            const gpu = switch (entry.resident.asset) {
+                .loaded_gpu => |g| g,
+                .promoting_gpu => |promo| promo.active,
+                .loaded_cpu, .none, .failed => unreachable,
+            };
             const tex = gpu.gpu_texture;
-            const is_image_dissolve = ui_model.image_dissolve == .active;
             const full_alpha = if (is_image_dissolve)
                 std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0)
             else if (is_thumb_crossfade)
@@ -883,6 +904,7 @@ fn renderDissolvePrevQuad(
     const prev_entry = dissolve.prev_entry;
     const gpu = switch (prev_entry.resident.asset) {
         .loaded_gpu => |g| g,
+        .promoting_gpu => |promo| promo.active,
         .loaded_cpu, .none, .failed => return,
     };
 
@@ -1074,10 +1096,12 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = .{ .ptr = undefined },
-                    .w = 1200,
-                    .h = 900,
-                    .size_bytes = 1000,
+                    .cpu = .{
+                        .surface = .{ .ptr = undefined },
+                        .w = 1200,
+                        .h = 900,
+                        .size_bytes = 1000,
+                    },
                 },
             },
         },

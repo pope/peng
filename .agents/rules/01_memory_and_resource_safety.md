@@ -173,7 +173,7 @@
     Never return or pass raw `*CacheEntry` pointers (or `slots.items(.entry)`
     or `slots.items(.key)` slices) across function boundaries, to workers,
     or across any call that may append to or evict from `ImageCache` (e.g.
-    `enforceVramBudget`, `appendSlot`, `completeDecodedGpuUpload`). Workers
+    `enforceVramBudget`, `appendSlot`, `completeGpuUpload`). Workers
     must NEVER hold interior pointers to cache slots; use the pinned static
     table `job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)` inside
     `ImageCache` for zero-allocation cooperative cancellation. Pass
@@ -193,7 +193,9 @@
     flags (`DirectionFlags = packed struct(u4)`,
     `ZoomFlags = packed struct(u2)`).
   - Compose image cache slot state via explicit component structs and unions
-    (`CpuSurfaceComponent`, `GpuTextureComponent`, `ThumbnailState`).
+    (`CpuSurfaceComponent`, `DeferredThumbWrite`, `CpuAsset`,
+    `PendingThumbSurface`, `GpuTextureComponent`, `PromotingGpuComponent`,
+    `ResidentAsset`, `ThumbnailState`).
 - **Prohibition of Meaningless Optionality (`?T`)**:
   - Do NOT make struct fields or function parameters optional (`?T = null`)
     defensively when the value is always required. Optional types MUST represent

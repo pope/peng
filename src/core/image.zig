@@ -36,6 +36,36 @@ pub const CpuSurfaceComponent = struct {
     decode: DecodeTelemetry = .{},
 };
 
+/// Metadata for scheduling a Freedesktop thumbnail cache write after GPU
+/// upload.
+pub const DeferredThumbWrite = struct {
+    source_mtime_sec: i64,
+};
+
+/// Decoded CPU image surface paired with an optional deferred thumbnail
+/// cache write.
+pub const CpuAsset = struct {
+    cpu: CpuSurfaceComponent,
+    thumb_write: ?DeferredThumbWrite = null,
+
+    /// Destroys the underlying CPU surface.
+    pub fn deinit(self: *CpuAsset) void {
+        self.cpu.surface.destroy();
+    }
+};
+
+/// Decoded thumbnail CPU surface staged on a cache slot until Phase 2 upload.
+pub const PendingThumbSurface = struct {
+    surface: sdl.Surface,
+    dct_snapped: bool = false,
+    source: state_pkg.ThumbnailSource = .embedded_header,
+
+    /// Destroys the staged thumbnail SDL surface.
+    pub fn deinit(self: *PendingThumbSurface) void {
+        self.surface.destroy();
+    }
+};
+
 /// Resident GPU texture allocation and VRAM memory footprint metadata.
 pub const GpuTextureComponent = struct {
     gpu_texture: sdl.gpu.Texture,
@@ -45,6 +75,13 @@ pub const GpuTextureComponent = struct {
     mime_type: []const u8 = "",
     decode: DecodeTelemetry = .{},
     ingest: IngestTelemetry = .{},
+};
+
+/// Active GPU texture kept on screen while a newly decoded CPU asset awaits
+/// upload.
+pub const PromotingGpuComponent = struct {
+    active: GpuTextureComponent,
+    staged: CpuAsset,
 };
 
 /// Tier-0 probed metadata populated during initial header inspection.
@@ -57,17 +94,59 @@ pub const CacheMetadata = struct {
 /// Drawable primary surface or GPU texture resident in host RAM or VRAM.
 pub const ResidentAsset = union(enum) {
     none,
-    failed,
-    loaded_cpu: CpuSurfaceComponent,
+    loaded_cpu: CpuAsset,
     loaded_gpu: GpuTextureComponent,
+    promoting_gpu: PromotingGpuComponent,
+    failed,
+
+    /// Returns `true` when an active GPU texture is resident (`.loaded_gpu` or
+    /// `.promoting_gpu`).
+    pub inline fn hasGpuTexture(self: ResidentAsset) bool {
+        return switch (self) {
+            .loaded_gpu, .promoting_gpu => true,
+            .none, .loaded_cpu, .failed => false,
+        };
+    }
+
+    /// Returns `true` when a decoded CPU surface is awaiting GPU upload
+    /// (`.loaded_cpu` or `.promoting_gpu`).
+    pub inline fn hasPendingCpuUpload(self: ResidentAsset) bool {
+        return switch (self) {
+            .loaded_cpu, .promoting_gpu => true,
+            .none, .loaded_gpu, .failed => false,
+        };
+    }
+
+    /// Returns `true` when any decoded image asset is present (`.loaded_cpu`,
+    /// `.loaded_gpu`, or `.promoting_gpu`).
+    pub inline fn isLoaded(self: ResidentAsset) bool {
+        return switch (self) {
+            .loaded_cpu, .loaded_gpu, .promoting_gpu => true,
+            .none, .failed => false,
+        };
+    }
+
+    /// Returns `true` when the primary asset is in the `.failed` state.
+    pub inline fn isFailed(self: ResidentAsset) bool {
+        return switch (self) {
+            .failed => true,
+            .none, .loaded_cpu, .loaded_gpu, .promoting_gpu => false,
+        };
+    }
 
     /// Releases resident CPU surface or GPU texture resources.
     pub fn deinit(self: *ResidentAsset, gpu_device: ?sdl.gpu.Device) void {
         switch (self.*) {
-            .loaded_cpu => |cpu| cpu.surface.destroy(),
+            .loaded_cpu => |*asset| asset.deinit(),
             .loaded_gpu => |gpu| {
                 if (gpu_device) |dev| {
                     dev.releaseTexture(gpu.gpu_texture);
+                }
+            },
+            .promoting_gpu => |*promo| {
+                promo.staged.deinit();
+                if (gpu_device) |dev| {
+                    dev.releaseTexture(promo.active.gpu_texture);
                 }
             },
             .none, .failed => {},
@@ -76,7 +155,7 @@ pub const ResidentAsset = union(enum) {
     }
 
     /// Atomically replaces the current GPU texture with a newly uploaded
-    /// texture, releasing the old GPU texture if present.
+    /// texture, releasing any old GPU texture and staged CPU surface.
     pub fn replaceGpuTexture(
         self: *ResidentAsset,
         new_gpu: GpuTextureComponent,
@@ -92,20 +171,12 @@ pub const CacheResident = struct {
     thumbnail: ThumbnailState = .none,
     asset: ResidentAsset = .none,
 
-    /// Releases both thumbnail texture and resident primary asset.
+    /// Releases both thumbnail and resident primary asset resources.
     pub fn deinit(
         self: *CacheResident,
         gpu_device: ?sdl.gpu.Device,
     ) void {
-        switch (self.thumbnail) {
-            .loaded => |thumb| {
-                if (gpu_device) |dev| {
-                    dev.releaseTexture(thumb.texture);
-                }
-            },
-            .none, .pending, .not_available, .unloaded => {},
-        }
-        self.thumbnail = .none;
+        self.thumbnail.deinit(gpu_device);
         self.asset.deinit(gpu_device);
     }
 };
@@ -126,11 +197,12 @@ pub const InFlightDecode = struct {
     job_epoch: u32 = 0,
 };
 
-/// State of a cached image's preview thumbnail (none, pending, not available,
-/// unloaded dimensions, or uploaded GPU texture).
+/// State of a cached image's preview thumbnail (none, pending, staged CPU
+/// surface, not available, unloaded dimensions, or uploaded GPU texture).
 pub const ThumbnailState = union(enum) {
     none,
     pending,
+    staged_cpu: PendingThumbSurface,
     not_available,
     unloaded: ThumbnailInfo,
     loaded: struct {
@@ -138,14 +210,63 @@ pub const ThumbnailState = union(enum) {
         info: ThumbnailInfo,
     },
 
+    /// Releases any staged CPU surface or uploaded GPU thumbnail texture.
+    pub fn deinit(
+        self: *ThumbnailState,
+        gpu_device: ?sdl.gpu.Device,
+    ) void {
+        switch (self.*) {
+            .staged_cpu => |*st| st.deinit(),
+            .loaded => |thumb| {
+                if (gpu_device) |dev| {
+                    dev.releaseTexture(thumb.texture);
+                }
+            },
+            .none, .pending, .not_available, .unloaded => {},
+        }
+        self.* = .none;
+    }
+
     /// Extracts the thumbnail dimension and upload duration information if
     /// present.
     pub fn getInfo(self: ThumbnailState) ?ThumbnailInfo {
         return switch (self) {
-            .none, .pending, .not_available => null,
+            .none, .pending, .staged_cpu, .not_available => null,
             .unloaded => |info| info,
             .loaded => |l| l.info,
         };
+    }
+
+    /// Returns `true` when a decoded thumbnail surface is staged on CPU
+    /// awaiting GPU upload.
+    pub inline fn isStagedCpu(self: ThumbnailState) bool {
+        return switch (self) {
+            .staged_cpu => true,
+            .none, .pending, .not_available, .unloaded, .loaded => false,
+        };
+    }
+
+    /// Transitions unresolved `.none` or `.pending` states to
+    /// `.not_available`, preserving `.staged_cpu`, `.loaded`, `.unloaded`,
+    /// and `.not_available`.
+    pub fn markNotAvailableIfUnresolved(self: *ThumbnailState) void {
+        switch (self.*) {
+            .none, .pending => self.* = .not_available,
+            .staged_cpu, .loaded, .unloaded, .not_available => {},
+        }
+    }
+
+    /// Destroys any `.staged_cpu` surface and transitions `.none`, `.pending`,
+    /// or `.staged_cpu` to `.not_available`.
+    pub fn discardStagedAndMarkUnavailable(self: *ThumbnailState) void {
+        switch (self.*) {
+            .staged_cpu => |*st| {
+                st.deinit();
+                self.* = .not_available;
+            },
+            .none, .pending => self.* = .not_available,
+            .loaded, .unloaded, .not_available => {},
+        }
     }
 };
 
@@ -165,6 +286,20 @@ pub const CacheEntry = struct {
         const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
         const pos: PositiveDimsU32 = full_dims.toPositiveU32() orelse
             .{ .w = 1, .h = 1 };
+        const thumb: ThumbnailState = if (thumb_dims.w > 0.0 and
+            thumb_dims.h > 0.0)
+            .{
+                .loaded = .{
+                    .texture = dummy_tex,
+                    .info = .{
+                        .w = thumb_dims.w,
+                        .h = thumb_dims.h,
+                        .dct_snapped = false,
+                    },
+                },
+            }
+        else
+            .none;
         return .{
             .resident = .{
                 .asset = .{
@@ -179,16 +314,7 @@ pub const CacheEntry = struct {
                         },
                     },
                 },
-                .thumbnail = .{
-                    .loaded = .{
-                        .texture = dummy_tex,
-                        .info = .{
-                            .w = thumb_dims.w,
-                            .h = thumb_dims.h,
-                            .dct_snapped = false,
-                        },
-                    },
-                },
+                .thumbnail = thumb,
             },
             .metadata = .{
                 .full_dims = full_dims,
@@ -201,7 +327,8 @@ pub const CacheEntry = struct {
     pub fn getLoadedWidth(self: CacheEntry) ?f32 {
         return switch (self.resident.asset) {
             .loaded_gpu => |gpu| gpu.w,
-            .loaded_cpu => |cpu| @floatFromInt(cpu.surface.w()),
+            .promoting_gpu => |promo| promo.active.w,
+            .loaded_cpu => |asset| @floatFromInt(asset.cpu.surface.w()),
             .none, .failed => null,
         };
     }
@@ -211,7 +338,8 @@ pub const CacheEntry = struct {
     pub fn getLoadedHeight(self: CacheEntry) ?f32 {
         return switch (self.resident.asset) {
             .loaded_gpu => |gpu| gpu.h,
-            .loaded_cpu => |cpu| @floatFromInt(cpu.surface.h()),
+            .promoting_gpu => |promo| promo.active.h,
+            .loaded_cpu => |asset| @floatFromInt(asset.cpu.surface.h()),
             .none, .failed => null,
         };
     }
@@ -280,8 +408,17 @@ pub const CacheEntry = struct {
             .loaded_gpu => |gpu| {
                 if (PhysicalDims.initPositive(gpu.w, gpu.h)) |d| return d;
             },
-            .loaded_cpu => |cpu| {
-                if (PhysicalDims.initPositive(cpu.w, cpu.h)) |d| return d;
+            .promoting_gpu => |promo| {
+                const pw = promo.active.w;
+                const ph = promo.active.h;
+                if (PhysicalDims.initPositive(pw, ph)) |d| {
+                    return d;
+                }
+            },
+            .loaded_cpu => |asset| {
+                if (PhysicalDims.initPositive(asset.cpu.w, asset.cpu.h)) |d| {
+                    return d;
+                }
             },
             .none, .failed => {},
         }
@@ -299,7 +436,7 @@ pub const CacheEntry = struct {
         return .{ .w = 0.0, .h = 0.0 };
     }
 
-    /// Releases resident thumbnail and primary assets.
+    /// Releases resident thumbnail, primary assets, and in-flight state.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         self.resident.deinit(gpu_device);
         self.inflight = null;
@@ -566,14 +703,17 @@ pub const ImageCache = struct {
 
     pub const DEFAULT_MAX_VRAM_BYTES: usize = 1024 * 1024 * 1024;
 
-    /// Computes the total VRAM consumption in bytes across all `.loaded_gpu`
-    /// textures in the cache.
+    /// Computes the total VRAM consumption in bytes across all active GPU
+    /// textures (`.loaded_gpu` and `.promoting_gpu`) in the cache.
     pub fn getTotalVramBytes(self: *const ImageCache) usize {
         var total: usize = 0;
         const entries = self.slots.items(.entry);
         for (entries) |entry| {
             switch (entry.resident.asset) {
                 .loaded_gpu => |gpu| total += gpu.ingest.memory_size_bytes,
+                .promoting_gpu => |promo| {
+                    total += promo.active.ingest.memory_size_bytes;
+                },
                 .none, .failed, .loaded_cpu => {},
             }
         }
@@ -632,7 +772,7 @@ pub const ImageCache = struct {
             var neighbor_victim: ?usize = null;
 
             for (entries, keys, 0..) |entry, key, i| {
-                if (entry.resident.asset != .loaded_gpu) continue;
+                if (!entry.resident.asset.hasGpuTexture()) continue;
                 const neighbors = neighbors_opt orelse {
                     distant_victim = i;
                     break;
@@ -707,8 +847,14 @@ pub const ImageCache = struct {
                 const entry = self.slots.items(.entry)[i];
                 if (entry.inflight != null) return true;
                 switch (entry.resident.asset) {
-                    .loaded_gpu, .failed => {},
-                    .loaded_cpu => {
+                    .loaded_gpu => {
+                        const staged = entry.resident.thumbnail.isStagedCpu();
+                        if (has_gpu and staged) {
+                            return true;
+                        }
+                    },
+                    .failed => {},
+                    .loaded_cpu, .promoting_gpu => {
                         if (has_gpu) return true;
                     },
                     .none => return true,
@@ -721,7 +867,8 @@ pub const ImageCache = struct {
     }
 
     /// Returns `true` when a GPU device is present and any cache slot holds a
-    /// CPU-decoded surface (`.loaded_cpu`) awaiting GPU texture upload.
+    /// CPU-decoded surface (`.loaded_cpu`, `.promoting_gpu`, or
+    /// `ThumbnailState.staged_cpu`) awaiting GPU texture upload.
     pub fn hasPendingCpuUploads(
         self: *const ImageCache,
         has_gpu: bool,
@@ -729,8 +876,11 @@ pub const ImageCache = struct {
         if (!has_gpu) return false;
         for (self.slots.items(.entry)) |entry| {
             switch (entry.resident.asset) {
-                .loaded_cpu => return true,
-                .none, .loaded_gpu, .failed => {},
+                .loaded_cpu, .promoting_gpu => return true,
+                .loaded_gpu, .none => {
+                    if (entry.resident.thumbnail.isStagedCpu()) return true;
+                },
+                .failed => {},
             }
         }
         return false;
@@ -1411,10 +1561,12 @@ test "hasUnreadyPrefetchSlots" {
     cache.setInFlight(cache.activeKey(mock_nav.getIdAt(2).?), null);
     cache.setResidentAsset(cache.activeKey(mock_nav.getIdAt(2).?), .{
         .loaded_cpu = .{
-            .surface = surf,
-            .w = 100,
-            .h = 100,
-            .size_bytes = 100,
+            .cpu = .{
+                .surface = surf,
+                .w = 100,
+                .h = 100,
+                .size_bytes = 100,
+            },
         },
     }, null);
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
@@ -1873,10 +2025,12 @@ test "CacheEntry - getAuthoritativeDims priority resolution" {
     // 2. Resident asset takes priority over thumbnail
     entry.resident.asset = .{
         .loaded_cpu = .{
-            .surface = undefined,
-            .w = 1920.0,
-            .h = 1080.0,
-            .size_bytes = 1000,
+            .cpu = .{
+                .surface = undefined,
+                .w = 1920.0,
+                .h = 1080.0,
+                .size_bytes = 1000,
+            },
         },
     };
     try std.testing.expectEqual(
@@ -1901,23 +2055,10 @@ test "CacheEntry - getAuthoritativeDims priority resolution" {
 
 test "CacheResident - deinit cleans up both thumbnail and primary textures" {
     // 1. Populated thumbnail and loaded_gpu asset
-    var resident = CacheResident{
-        .thumbnail = .{
-            .loaded = .{
-                .texture = .{ .ptr = @ptrFromInt(0x1234) },
-                .info = .{ .w = 160.0, .h = 120.0 },
-            },
-        },
-        .asset = .{
-            .loaded_gpu = .{
-                .gpu_texture = .{ .ptr = @ptrFromInt(0x5678) },
-                .w = 1920.0,
-                .h = 1080.0,
-                .size_bytes = 1000,
-                .ingest = .{ .memory_size_bytes = 2000 },
-            },
-        },
-    };
+    var resident = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 1920.0, .h = 1080.0 },
+        .{ .w = 160.0, .h = 120.0 },
+    ).resident;
     // Safe deinit on null gpu device resets both layers to .none
     resident.deinit(null);
     try std.testing.expectEqual(ThumbnailState.none, resident.thumbnail);
@@ -1929,14 +2070,111 @@ test "CacheResident - deinit cleans up both thumbnail and primary textures" {
         .thumbnail = .none,
         .asset = .{
             .loaded_cpu = .{
-                .surface = surf,
-                .w = 1.0,
-                .h = 1.0,
-                .size_bytes = 4,
+                .cpu = .{
+                    .surface = surf,
+                    .w = 1.0,
+                    .h = 1.0,
+                    .size_bytes = 4,
+                },
             },
         },
     };
     cpu_resident.deinit(null);
     try std.testing.expectEqual(ThumbnailState.none, cpu_resident.thumbnail);
     try std.testing.expectEqual(ResidentAsset.none, cpu_resident.asset);
+}
+
+test "ImageCache - promoting_gpu and staged_cpu readiness and deinit" {
+    const allocator = std.testing.allocator;
+    var cache = ImageCache{};
+    defer cache.deinit(allocator, null);
+
+    const MockNav = struct {
+        pub fn posOfId(_: @This(), id: MediaId) ?usize {
+            if (!id.isValid()) return null;
+            return id.toU32() - 1;
+        }
+        pub fn getIdAt(_: @This(), idx: usize) ?MediaId {
+            return MediaId.fromU32(@intCast(idx + 1));
+        }
+    };
+    const mock_nav = MockNav{};
+    const n1 = VisibleNeighbors.fromRawIndex(0, 1);
+
+    const id0 = MediaId.fromU32(1);
+    const stub = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 100.0, .h = 100.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    );
+    const active_gpu = switch (stub.resident.asset) {
+        .loaded_gpu => |g| g,
+        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
+    };
+    const key0 = try cache.appendSlot(allocator, id0, stub);
+    try std.testing.expect(!cache.hasPendingCpuUploads(true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
+
+    // Staged .promoting_gpu marks cache as having pending GPU uploads
+    const upload_surf = sdl.Surface.create(8, 8, sdl.PixelFormat.rgba32) orelse
+        return;
+    cache.setResidentAsset(key0, .{
+        .promoting_gpu = .{
+            .active = active_gpu,
+            .staged = .{
+                .cpu = .{
+                    .surface = upload_surf,
+                    .w = 8.0,
+                    .h = 8.0,
+                    .size_bytes = 256,
+                },
+            },
+        },
+    }, null);
+    try std.testing.expect(cache.hasPendingCpuUploads(true));
+    try std.testing.expect(!cache.hasPendingCpuUploads(false));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
+
+    // Staged .staged_cpu thumbnail also marks cache as having pending uploads
+    cache.setResidentAsset(key0, .{ .loaded_gpu = active_gpu }, null);
+    const thumb_surf = sdl.Surface.create(4, 4, sdl.PixelFormat.rgba32) orelse
+        return;
+    cache.get(key0).?.resident.thumbnail = .{
+        .staged_cpu = .{
+            .surface = thumb_surf,
+            .dct_snapped = true,
+        },
+    };
+    try std.testing.expect(cache.hasPendingCpuUploads(true));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
+
+    // Re-staging .promoting_gpu and clearing cache destroys staged surfaces
+    const promo_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return;
+    cache.setResidentAsset(key0, .{
+        .promoting_gpu = .{
+            .active = active_gpu,
+            .staged = .{
+                .cpu = .{
+                    .surface = promo_surf,
+                    .w = 16.0,
+                    .h = 16.0,
+                    .size_bytes = 1024,
+                },
+            },
+        },
+    }, null);
+    cache.clear(null);
+    try std.testing.expect(!cache.hasPendingCpuUploads(true));
+
+    // Failed slot with stranded staged_cpu must not report pending/unready
+    const fail_thumb = sdl.Surface.create(4, 4, sdl.PixelFormat.rgba32) orelse
+        return;
+    _ = try cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .failed,
+            .thumbnail = .{ .staged_cpu = .{ .surface = fail_thumb } },
+        },
+    });
+    try std.testing.expect(!cache.hasPendingCpuUploads(true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
 }

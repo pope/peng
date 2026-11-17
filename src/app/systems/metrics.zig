@@ -1,10 +1,12 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
+const core = @import("core");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
+const CacheEntry = core.image.CacheEntry;
 const FrameContext = context.FrameContext;
 
 /// System function that copies real-time atomic worker counters, active
@@ -39,9 +41,18 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .thumb_source = thumb_source,
                 };
             },
-            .loaded_cpu => |cpu| {
+            .promoting_gpu => |promo| {
                 state.viewer.stats.active_image = .{
-                    .decode = cpu.decode,
+                    .decode = promo.active.decode,
+                    .ingest = promo.active.ingest,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
+                };
+            },
+            .loaded_cpu => |asset| {
+                state.viewer.stats.active_image = .{
+                    .decode = asset.cpu.decode,
                     .ingest = null,
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,
@@ -82,15 +93,17 @@ test "metrics - sysSyncMetrics maps CPU and GPU telemetry cleanly" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 10.0,
-                    .h = 10.0,
-                    .size_bytes = 400,
-                    .decode = .{
-                        .read_time_ms = 1.25,
-                        .decode_time_ms = 3.5,
-                        .conversion_time_ms = 0.5,
-                        .archive = .none,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 10.0,
+                        .h = 10.0,
+                        .size_bytes = 400,
+                        .decode = .{
+                            .read_time_ms = 1.25,
+                            .decode_time_ms = 3.5,
+                            .conversion_time_ms = 0.5,
+                            .archive = .none,
+                        },
                     },
                 },
             },
@@ -110,26 +123,28 @@ test "metrics - sysSyncMetrics maps CPU and GPU telemetry cleanly" {
 
     // Now test GPU-loaded asset
     const entry = state.cache.get(key0).?;
-    entry.resident.asset = .{
-        .loaded_gpu = .{
-            .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
-            .w = 10.0,
-            .h = 10.0,
-            .size_bytes = 400,
-            .decode = .{
-                .read_time_ms = 1.25,
-                .decode_time_ms = 3.5,
-                .conversion_time_ms = 0.5,
-                .archive = state_pkg.ArchiveTelemetry.init(4.2, 2048),
-            },
-            .ingest = .{
-                .upload_time_ms = 0.8,
-                .memory_size_bytes = 1024,
-                .mode = .direct,
-                .mipmaps = state_pkg.MipmapTelemetry.init(3, 1.1),
-            },
-        },
+    const stub = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 10.0, .h = 10.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    );
+    var gpu_comp = switch (stub.resident.asset) {
+        .loaded_gpu => |g| g,
+        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
     };
+    gpu_comp.size_bytes = 400;
+    gpu_comp.decode = .{
+        .read_time_ms = 1.25,
+        .decode_time_ms = 3.5,
+        .conversion_time_ms = 0.5,
+        .archive = state_pkg.ArchiveTelemetry.init(4.2, 2048),
+    };
+    gpu_comp.ingest = .{
+        .upload_time_ms = 0.8,
+        .memory_size_bytes = 1024,
+        .mode = .direct,
+        .mipmaps = state_pkg.MipmapTelemetry.init(3, 1.1),
+    };
+    entry.resident.asset = .{ .loaded_gpu = gpu_comp };
 
     sysSyncMetrics(ctx);
 

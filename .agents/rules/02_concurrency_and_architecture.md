@@ -121,13 +121,18 @@
     (see [systems-architecture.md][sys-arch] Pattern 13).
 - **Main-Thread Exclusive GPU Access**:
   - All SDL GPU device calls, pipeline bindings, compute dispatches, and texture
-    creations/releases MUST execute on the main thread.
+    creations/releases MUST execute on the main thread inside Phase 2
+    (`sysProcessAssetUploads` / `prepareCacheTextures`) and Phase 3.
   - Workers decode into CPU `sdl.Surface` handles and push `BackgroundEvent`
     items into `workers.event_queue` (`MpscQueue`), followed by
-    `context.wakeUpMainThread()`. `drainWorkerEvents` clears `state.event_batch`
-    and calls infallible `MpscQueue.drain(io, &batch)` to swap backing
-    `ArrayList` headers in O(1) without allocation or copying. Disown
-    transferred pointers before `defer evt.deinit()`.
+    `context.wakeUpMainThread()`. `drainWorkerEvents` (`src/app/events.zig`)
+    clears `state.event_batch`, calls infallible `MpscQueue.drain(io, &batch)`
+    to swap backing `ArrayList` headers in O(1) without allocation or copying,
+    and stages CPU surfaces directly inside `CacheEntry.resident` tagged
+    unions (`ThumbnailState.staged_cpu` for thumbnails, and
+    `ResidentAsset.loaded_cpu: CpuAsset` or
+    `ResidentAsset.promoting_gpu: PromotingGpuComponent` for full images) with
+    zero GPU calls. Disown transferred pointers before `defer evt.deinit()`.
 - **Non-Recursive Mutex Safety**:
   - Always unlock `std.Io.Mutex` via `defer mutex.unlock(io)` and never re-enter
     the same mutex on the same call stack.
@@ -178,14 +183,26 @@
     (see [vram-preloading.md][vram-preload] §2).
 - **Demand-First Priority Gating for Cache & GPU Uploads**:
   1. **Decode Gating (`sysUpdateCache`)**: Never spawn neighbor prefetch workers
-     ($\\pm 1, \\pm 2$) while the active slot (`idx`) is still decoding or
+     ($\pm 1, \pm 2$) while the active slot (`idx`) is still decoding or
      uploading.
-  2. **Upload Gating (`handleImageDecodedEvent`)**: While the active image is in
-     flight, store completed neighbor decodes as `.loaded_cpu` in host RAM
-     rather than uploading to the GPU immediately.
-  3. **Paced Trickle Uploads (`prepareCacheTextures`)**: Upload the active image
-     first; once it is `.loaded_gpu`, upload queued `.loaded_cpu` neighbors at a
-     maximum rate of **1 texture per frame**.
+  2. **Staged CPU Ingestion (`handleImageDecodedEvent` /
+     `handleExifThumbnailEvent`)**:
+     In Phase 1 (`src/app/events.zig`), stage decoded surfaces directly in
+     `entry.resident` (`ThumbnailState.staged_cpu` when
+     `gpu_enabled or gpu_device != null`, `ResidentAsset.loaded_cpu: CpuAsset`
+     on `.none`/`.failed`/`.loaded_cpu`, and
+     `ResidentAsset.promoting_gpu: PromotingGpuComponent` on
+     `.loaded_gpu`/`.promoting_gpu` to keep the active texture resident during
+     promotions while discarding any superseded `.staged_cpu` thumbnail when
+     `image_decoded` arrives) with zero GPU calls and zero surface clones.
+  3. **Unified Paced Uploads (`prepareCacheTextures`)**: In Phase 2
+     (`src/app/systems/asset_upload.zig`), upload active
+     `ThumbnailState.staged_cpu` via narrowed `uploadActivePendingThumb` (when
+     not superseded by a loaded/staged full image), pace full image uploads
+     (`.loaded_cpu` / `.promoting_gpu`) at a maximum rate of **1 texture per
+     frame** (active slot first, then closest neighbor), and transfer
+     `surface` ownership directly to `enqueueDecodedThumbWrite` after
+     `enforceVramBudget`.
 
 [sys-arch]: ../skills/zig-gui-practices/references/systems-architecture.md
 [vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md

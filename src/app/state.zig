@@ -182,7 +182,7 @@ pub const AppState = struct {
                 return false;
             }
             return switch (entry.resident.asset) {
-                .none => false,
+                .none, .promoting_gpu => false,
                 .loaded_cpu => self.gpu_device == null,
                 .loaded_gpu, .failed => true,
             };
@@ -250,7 +250,7 @@ pub const AppState = struct {
             return true;
         }
         return switch (entry.resident.asset) {
-            .none => true,
+            .none, .promoting_gpu => true,
             .loaded_cpu => self.gpu_device != null,
             .loaded_gpu, .failed => false,
         };
@@ -1092,11 +1092,13 @@ test "AppState.getBaseScale based on image dimensions" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 4000.0,
-                    .h = 3000.0,
-                    .mime_type = "image/png",
-                    .size_bytes = 1000,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 4000.0,
+                        .h = 3000.0,
+                        .mime_type = "image/png",
+                        .size_bytes = 1000,
+                    },
                 },
             },
         },
@@ -1147,11 +1149,13 @@ test "AppState.getViewportPixelDims and isImageOverflowing" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 4000.0,
-                    .h = 3000.0,
-                    .mime_type = "image/png",
-                    .size_bytes = 1000,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 4000.0,
+                        .h = 3000.0,
+                        .mime_type = "image/png",
+                        .size_bytes = 1000,
+                    },
                 },
             },
         },
@@ -1337,4 +1341,88 @@ test "AppState.openPath reuses warm directory playlist and resets viewport" {
     try std.testing.expectEqual(@as(usize, 1), state.cache.count());
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_x);
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_y);
+}
+
+test "AppState - promoting_gpu marks slide loading and hideWindow clears it" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    _ = try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "a.jpg") } },
+    );
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+
+    const up_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return;
+    const th_surf = sdl.Surface.create(8, 8, sdl.PixelFormat.rgba32) orelse {
+        up_surf.destroy();
+        return;
+    };
+    const stub = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 16.0, .h = 16.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    );
+    const active_gpu = switch (stub.resident.asset) {
+        .loaded_gpu => |g| g,
+        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
+    };
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .promoting_gpu = .{
+                    .active = active_gpu,
+                    .staged = .{
+                        .cpu = .{
+                            .surface = up_surf,
+                            .w = 16.0,
+                            .h = 16.0,
+                            .size_bytes = 1024,
+                        },
+                    },
+                },
+            },
+            .thumbnail = .{ .staged_cpu = .{ .surface = th_surf } },
+        },
+    });
+
+    try std.testing.expect(state.isCurrentSlideLoading());
+    try std.testing.expect(!state.isWaitLoadReady());
+
+    // Settling back to .loaded_gpu returns to ready
+    switch (state.cache.get(key0).?.resident.asset) {
+        .promoting_gpu => |*promo| {
+            promo.staged.deinit();
+            state.cache.get(key0).?.resident.asset = .{
+                .loaded_gpu = promo.active,
+            };
+        },
+        .none, .loaded_cpu, .loaded_gpu, .failed => unreachable,
+    }
+    try std.testing.expect(!state.isCurrentSlideLoading());
+    try std.testing.expect(state.isWaitLoadReady());
+
+    // Re-stage .promoting_gpu and verify hideWindow frees all staged surfaces
+    const up_surf2 = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return;
+    state.cache.get(key0).?.resident.asset = .{
+        .promoting_gpu = .{
+            .active = active_gpu,
+            .staged = .{
+                .cpu = .{
+                    .surface = up_surf2,
+                    .w = 16.0,
+                    .h = 16.0,
+                    .size_bytes = 1024,
+                },
+            },
+        },
+    };
+    state.hideWindow();
+    try std.testing.expectEqual(@as(usize, 0), state.cache.count());
 }

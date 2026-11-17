@@ -1,5 +1,6 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
+const core = @import("core");
 const intents = @import("intents");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -9,6 +10,7 @@ const triage = @import("triage");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
+const CacheEntry = core.image.CacheEntry;
 const Classification = triage.Classification;
 const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
@@ -32,12 +34,18 @@ fn togglePairStream(self: *AppState, now_ms: u64) void {
 
     const key = self.cache.activeKey(cur_id);
     const entry = self.cache.get(key) orelse return;
-    if (entry.resident.asset != .loaded_gpu and
-        entry.resident.asset != .loaded_cpu) return;
+    if (!entry.resident.asset.isLoaded()) return;
     if (entry.inflight) |inf| {
         if (inf.has_thread) {
             self.cache.cancelJob(inf.job_id);
         }
+    }
+    switch (entry.resident.asset) {
+        .promoting_gpu => |*promo| {
+            promo.staged.deinit();
+            entry.resident.asset = .{ .loaded_gpu = promo.active };
+        },
+        .loaded_gpu, .loaded_cpu, .none, .failed => {},
     }
 
     const target: PairStreamTarget =
@@ -452,20 +460,21 @@ fn executeIntent(
                 old_index.? != nav.current_index.?;
             if (changed_image) {
                 const old_key = self.cache.activeKey(old_id.?);
-                const old_entry_loaded = if (self.cache.get(old_key)) |e|
-                    (e.resident.asset == .loaded_gpu or
-                        (self.gpu_device == null and
-                            e.resident.asset != .failed))
+                const old_entry_loaded = if (self.cache.getEntry(old_key)) |e|
+                    switch (e.resident.asset) {
+                        .loaded_gpu, .promoting_gpu => true,
+                        .loaded_cpu, .none => self.gpu_device == null,
+                        .failed => false,
+                    }
                 else
                     self.gpu_device == null;
                 const cur_entry = self.getCurrentEntry();
                 const target_failed = if (cur_entry) |e|
-                    e.resident.asset == .failed
+                    e.resident.asset.isFailed()
                 else
                     false;
                 const target_decoded = if (cur_entry) |e|
-                    (e.resident.asset == .loaded_gpu or
-                        e.resident.asset == .loaded_cpu)
+                    e.resident.asset.isLoaded()
                 else
                     self.gpu_device == null;
                 const is_animating =
@@ -492,7 +501,7 @@ fn executeIntent(
                         .prev_pan_y = old_pan_y,
                     } };
                     const is_ready = if (cur_entry) |e|
-                        e.resident.asset == .loaded_gpu
+                        e.resident.asset.hasGpuTexture()
                     else
                         false;
                     if (is_ready) {
@@ -1570,10 +1579,12 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 1616.0,
-                    .h = 1080.0,
-                    .size_bytes = 500_000,
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 1616.0,
+                        .h = 1080.0,
+                        .size_bytes = 500_000,
+                    },
                 },
             },
         },
@@ -2063,12 +2074,14 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
-                    .surface = surf,
-                    .w = 16.0,
-                    .h = 16.0,
-                    .size_bytes = 1024,
-                    .mime_type = "image/jpeg",
-                    .decode = .{},
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 16.0,
+                        .h = 16.0,
+                        .size_bytes = 1024,
+                        .mime_type = "image/jpeg",
+                        .decode = .{},
+                    },
                 },
             },
         },
@@ -2104,4 +2117,73 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
         updated.target,
     );
     try std.testing.expectEqual(@as(u64, 1000), updated.start_time_ms);
+}
+
+test "togglePairStream - clears staged promoting_gpu without blanking" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{
+            .pair = .{
+                .raw_path = "img0.raf",
+                .jpeg_path = "img0.jpg",
+            },
+        },
+    );
+    app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+
+    const pending_surf = sdl.Surface.create(
+        32,
+        32,
+        sdl.PixelFormat.rgba32,
+    ) orelse return;
+    const stub = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 16.0, .h = 16.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    );
+    const active_gpu = switch (stub.resident.asset) {
+        .loaded_gpu => |g| g,
+        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
+    };
+    const key = try app_st.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .promoting_gpu = .{
+                    .active = active_gpu,
+                    .staged = .{
+                        .cpu = .{
+                            .surface = pending_surf,
+                            .w = 32.0,
+                            .h = 32.0,
+                            .size_bytes = 4096,
+                        },
+                    },
+                },
+            },
+        },
+        .metadata = .{
+            .raw_metadata = RawMetadata.init(6000, 4000),
+        },
+    });
+
+    togglePairStream(&app_st, 2000);
+
+    const entry = app_st.cache.get(key).?;
+    switch (entry.resident.asset) {
+        .loaded_gpu => {},
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    }
+    try std.testing.expect(entry.inflight != null);
+    try std.testing.expectEqual(
+        PairStreamTarget.standalone_jpeg,
+        entry.inflight.?.target,
+    );
+    try std.testing.expectEqual(@as(u64, 2000), entry.inflight.?.start_time_ms);
 }

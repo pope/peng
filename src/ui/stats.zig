@@ -258,18 +258,26 @@ fn renderInfoOverlay(
             }
         }
         switch (entry.resident.asset) {
-            .loaded_cpu => |cpu| {
-                mime_type = cpu.mime_type;
-                disk_size_str = try formatSize(frame_allocator, cpu.size_bytes);
-                const megapixels = (cpu.w * cpu.h) / 1_000_000.0;
+            .loaded_cpu => |asset| {
+                mime_type = asset.cpu.mime_type;
+                disk_size_str = try formatSize(
+                    frame_allocator,
+                    asset.cpu.size_bytes,
+                );
+                const megapixels = (asset.cpu.w * asset.cpu.h) / 1_000_000.0;
                 const is_raw = entry.metadata.raw_metadata.isRaw();
                 const prev_suffix = if (is_raw) " [PREVIEW]" else "";
                 res_str = try frame_allocator.print(
                     "{d:.0}x{d:.0} ({d:.2} MP){s}",
-                    .{ cpu.w, cpu.h, megapixels, prev_suffix },
+                    .{ asset.cpu.w, asset.cpu.h, megapixels, prev_suffix },
                 );
             },
-            .loaded_gpu => |gpu| {
+            .loaded_gpu, .promoting_gpu => {
+                const gpu = switch (entry.resident.asset) {
+                    .loaded_gpu => |g| g,
+                    .promoting_gpu => |promo| promo.active,
+                    .loaded_cpu, .none, .failed => unreachable,
+                };
                 mime_type = gpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
                 const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
@@ -644,21 +652,26 @@ pub fn renderStatsOverlay(
 
     if (current_entry) |entry| {
         switch (entry.resident.asset) {
-            .loaded_cpu => |cpu| {
+            .loaded_cpu => |asset| {
                 read_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{cpu.decode.read_time_ms},
+                    .{asset.cpu.decode.read_time_ms},
                 );
                 decode_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{cpu.decode.decode_time_ms},
+                    .{asset.cpu.decode.decode_time_ms},
                 );
                 convert_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{cpu.decode.conversion_time_ms},
+                    .{asset.cpu.decode.conversion_time_ms},
                 );
             },
-            .loaded_gpu => |gpu| {
+            .loaded_gpu, .promoting_gpu => {
+                const gpu = switch (entry.resident.asset) {
+                    .loaded_gpu => |g| g,
+                    .promoting_gpu => |promo| promo.active,
+                    .loaded_cpu, .none, .failed => unreachable,
+                };
                 mem_size_str = try formatSize(
                     frame_allocator,
                     gpu.ingest.memory_size_bytes,

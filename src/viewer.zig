@@ -220,18 +220,32 @@ fn buildUiViewModel(app_state: *const AppState, now_ms: u64) UiViewModel {
         .is_thumb_crossfading = blk: {
             const cur_entry =
                 app_state.getCurrentEntry() orelse break :blk false;
-            break :blk (cur_entry.resident.asset == .loaded_gpu) and
-                (cur_entry.resident.thumbnail == .loaded) and
+            const thumb_loaded = switch (cur_entry.resident.thumbnail) {
+                .loaded => true,
+                .none,
+                .pending,
+                .staged_cpu,
+                .not_available,
+                .unloaded,
+                => false,
+            };
+            const is_dissolve_none =
+                switch (app_state.viewer.image_transition) {
+                    .none => true,
+                    .active => false,
+                };
+            break :blk cur_entry.resident.asset.hasGpuTexture() and
+                thumb_loaded and
                 !app_state.viewer.ui.overlays.debug_show_thumb and
                 !app_state.viewer.isSlideshowActive() and
-                (app_state.viewer.image_transition == .none) and
+                is_dissolve_none and
                 (app_state.viewer.animations.get(.thumb_crossfade) < 0.999);
         },
         .image_dissolve = blk: {
             const progress = app_state.viewer.animations.get(.image_crossfade);
             if (progress >= 0.999) break :blk .none;
             if (app_state.getCurrentEntry()) |cur| {
-                if (cur.resident.asset == .failed) break :blk .none;
+                if (cur.resident.asset.isFailed()) break :blk .none;
             }
 
             switch (app_state.viewer.image_transition) {
@@ -239,7 +253,7 @@ fn buildUiViewModel(app_state: *const AppState, now_ms: u64) UiViewModel {
                 .active => |t| {
                     const prev = app_state.getTransitionPrevEntry() orelse
                         break :blk .none;
-                    if (prev.resident.asset != .loaded_gpu) {
+                    if (!prev.resident.asset.hasGpuTexture()) {
                         break :blk .none;
                     }
                     break :blk .{ .active = .{
