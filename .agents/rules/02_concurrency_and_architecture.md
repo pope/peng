@@ -166,8 +166,9 @@
     field placeholders.
   - Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`
     in `WorkerManager`; `active_file_scans` in `NavigationState`) for scheduling
-    (`canSpawnDecode()`, `isBusy()`, `wait_load`), and snapshot them once per
-    frame in `sysSyncMetrics` into `ViewerStats`.
+    (`canSpawnDecode(priority)` with `DecodePriority` tiers `.foreground`,
+    `.promotion`, `.background`; `isBusy()`; `wait_load`), and snapshot them
+    once per frame in `sysSyncMetrics` into `ViewerStats`.
   - Wrap generational worker payloads in `SlotBound(T)`
     (`resolve(&state.cache)`) or `Generational(T)` (`resolve(&generation)`)
     (`src/app/workers/events.zig`) and construct `CancellationToken`
@@ -190,7 +191,10 @@
     fast-scroll neighbors (exiting after Stage 1), `.active_fast_scroll` for
     active fast-scroll slots (returning early on thumbnail hit or falling
     through to Stage 2 full decode in the same open-file pass on miss), and
-    `.full` when settled/idle or when `thumbnail == .not_available`.
+    `.full` when settled/idle or when `thumbnail == .not_available`. Both
+    `is_active_thumb_ready` and `skip_active` treat `ThumbnailState.staged_cpu`
+    as ready alongside `.loaded` so `cur_id` never spawns duplicate
+    `.active_fast_scroll` workers while awaiting GPU upload.
   - Fall back to `$XDG_CACHE_HOME/thumbnails/` when no embedded preview is
     present, noting cached Freedesktop PNGs are pre-oriented upright.
   - Background thumbnail writes (`thumbWriterWorker`) are bounded to
@@ -199,7 +203,11 @@
 - **Demand-First Priority Gating for Cache & GPU Uploads**:
   1. **Decode Gating (`sysUpdateCache`)**: Never spawn neighbor prefetch workers
      ($\\pm 1, \\pm 2$) while the active slot (`idx`) is still decoding or
-     uploading.
+     uploading. Dispatch `cur_id` with `DecodePriority.foreground` (granting
+     `FOREGROUND_BURST_SLOTS = 2` burst headroom up to
+     `MAX_FOREGROUND_DECODES = 12`), pair promotions with `.promotion`
+     (`getMaxConcurrentDecodes()`), and neighbor prefetches with `.background`
+     (`max(1, base - 1)`), keeping `cur_id` responsive under pool saturation.
   2. **Staged CPU Ingestion (`handleImageDecodedEvent` /
      `handleExifThumbnailEvent`)**:
      In Phase 1 (`src/app/events.zig`), stage decoded surfaces directly in

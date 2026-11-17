@@ -313,43 +313,55 @@ pub const ImageTransition = union(enum) {
 /// fast-decoding formats (~2 frames at 60Hz).
 pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
 
-/// Navigation cadence tracking whether the user is idle or actively stepping
-/// between images, encapsulating fast-scroll, crossfade-bypass, and settle
-/// promotion timing thresholds without in-band zero sentinels.
+/// Navigation cadence tracking whether the user is idle, stepping singly, or
+/// briskly scrolling through images, encapsulating fast-scroll,
+/// crossfade-bypass, and settle promotion timing thresholds without in-band
+/// zero sentinels.
 pub const ScrollCadence = union(enum) {
     idle,
-    active: u64,
+    single_step: u64,
+    brisk_scroll: u64,
 
     pub const FAST_SCROLL_MS: u64 = LOADING_GRACE_PERIOD_MS;
     pub const CROSSFADE_BYPASS_MS: u64 = 200;
     pub const SETTLED_PROMOTE_MS: u64 = 250;
 
-    /// Records a navigation step at `now_ms`.
+    /// Records a navigation step at `now_ms`, promoting to `.brisk_scroll`
+    /// when consecutive steps arrive within `CROSSFADE_BYPASS_MS` (200ms).
     pub fn recordNavigation(self: *ScrollCadence, now_ms: u64) void {
-        self.* = .{ .active = now_ms };
-    }
-
-    fn isWithinWindow(
-        self: ScrollCadence,
-        now_ms: u64,
-        window_ms: u64,
-    ) bool {
-        return switch (self) {
-            .idle => false,
-            .active => |last_ms| (now_ms -| last_ms) < window_ms,
+        self.* = switch (self.*) {
+            .idle => .{ .single_step = now_ms },
+            .single_step, .brisk_scroll => |prev_ms| blk: {
+                if (now_ms >= prev_ms and
+                    (now_ms - prev_ms) < CROSSFADE_BYPASS_MS)
+                {
+                    break :blk .{ .brisk_scroll = now_ms };
+                }
+                break :blk .{ .single_step = now_ms };
+            },
         };
     }
 
-    /// Returns `true` when navigation occurred within `FAST_SCROLL_MS` of
-    /// `now_ms`.
+    /// Returns `true` when navigation is within the active fast-scroll window
+    /// (`FAST_SCROLL_MS` for `.single_step`, `CROSSFADE_BYPASS_MS` for
+    /// `.brisk_scroll`).
     pub fn isFastScrolling(self: ScrollCadence, now_ms: u64) bool {
-        return self.isWithinWindow(now_ms, FAST_SCROLL_MS);
+        return switch (self) {
+            .idle => false,
+            .single_step => |last_ms| (now_ms -| last_ms) < FAST_SCROLL_MS,
+            .brisk_scroll => |last_ms| (now_ms -| last_ms) <
+                CROSSFADE_BYPASS_MS,
+        };
     }
 
     /// Returns `true` when navigation occurred within the 200ms rapid-scrub
     /// window so image crossfade animations are bypassed.
     pub fn shouldBypassCrossfade(self: ScrollCadence, now_ms: u64) bool {
-        return self.isWithinWindow(now_ms, CROSSFADE_BYPASS_MS);
+        return switch (self) {
+            .idle => false,
+            .single_step, .brisk_scroll => |last_ms| (now_ms -| last_ms) <
+                CROSSFADE_BYPASS_MS,
+        };
     }
 
     /// Returns `true` when navigation is idle or more than `250ms` has elapsed
@@ -357,29 +369,31 @@ pub const ScrollCadence = union(enum) {
     pub fn isSettledForPromotion(self: ScrollCadence, now_ms: u64) bool {
         return switch (self) {
             .idle => true,
-            .active => |last_ms| (now_ms -| last_ms) > SETTLED_PROMOTE_MS,
+            .single_step, .brisk_scroll => |last_ms| (now_ms -| last_ms) >
+                SETTLED_PROMOTE_MS,
         };
     }
 
     /// Returns remaining milliseconds until the next cadence settle boundary
-    /// expires (`FAST_SCROLL_MS` or `SETTLED_PROMOTE_MS + 1`), or `null` when
-    /// idle or fully settled.
+    /// expires (`FAST_SCROLL_MS` for `.single_step`, `CROSSFADE_BYPASS_MS` for
+    /// `.brisk_scroll`, then `SETTLED_PROMOTE_MS + 1`), or `null` when idle or
+    /// fully settled.
     pub fn settleTimeoutMs(self: ScrollCadence, now_ms: u64) ?u32 {
-        return switch (self) {
-            .idle => null,
-            .active => |last_ms| {
-                const elapsed = now_ms -| last_ms;
-                if (elapsed < FAST_SCROLL_MS) {
-                    const rem = FAST_SCROLL_MS - elapsed;
-                    return @intCast(@min(rem, std.math.maxInt(u32)));
-                }
-                if (elapsed <= SETTLED_PROMOTE_MS) {
-                    const rem = (SETTLED_PROMOTE_MS + 1) - elapsed;
-                    return @intCast(@min(rem, std.math.maxInt(u32)));
-                }
-                return null;
-            },
+        const first_boundary, const last_ms = switch (self) {
+            .idle => return null,
+            .single_step => |ms| .{ FAST_SCROLL_MS, ms },
+            .brisk_scroll => |ms| .{ CROSSFADE_BYPASS_MS, ms },
         };
+        const elapsed = now_ms -| last_ms;
+        if (elapsed < first_boundary) {
+            const rem = first_boundary - elapsed;
+            return @intCast(@min(rem, std.math.maxInt(u32)));
+        }
+        if (elapsed <= SETTLED_PROMOTE_MS) {
+            const rem = (SETTLED_PROMOTE_MS + 1) - elapsed;
+            return @intCast(@min(rem, std.math.maxInt(u32)));
+        }
+        return null;
     }
 };
 
@@ -687,14 +701,18 @@ test "ScrollCadence thresholds, settleTimeoutMs, and zero timestamp" {
 
     // Recording timestamp 0 stays distinct from .idle
     cadence.recordNavigation(0);
-    try std.testing.expectEqual(ScrollCadence{ .active = 0 }, cadence);
+    try std.testing.expectEqual(ScrollCadence{ .single_step = 0 }, cadence);
     try std.testing.expect(cadence.isFastScrolling(10));
     try std.testing.expect(cadence.shouldBypassCrossfade(100));
     try std.testing.expect(!cadence.isSettledForPromotion(250));
     try std.testing.expect(cadence.isSettledForPromotion(251));
 
-    // Boundary progression from active timestamp 1000
+    // Boundary progression from single_step timestamp 1000 (>= 200ms after 0)
     cadence.recordNavigation(1000);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 1000 },
+        cadence,
+    );
     try std.testing.expectEqual(@as(?u32, 35), cadence.settleTimeoutMs(1000));
     try std.testing.expect(cadence.isFastScrolling(1034));
     try std.testing.expectEqual(@as(?u32, 1), cadence.settleTimeoutMs(1034));
@@ -715,4 +733,77 @@ test "ScrollCadence thresholds, settleTimeoutMs, and zero timestamp" {
     // Non-monotonic timestamp saturates cleanly without underflow
     try std.testing.expect(cadence.isFastScrolling(900));
     try std.testing.expectEqual(@as(?u32, 35), cadence.settleTimeoutMs(900));
+}
+
+test "ScrollCadence brisk scroll streak entry, persistence, and reset" {
+    var cadence: ScrollCadence = .idle;
+
+    // Initial step enters .single_step
+    cadence.recordNavigation(1000);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 1000 },
+        cadence,
+    );
+
+    // Second step < 200ms later promotes to .brisk_scroll
+    cadence.recordNavigation(1199);
+    try std.testing.expectEqual(
+        ScrollCadence{ .brisk_scroll = 1199 },
+        cadence,
+    );
+
+    // Continuous 120ms brisk steps remain in .brisk_scroll and keep
+    // isFastScrolling == true past the 35ms single-step window
+    cadence.recordNavigation(1319);
+    try std.testing.expectEqual(
+        ScrollCadence{ .brisk_scroll = 1319 },
+        cadence,
+    );
+    try std.testing.expect(cadence.isFastScrolling(1400));
+    try std.testing.expect(cadence.shouldBypassCrossfade(1400));
+    try std.testing.expect(!cadence.isSettledForPromotion(1400));
+    try std.testing.expectEqual(@as(?u32, 119), cadence.settleTimeoutMs(1400));
+
+    cadence.recordNavigation(1439);
+    try std.testing.expectEqual(
+        ScrollCadence{ .brisk_scroll = 1439 },
+        cadence,
+    );
+    try std.testing.expect(cadence.isFastScrolling(1559));
+    try std.testing.expectEqual(@as(?u32, 200), cadence.settleTimeoutMs(1439));
+
+    // Settle wakeup boundary at 200ms after 1439 (t=1639)
+    try std.testing.expect(cadence.isFastScrolling(1638));
+    try std.testing.expectEqual(@as(?u32, 1), cadence.settleTimeoutMs(1638));
+
+    try std.testing.expect(!cadence.isFastScrolling(1639));
+    try std.testing.expect(!cadence.shouldBypassCrossfade(1639));
+    try std.testing.expect(!cadence.isSettledForPromotion(1639));
+    try std.testing.expectEqual(@as(?u32, 51), cadence.settleTimeoutMs(1639));
+
+    try std.testing.expect(!cadence.isSettledForPromotion(1689));
+    try std.testing.expectEqual(@as(?u32, 1), cadence.settleTimeoutMs(1689));
+
+    try std.testing.expect(cadence.isSettledForPromotion(1690));
+    try std.testing.expectEqual(@as(?u32, null), cadence.settleTimeoutMs(1690));
+
+    // Step >= 200ms after 1439 resets cadence back to .single_step
+    cadence.recordNavigation(1639);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 1639 },
+        cadence,
+    );
+    try std.testing.expectEqual(@as(?u32, 35), cadence.settleTimeoutMs(1639));
+
+    // Non-monotonic timestamp from .brisk_scroll resets cleanly to .single_step
+    cadence.recordNavigation(1700);
+    try std.testing.expectEqual(
+        ScrollCadence{ .brisk_scroll = 1700 },
+        cadence,
+    );
+    cadence.recordNavigation(1500);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 1500 },
+        cadence,
+    );
 }

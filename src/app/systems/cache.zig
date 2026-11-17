@@ -10,6 +10,7 @@ const workers_mod = @import("../workers/root.zig");
 
 const AppState = app_state.AppState;
 const DecodeMode = workers_mod.DecodeMode;
+const DecodePriority = workers_mod.DecodePriority;
 const FrameContext = context.FrameContext;
 const ImageCache = cache.ImageCache;
 const MediaEntry = vfs.MediaEntry;
@@ -56,7 +57,9 @@ fn checkPairPromotion(
         state.viewer.navigation.cadence.isSettledForPromotion(now) and
         (tex_demand > 1.15);
 
-    if ((is_inspecting or is_settled_fit) and state.workers.canSpawnDecode()) {
+    if ((is_inspecting or is_settled_fit) and
+        state.workers.canSpawnDecode(.promotion))
+    {
         state.spawnSlotDecode(
             key.id,
             media_item,
@@ -161,14 +164,15 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     };
 
     // Fast-scrolling thumbnail readiness: check whether active image has
-    // thumbnail or full texture ready. Speculative thumbnail preloading for
-    // next image only runs if active image thumbnail is already ready.
+    // thumbnail (loaded or staged on CPU) or full texture ready. Speculative
+    // thumbnail preloading for next image only runs if active image thumbnail
+    // is already ready.
     const is_active_thumb_ready = blk: {
         const cur_key = state.cache.activeKey(cur_id);
         if (state.cache.getEntry(cur_key)) |cur_entry| {
             break :blk switch (cur_entry.resident.thumbnail) {
-                .loaded, .not_available => true,
-                .none, .pending, .staged_cpu, .unloaded => is_current_ready,
+                .loaded, .staged_cpu, .not_available => true,
+                .none, .pending, .unloaded => is_current_ready,
             };
         }
         break :blk false;
@@ -234,21 +238,16 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                     .not_available, .staged_cpu, .loaded => true,
                     .none, .pending, .unloaded => false,
                 };
-                const thumb_loaded = switch (entry.resident.thumbnail) {
-                    .loaded => true,
-                    .none,
-                    .pending,
-                    .staged_cpu,
-                    .not_available,
-                    .unloaded,
-                    => false,
+                const has_active_thumb = switch (entry.resident.thumbnail) {
+                    .loaded, .staged_cpu => true,
+                    .none, .pending, .not_available, .unloaded => false,
                 };
                 const skip_neighbor = d != neighbors.current and
                     is_fast_scrolling and
                     thumb_ready;
                 const skip_active = d == neighbors.current and
                     is_fast_scrolling and
-                    thumb_loaded;
+                    has_active_thumb;
                 if (!skip_neighbor and !skip_active) {
                     if (state.viewer.navigation.getMediaEntryById(d_id)) |e| {
                         to_spawn.appendAssumeCapacity(.{
@@ -268,7 +267,11 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // 4. Spawn worker threads
     for (to_spawn.items) |req| {
-        if (!state.workers.canSpawnDecode()) continue;
+        const priority: DecodePriority = if (req.id == cur_id)
+            .foreground
+        else
+            .background;
+        if (!state.workers.canSpawnDecode(priority)) continue;
 
         const key = state.cache.activeKey(req.id);
         const entry = state.cache.get(key) orelse continue;
@@ -1127,4 +1130,142 @@ test "checkPairPromotion - Fit mode waits until cadence settles past 250ms" {
         PairStreamTarget.standalone_jpeg,
         promoted.inflight.?.target,
     );
+}
+
+test "sysUpdateCache - foreground burst spawns active when pool saturated" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // 4 cores -> background=2, concurrent/promotion=3, foreground=5
+    state.workers.cached_cpu_count = 4;
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..3) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
+        _ = try state.viewer.navigation.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
+    }
+    state.viewer.navigation.current_index = 0;
+    state.viewer.navigation.direction = .forward;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const id1 = state.viewer.navigation.getIdAt(1).?;
+
+    // Active slot has .not_available thumb and is awaiting decode while fast
+    // scrolling, so both active id0 and speculative neighbor id1 enter
+    // to_spawn in the same sysUpdateCache pass.
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{ .thumbnail = .not_available },
+        .inflight = .{ .stage = .decoding, .has_thread = false },
+    });
+    state.viewer.navigation.cadence.recordNavigation(1000);
+
+    // Saturate the base pool at getMaxConcurrentDecodes() (3)
+    state.workers.active_decode_threads.store(
+        state.workers.getMaxConcurrentDecodes(),
+        .release,
+    );
+
+    try sysUpdateCache(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    });
+
+    // Active slide id0 must spawn via .foreground burst headroom (3 < 5)
+    const entry0 = state.cache.get(state.cache.activeKey(id0)).?;
+    try std.testing.expect(entry0.inflight != null);
+    try std.testing.expect(entry0.inflight.?.has_thread);
+
+    // Speculative neighbor id1 must be skipped via .background limit (3 >= 2)
+    const entry1 = state.cache.get(state.cache.activeKey(id1)).?;
+    try std.testing.expect(entry1.inflight != null);
+    try std.testing.expect(!entry1.inflight.?.has_thread);
+}
+
+test "sysUpdateCache - brisk scroll keeps staged thumb until settled" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..4) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
+        _ = try state.viewer.navigation.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
+    }
+    state.viewer.navigation.current_index = 0;
+
+    // Two brisk steps 120ms apart: t=1000 -> t=1120 (lands on index 2)
+    _ = state.viewer.navigation.nextIndex(1000);
+    _ = state.viewer.navigation.nextIndex(1120);
+    try std.testing.expectEqual(
+        @as(?usize, 2),
+        state.viewer.navigation.current_index,
+    );
+
+    const id2 = state.viewer.navigation.getIdAt(2).?;
+    const id3 = state.viewer.navigation.getIdAt(3).?;
+
+    // Active slide 2 has a CPU-staged thumbnail awaiting GPU upload
+    const th_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    _ = try state.cache.appendSlot(allocator, id2, .{
+        .resident = .{
+            .thumbnail = .{ .staged_cpu = .{ .surface = th_surf } },
+        },
+        .inflight = .{ .stage = .decoding, .has_thread = false },
+    });
+
+    // At t=1200 (> 35ms after 1120, < 200ms), brisk scroll remains active:
+    // active slide stays thumbnail-only without spawning a full or duplicate
+    // decode worker, while speculative neighbor id3 is populated.
+    try std.testing.expect(
+        state.viewer.navigation.cadence.isFastScrolling(1200),
+    );
+    try sysUpdateCache(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1200,
+    });
+
+    const entry2_brisk = state.cache.get(state.cache.activeKey(id2)).?;
+    try std.testing.expect(entry2_brisk.inflight != null);
+    try std.testing.expect(!entry2_brisk.inflight.?.has_thread);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(id3)) != null);
+
+    // At t=1320 (200ms after 1120), cadence settles and active slide spawns
+    // .full
+    try std.testing.expect(
+        !state.viewer.navigation.cadence.isFastScrolling(1320),
+    );
+    try sysUpdateCache(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1320,
+    });
+
+    const entry2_settled = state.cache.get(state.cache.activeKey(id2)).?;
+    try std.testing.expect(entry2_settled.inflight != null);
+    try std.testing.expect(entry2_settled.inflight.?.has_thread);
+
+    state.workers.group.await(io) catch {};
+    var full_seen = false;
+    while (state.workers.event_queue.pop()) |*ev| {
+        defer ev.deinit(allocator);
+        if (ev.* == .image_decoded) full_seen = true;
+    }
+    try std.testing.expect(full_seen);
 }

@@ -20,6 +20,7 @@ pub const stdin = @import("stdin.zig");
 pub const BackgroundEvent = events.BackgroundEvent;
 pub const DecodeArgs = decode.DecodeArgs;
 pub const DecodeMode = decode.DecodeMode;
+pub const DecodePriority = manager.DecodePriority;
 pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
 pub const PreviewWorkerArgs = preview.PreviewWorkerArgs;

@@ -43,10 +43,19 @@ pub const ThumbWriteJob = struct {
     }
 };
 
+/// Scheduling priority tier for background `decodeWorker` tasks.
+pub const DecodePriority = enum {
+    foreground,
+    promotion,
+    background,
+};
+
 /// WorkerManager manages background thread lifecycle, active thread counts,
 /// concurrency limits, worker cancellation, and event transport.
 pub const WorkerManager = struct {
     pub const MAX_QUEUED_THUMB_WRITES: usize = 8;
+    pub const FOREGROUND_BURST_SLOTS: usize = 2;
+    pub const MAX_FOREGROUND_DECODES: usize = 12;
 
     /// Cached hardware logical CPU core count queried once at startup to eliminate
     /// per-frame `sysconf` or `/proc/cpuinfo` read syscalls.
@@ -464,16 +473,43 @@ pub const WorkerManager = struct {
         return std.Thread.getCpuCount() catch 4;
     }
 
-    /// Calculates the maximum allowed concurrent `decodeWorker` tasks based on system CPU cores.
+    /// Calculates the maximum allowed concurrent `decodeWorker` tasks based on
+    /// system CPU cores.
     pub fn getMaxConcurrentDecodes(self: *const WorkerManager) usize {
         const cpus = self.getCpuCount();
         return @max(1, @min(8, cpus -| 1));
     }
 
-    /// Returns `true` if the number of actively running `decodeWorker` tasks is strictly less
-    /// than `getMaxConcurrentDecodes()`.
-    pub fn canSpawnDecode(self: *const WorkerManager) bool {
-        return self.active_decode_threads.load(.acquire) < self.getMaxConcurrentDecodes();
+    /// Calculates the maximum concurrent background prefetch decode tasks,
+    /// reserving one slot of headroom for foreground or promotion work whenever
+    /// `getMaxConcurrentDecodes()` exceeds 1.
+    pub fn getMaxBackgroundDecodes(self: *const WorkerManager) usize {
+        const base = self.getMaxConcurrentDecodes();
+        return if (base > 1) base - 1 else 1;
+    }
+
+    /// Calculates the maximum concurrent foreground decode tasks, granting
+    /// `FOREGROUND_BURST_SLOTS` burst headroom above
+    /// `getMaxConcurrentDecodes()` capped at `MAX_FOREGROUND_DECODES`.
+    pub fn getMaxForegroundDecodes(self: *const WorkerManager) usize {
+        return @min(
+            MAX_FOREGROUND_DECODES,
+            self.getMaxConcurrentDecodes() + FOREGROUND_BURST_SLOTS,
+        );
+    }
+
+    /// Returns `true` if a `decodeWorker` task at `priority` may spawn without
+    /// exceeding that tier's concurrency limit.
+    pub fn canSpawnDecode(
+        self: *const WorkerManager,
+        priority: DecodePriority,
+    ) bool {
+        const active = self.active_decode_threads.load(.acquire);
+        return switch (priority) {
+            .foreground => active < self.getMaxForegroundDecodes(),
+            .promotion => active < self.getMaxConcurrentDecodes(),
+            .background => active < self.getMaxBackgroundDecodes(),
+        };
     }
 
     /// Initializes a new WorkerManager with zero active threads, default event queues,
@@ -534,14 +570,111 @@ test "WorkerManager.getMaxConcurrentDecodes scaling bounds" {
     try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
 }
 
+test "WorkerManager.DecodePriority bounds across core counts" {
+    const Case = struct {
+        cpus: usize,
+        expected_bg: usize,
+        expected_promo: usize,
+        expected_fg: usize,
+    };
+    const cases = [_]Case{
+        .{
+            .cpus = 1,
+            .expected_bg = 1,
+            .expected_promo = 1,
+            .expected_fg = 3,
+        },
+        .{
+            .cpus = 2,
+            .expected_bg = 1,
+            .expected_promo = 1,
+            .expected_fg = 3,
+        },
+        .{
+            .cpus = 4,
+            .expected_bg = 2,
+            .expected_promo = 3,
+            .expected_fg = 5,
+        },
+        .{
+            .cpus = 8,
+            .expected_bg = 6,
+            .expected_promo = 7,
+            .expected_fg = 9,
+        },
+        .{
+            .cpus = 16,
+            .expected_bg = 7,
+            .expected_promo = 8,
+            .expected_fg = 10,
+        },
+        .{
+            .cpus = 64,
+            .expected_bg = 7,
+            .expected_promo = 8,
+            .expected_fg = 10,
+        },
+    };
+
+    for (cases) |c| {
+        const mgr = WorkerManager{ .cached_cpu_count = c.cpus };
+        try std.testing.expectEqual(
+            c.expected_bg,
+            mgr.getMaxBackgroundDecodes(),
+        );
+        try std.testing.expectEqual(
+            c.expected_promo,
+            mgr.getMaxConcurrentDecodes(),
+        );
+        try std.testing.expectEqual(
+            c.expected_fg,
+            mgr.getMaxForegroundDecodes(),
+        );
+    }
+}
+
 test "WorkerManager.canSpawnDecode gating" {
     var mgr = WorkerManager{ .cached_cpu_count = 4 };
-    // Max is 3 (4 - 1):
-    try std.testing.expect(mgr.canSpawnDecode());
+    // 4 cores: background=2, promotion=3, foreground=5
+    mgr.active_decode_threads.store(1, .release);
+    try std.testing.expect(mgr.canSpawnDecode(.background));
+    try std.testing.expect(mgr.canSpawnDecode(.promotion));
+    try std.testing.expect(mgr.canSpawnDecode(.foreground));
+
     mgr.active_decode_threads.store(2, .release);
-    try std.testing.expect(mgr.canSpawnDecode());
+    try std.testing.expect(!mgr.canSpawnDecode(.background));
+    try std.testing.expect(mgr.canSpawnDecode(.promotion));
+    try std.testing.expect(mgr.canSpawnDecode(.foreground));
+
     mgr.active_decode_threads.store(3, .release);
-    try std.testing.expect(!mgr.canSpawnDecode());
+    try std.testing.expect(!mgr.canSpawnDecode(.background));
+    try std.testing.expect(!mgr.canSpawnDecode(.promotion));
+    try std.testing.expect(mgr.canSpawnDecode(.foreground));
+
+    mgr.active_decode_threads.store(4, .release);
+    try std.testing.expect(!mgr.canSpawnDecode(.background));
+    try std.testing.expect(!mgr.canSpawnDecode(.promotion));
+    try std.testing.expect(mgr.canSpawnDecode(.foreground));
+
+    mgr.active_decode_threads.store(5, .release);
+    try std.testing.expect(!mgr.canSpawnDecode(.background));
+    try std.testing.expect(!mgr.canSpawnDecode(.promotion));
+    try std.testing.expect(!mgr.canSpawnDecode(.foreground));
+
+    // 1 core: background=1, promotion=1, foreground=3
+    var mgr_one = WorkerManager{ .cached_cpu_count = 1 };
+    mgr_one.active_decode_threads.store(0, .release);
+    try std.testing.expect(mgr_one.canSpawnDecode(.background));
+    try std.testing.expect(mgr_one.canSpawnDecode(.promotion));
+    try std.testing.expect(mgr_one.canSpawnDecode(.foreground));
+
+    mgr_one.active_decode_threads.store(1, .release);
+    try std.testing.expect(!mgr_one.canSpawnDecode(.background));
+    try std.testing.expect(!mgr_one.canSpawnDecode(.promotion));
+    try std.testing.expect(mgr_one.canSpawnDecode(.foreground));
+
+    mgr_one.active_decode_threads.store(3, .release);
+    try std.testing.expect(!mgr_one.canSpawnDecode(.foreground));
 }
 
 test "WorkerManager.getCpuCount caching and fallback" {

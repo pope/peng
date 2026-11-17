@@ -45,10 +45,12 @@ ______________________________________________________________________
   - VRAM cache memory footprint math (+33% mipmap overhead), active/transition/neighbor slot protection, and 32 MiB staging buffer warm cap with 5s idle decay + `getWaitTimeoutMs` wake scheduling.
   - Off-main-thread Stage-1 header probing (`DecodeMode`, 256KB bounded read) & single-pass `std.Io` in-memory decoding.
   - Camera RAW format quirks table (Adobe DNG / Ricoh GR III, Canon CR2 IFD0/2/3 disambiguation, Fujifilm RAF 12MP ceiling, Sony ARW Bayer CFA exclusion) and 4-tier RAW+JPEG progressive streaming.
-  - `ScrollCadence` navigation throttling (`35ms` fast-scroll `DecodeMode.active_fast_scroll` / `.speculative_thumb`,
-    `200ms` crossfade bypass, `250ms` settled Fit promotion), dynamic worker
-    scaling (`@max(1, @min(8, cpus -| 1))`), and cooperative `ImageCacheKey`
-    (stable `MediaId` and generation) epoch pruning.
+  - `ScrollCadence` navigation throttling (`35ms` `.single_step` / `200ms`
+    `.brisk_scroll` `DecodeMode.active_fast_scroll` / `.speculative_thumb`,
+    `200ms` crossfade bypass, `250ms` settled Fit promotion), tiered
+    `DecodePriority` worker scaling (`@max(1, @min(8, cpus -| 1))` base with
+    `.foreground` burst headroom and `.background` cap), and cooperative
+    `ImageCacheKey` (stable `MediaId` and generation) epoch pruning.
 
 - **[GPU Shader Optimization Recipes](references/shader-optimization.md)**
 

@@ -130,11 +130,31 @@ ______________________________________________________________________
 ## 3. Throttled Navigation, Telemetry & Settled Preloading
 
 - **Navigation Throttling (`ScrollCadence` in `src/state/types.zig`)**:
-  - **`ScrollCadence.FAST_SCROLL_MS = 35` (`LOADING_GRACE_PERIOD_MS`)**:
-    When `NavigationState.cadence.isFastScrolling(now)` is true (elapsed since
-    `.active` timestamp is $< 35\\text{ms}$), `is_fast_scrolling` is true:
-    1. *Active Slot (`cur_id`)*: Unless `entry.resident.thumbnail == .not_available` (in which case `sysUpdateCache` spawns `DecodeMode.full`), workers run with `DecodeMode.active_fast_scroll`. If a thumbnail is present, Stage 1 emits `thumb_decoded` (~0.17ms) and exits; if none exists, Stage 1 falls straight through to Stage 2 full decode in the same open-file pass.
-    2. *Speculative Neighbor*: Once the active thumbnail is ready (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the next single neighbor (`speculative_idx`) along `direction` (`NavDirection`: `.forward` / `.backward`) using `DecodeMode.speculative_thumb`, deferring full decodes until navigation settles ($\\ge 35\\text{ms}$).
+  - **Brisk-Scroll Streak (`FAST_SCROLL_MS=35`, `CROSSFADE_BYPASS_MS=200`)**:
+    `ScrollCadence` encodes `.idle`, `.single_step: u64`, and
+    `.brisk_scroll: u64`. Stepping from `.idle` (or after
+    $\\ge 200\\text{ms}$) enters `.single_step` (`isFastScrolling` active for
+    `35ms`); stepping again within $< 200\\text{ms}$ promotes to
+    `.brisk_scroll` (`isFastScrolling` active for `200ms` across continuous
+    brisk steps). While `NavigationState.cadence.isFastScrolling(now)` is true,
+    `is_fast_scrolling` is true:
+    1. *Active Slot (`cur_id`)*: Unless
+       `entry.resident.thumbnail == .not_available` (in which case
+       `sysUpdateCache` spawns `DecodeMode.full`), workers run with
+       `DecodeMode.active_fast_scroll`. If a thumbnail is present, Stage 1
+       emits `thumb_decoded` (`thumb_only = true`, ~0.17ms) and exits; if none
+       exists, Stage 1 falls straight through to Stage 2 full decode in the same
+       open-file pass. Both `is_active_thumb_ready` and `skip_active` recognize
+       `.staged_cpu` alongside `.loaded` so `cur_id` never spawns duplicate
+       `.active_fast_scroll` workers while a thumbnail is staged on CPU awaiting
+       GPU upload.
+    2. *Speculative Neighbor*: Once the active thumbnail is ready
+       (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the
+       next single neighbor (`speculative_idx`) along `direction`
+       (`NavDirection`: `.forward` / `.backward`) using
+       `DecodeMode.speculative_thumb`, deferring full decodes until navigation
+       settles ($\\ge 35\\text{ms}$ for `.single_step`, $\\ge 200\\text{ms}$ for
+       `.brisk_scroll`).
   - **`ScrollCadence.CROSSFADE_BYPASS_MS = 200` (`shouldBypassCrossfade`)**:
     Navigation steps within $< 200\\text{ms}$ (`src/app/systems/intents.zig`)
     bypass image crossfade animations (snapping immediately) and trigger the
@@ -143,8 +163,9 @@ ______________________________________________________________________
     Companion JPEG Tier-4 promotion in Fit mode (`src/app/systems/cache.zig`)
     waits until `cadence` is `.idle` or elapsed $> 250\\text{ms}$ to avoid 200MB
     decodes while stepping through a folder. `AppState.getWaitTimeoutMs`
-    incorporates `cadence.settleTimeoutMs(now)` so fast-scroll and promotion
-    settle boundaries reliably wake the event loop before dropping to
+    incorporates `cadence.settleTimeoutMs(now)` (`35ms` for `.single_step`,
+    `200ms` for `.brisk_scroll`, and `251ms` for promotion) so settle
+    boundaries reliably wake the event loop before dropping to
     `.wait_indefinite`.
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` for disk I/O
@@ -169,12 +190,26 @@ ______________________________________________________________________
 
 - **`std.Io.Group` Task Spawning**:
   Spawn background decode tasks using `std.Io.Group` via `WorkerManager` (`state.workers.group.async(io, decodeWorker, args)`).
-- **Dynamic CPU Core Worker Scaling (`WorkerManager.getMaxConcurrentDecodes`)**:
-  Scales max concurrent decode tasks dynamically based on hardware CPU count (`std.Thread.getCpuCount() catch 4`):
+- **Dynamic Core Scaling & Tiered `DecodePriority` (`WorkerManager`)**:
+  Scales base concurrent decode tasks dynamically based on hardware CPU count
+  (`std.Thread.getCpuCount() catch 4`):
   ```zig
   return @max(1, @min(8, cpus -| 1));
   ```
-  This leaves 1 core dedicated to main-thread rendering while capping concurrent decode memory pressure at 8 threads.
+  This leaves 1 core dedicated to main-thread rendering while capping base
+  decode concurrency at 8 threads.
+  `WorkerManager.canSpawnDecode(priority: DecodePriority)` enforces three
+  priority tiers:
+  - `.background` (`getMaxBackgroundDecodes` = `if (base > 1) base - 1 else 1`):
+    Used for neighbor prefetches in `sysUpdateCache`, reserving at least 1 base
+    slot when `base > 1`.
+  - `.promotion` (`getMaxConcurrentDecodes` = `base`): Used for Fit-mode / zoom
+    pair promotions in `checkPairPromotion`.
+  - `.foreground` (`getMaxForegroundDecodes` = `@min(12, base + 2)` via
+    `FOREGROUND_BURST_SLOTS = 2`,
+    `MAX_FOREGROUND_DECODES = 12 <= cache.MAX_DECODE_JOBS`): Used for the active
+    slide `cur_id` in `sysUpdateCache` so active slides spawn immediately even
+    if canceled background workers still occupy base slots.
 
 ______________________________________________________________________
 

@@ -151,7 +151,7 @@ pub const NavigationState = struct {
     pub fn getEffectiveDirection(self: *const NavigationState) NavDirection {
         return switch (self.cadence) {
             .idle => if (self.manga_mode) .backward else .forward,
-            .active => self.direction,
+            .single_step, .brisk_scroll => self.direction,
         };
     }
 
@@ -517,22 +517,31 @@ test "NavigationState - direction tracking" {
     _ = nav.nextIndex(5500);
     try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
-    try std.testing.expectEqual(ScrollCadence{ .active = 5500 }, nav.cadence);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 5500 },
+        nav.cadence,
+    );
 
     _ = nav.prevIndex(6200);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
     try std.testing.expectEqual(NavDirection.backward, nav.direction);
-    try std.testing.expectEqual(ScrollCadence{ .active = 6200 }, nav.cadence);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 6200 },
+        nav.cadence,
+    );
 
     _ = nav.goToIndex(2, 7000);
     try std.testing.expectEqual(@as(?usize, 2), nav.current_index);
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
-    try std.testing.expectEqual(ScrollCadence{ .active = 7000 }, nav.cadence);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 7000 },
+        nav.cadence,
+    );
 
     _ = nav.goToIndex(0, 0);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
     try std.testing.expectEqual(NavDirection.backward, nav.direction);
-    try std.testing.expectEqual(ScrollCadence{ .active = 0 }, nav.cadence);
+    try std.testing.expectEqual(ScrollCadence{ .single_step = 0 }, nav.cadence);
 }
 
 test "NavigationState - triage mutations and visibility filtering" {
@@ -821,7 +830,7 @@ test "NavigationState - getEffectiveDirection respects initial manga_mode" {
         nav.getEffectiveDirection(),
     );
 
-    // Navigating forward: cadence == .active -> tracks user direction
+    // Navigating forward: cadence == .single_step -> tracks user direction
     nav.cadence.recordNavigation(100);
     nav.direction = .forward;
     try std.testing.expectEqual(
@@ -829,7 +838,8 @@ test "NavigationState - getEffectiveDirection respects initial manga_mode" {
         nav.getEffectiveDirection(),
     );
 
-    // Navigating backward: cadence == .active -> tracks user direction
+    // Navigating backward in .brisk_scroll -> tracks user direction
+    nav.cadence.recordNavigation(200);
     nav.direction = .backward;
     try std.testing.expectEqual(
         NavDirection.backward,
@@ -990,11 +1000,24 @@ test "NavigationState - nextIndex and prevIndex record explicit now_ms" {
 
     _ = nav.nextIndex(5500);
     try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
-    try std.testing.expectEqual(ScrollCadence{ .active = 5500 }, nav.cadence);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 5500 },
+        nav.cadence,
+    );
 
     _ = nav.prevIndex(6200);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
-    try std.testing.expectEqual(ScrollCadence{ .active = 6200 }, nav.cadence);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 6200 },
+        nav.cadence,
+    );
+
+    _ = nav.nextIndex(6350);
+    try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
+    try std.testing.expectEqual(
+        ScrollCadence{ .brisk_scroll = 6350 },
+        nav.cadence,
+    );
 }
 
 test "NavigationState - goToIndex records zero timestamp without sentinel" {
@@ -1008,7 +1031,7 @@ test "NavigationState - goToIndex records zero timestamp without sentinel" {
 
     _ = nav.goToIndex(0, 0);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
-    try std.testing.expectEqual(ScrollCadence{ .active = 0 }, nav.cadence);
+    try std.testing.expectEqual(ScrollCadence{ .single_step = 0 }, nav.cadence);
 }
 
 test "NavigationState - empty playlist returns null and stays idle" {

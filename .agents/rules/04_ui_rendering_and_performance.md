@@ -93,8 +93,10 @@
   - When idle, `getWaitTimeoutMs` schedules a bounded `waitEventTimeout` for
     active transient overlay deadlines (`title_display == .transient` or
     `snackbar.notification == .active`), active `ScrollCadence` settle
-    windows (`navigation.cadence.settleTimeoutMs(now)`), and oversized staging
-    buffer decay deadlines (`upload_staging.decayTimeoutMs(now)`), and
+    windows (`navigation.cadence.settleTimeoutMs(now)` across `35ms`
+    `.single_step`, `200ms` `.brisk_scroll`, and `251ms` promotion boundaries),
+    and oversized staging buffer decay deadlines
+    (`upload_staging.decayTimeoutMs(now)`), and
     otherwise enters 0% CPU blocking `wait_indefinite` (including when the
     command palette is open and idle, or once oversized staging buffers decay).
 - **Modal Dismissal Input Decoupling & Held-Key Suppression**:
