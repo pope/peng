@@ -2235,7 +2235,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
             for (batch.items) |*ev| ev.deinit(allocator);
             batch.deinit(allocator);
         }
-        try workers.event_queue.drain(allocator, io, &batch);
+        workers.event_queue.drain(io, &batch);
         try std.testing.expectEqual(@as(usize, 3), batch.items.len);
 
         try std.testing.expect(batch.items[0] == .exif_orientation_parsed);
@@ -2303,7 +2303,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
             for (batch.items) |*ev| ev.deinit(allocator);
             batch.deinit(allocator);
         }
-        try workers.event_queue.drain(allocator, io, &batch);
+        workers.event_queue.drain(io, &batch);
         try std.testing.expectEqual(@as(usize, 3), batch.items.len);
         try std.testing.expect(batch.items[0] == .exif_orientation_parsed);
         try std.testing.expect(batch.items[1] == .thumb_decoded);
@@ -2439,7 +2439,7 @@ test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
             for (batch.items) |*ev| ev.deinit(allocator);
             batch.deinit(allocator);
         }
-        try workers.event_queue.drain(allocator, io, &batch);
+        workers.event_queue.drain(io, &batch);
         try std.testing.expectEqual(@as(usize, 2), batch.items.len);
         try std.testing.expect(batch.items[0] == .thumb_decoded);
         const thumb = batch.items[0].thumb_decoded.unwrapForTest();

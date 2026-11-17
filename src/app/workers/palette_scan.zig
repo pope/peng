@@ -149,7 +149,7 @@ test "paletteScanWorker - counts directory contents and pushes events" {
         for (batch.items) |*ev| ev.deinit(allocator);
         batch.deinit(allocator);
     }
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
 
     var event_seen = false;
     for (batch.items) |ev| {
@@ -199,7 +199,7 @@ test "paletteScanWorker - prunes early when current_generation increments" {
         for (batch.items) |*ev| ev.deinit(allocator);
         batch.deinit(allocator);
     }
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
 
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }

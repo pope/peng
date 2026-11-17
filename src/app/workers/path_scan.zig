@@ -214,7 +214,7 @@ test "scanDirectoryThreadSafe - discovers and sorts images, ignores non-images" 
         for (batch.items) |*ev| ev.deinit(allocator);
         batch.deinit(allocator);
     }
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
 
     try std.testing.expect(batch.items.len > 0);
     // Verify first event is 000_0_1024x682.jpg
@@ -260,7 +260,7 @@ test "pathScanWorker - directory scan result event generation" {
         for (batch.items) |*ev| ev.deinit(allocator);
         batch.deinit(allocator);
     }
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
 
     try std.testing.expectEqual(@as(usize, 1), batch.items.len);
     switch (batch.items[0]) {
@@ -301,7 +301,7 @@ test "pathScanWorker - directory scan result event generation" {
     _ = workers.active_threads.fetchAdd(1, .monotonic);
     pathScanWorker(stale_args);
     try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }
 
@@ -419,7 +419,7 @@ test "pathScanWorker cooperative cancellation cleans up scan_arena" {
 
     try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
     try std.testing.expect(dir_canceller.alloc_count >= 3);
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 
     // 2. CBZ archive scan mid-scan cooperative cancellation:
@@ -451,6 +451,6 @@ test "pathScanWorker cooperative cancellation cleans up scan_arena" {
 
     try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
     try std.testing.expect(cbz_canceller.alloc_count >= 3);
-    try workers.event_queue.drain(allocator, io, &batch);
+    workers.event_queue.drain(io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }

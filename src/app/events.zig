@@ -29,10 +29,7 @@ const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 /// otherwise `false`.
 pub fn drainWorkerEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
-    state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch |err| {
-        std.log.err("Failed to drain worker event queue: {}", .{err});
-        return false;
-    };
+    state.workers.event_queue.drain(state.io, &state.event_batch);
     if (state.event_batch.items.len == 0) return false;
 
     var destroyed_full_surface = state.display.isHidden();

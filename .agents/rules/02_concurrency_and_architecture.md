@@ -124,8 +124,10 @@
     creations/releases MUST execute on the main thread.
   - Workers decode into CPU `sdl.Surface` handles and push `BackgroundEvent`
     items into `workers.event_queue` (`MpscQueue`), followed by
-    `context.wakeUpMainThread()`. Disown transferred pointers before
-    `defer evt.deinit()`.
+    `context.wakeUpMainThread()`. `drainWorkerEvents` clears `state.event_batch`
+    and calls infallible `MpscQueue.drain(io, &batch)` to swap backing
+    `ArrayList` headers in O(1) without allocation or copying. Disown
+    transferred pointers before `defer evt.deinit()`.
 - **Non-Recursive Mutex Safety**:
   - Always unlock `std.Io.Mutex` via `defer mutex.unlock(io)` and never re-enter
     the same mutex on the same call stack.

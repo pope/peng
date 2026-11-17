@@ -329,19 +329,19 @@ pub fn MpscQueue(comptime T: type) type {
             _ = self.pending_count.fetchAdd(1, .release);
         }
 
-        /// Atomically transfers all currently queued items into `out_list` and
-        /// clears the internal queue buffer.
+        /// Atomically swaps all queued items into an empty `out_list`, reusing
+        /// backing capacities across frames without allocation or element
+        /// copying.
         pub fn drain(
             self: *Self,
-            allocator: std.mem.Allocator,
             io: std.Io,
             out_list: *std.ArrayList(T),
-        ) !void {
+        ) void {
+            std.debug.assert(out_list.items.len == 0);
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             if (self.items.items.len == 0) return;
-            try out_list.appendSlice(allocator, self.items.items);
-            self.items.clearRetainingCapacity();
+            std.mem.swap(std.ArrayList(T), &self.items, out_list);
             self.pending_count.store(0, .release);
         }
 
@@ -364,20 +364,35 @@ test "MpscQueue push and drain" {
     var queue = MpscQueue(i32).init();
     defer queue.deinit(allocator, io);
 
+    try std.testing.expect(!queue.hasPending());
     try queue.push(allocator, io, 10);
     try queue.push(allocator, io, 20);
+    try std.testing.expect(queue.hasPending());
 
     var batch: std.ArrayList(i32) = .empty;
     defer batch.deinit(allocator);
+    try batch.ensureTotalCapacity(allocator, 8);
+    const initial_batch_cap = batch.capacity;
 
-    try queue.drain(allocator, io, &batch);
+    queue.drain(io, &batch);
+    try std.testing.expect(!queue.hasPending());
     try std.testing.expectEqual(@as(usize, 2), batch.items.len);
     try std.testing.expectEqual(@as(i32, 10), batch.items[0]);
     try std.testing.expectEqual(@as(i32, 20), batch.items[1]);
+    // Pre-allocated batch capacity swapped into queue.items for reuse.
+    try std.testing.expectEqual(initial_batch_cap, queue.items.capacity);
 
     batch.clearRetainingCapacity();
-    try queue.drain(allocator, io, &batch);
+    queue.drain(io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
+
+    // Second push+drain cycle swaps capacities back without allocation.
+    try queue.push(allocator, io, 30);
+    queue.drain(io, &batch);
+    try std.testing.expect(!queue.hasPending());
+    try std.testing.expectEqual(@as(usize, 1), batch.items.len);
+    try std.testing.expectEqual(@as(i32, 30), batch.items[0]);
+    try std.testing.expectEqual(initial_batch_cap, batch.capacity);
 }
 
 test "Generational.resolve validates generation counter" {

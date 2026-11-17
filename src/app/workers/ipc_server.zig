@@ -241,7 +241,7 @@ test "acceptIpcConnections - accepts command and exits cleanly on wakeup" {
         batch.deinit(allocator);
     }
     while (batch.items.len == 0) {
-        try workers.event_queue.drain(allocator, io, &batch);
+        workers.event_queue.drain(io, &batch);
         if (batch.items.len == 0) std.Thread.yield() catch {};
     }
 
