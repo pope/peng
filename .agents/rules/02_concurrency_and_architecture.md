@@ -168,7 +168,7 @@
     frame in `sysSyncMetrics` into `ViewerStats`.
   - Wrap generational worker payloads in `SlotBound(T)`
     (`resolve(&state.cache)`) or `Generational(T)` (`resolve(&generation)`)
-    (`src/core/events.zig`) and construct `CancellationToken`
+    (`src/app/workers/events.zig`) and construct `CancellationToken`
     (`src/app/workers/context.zig`) via `args.cancelToken()` so stale epoch
     validation and cooperative cancellation are enforced at the type boundary.
     Cancellation is three-tiered: application shutdown (`exiting`), global

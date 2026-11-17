@@ -7,10 +7,11 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
+const workers = @import("workers/root.zig");
 
 const AppState = app_state.AppState;
 const EntryScanState = vfs.EntryScanState;
-const events = core.events;
+const events = workers.events;
 const image = core.image;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;

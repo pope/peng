@@ -7,6 +7,7 @@
 const builtin = @import("builtin");
 pub const context = @import("context.zig");
 pub const decode = @import("decode.zig");
+pub const events = @import("events.zig");
 pub const ipc_server = @import("ipc_server.zig");
 pub const manager = @import("manager.zig");
 pub const palette_scan = @import("palette_scan.zig");
@@ -16,6 +17,7 @@ const sdl = @import("sdl");
 const std = @import("std");
 pub const stdin = @import("stdin.zig");
 
+pub const BackgroundEvent = events.BackgroundEvent;
 pub const DecodeArgs = decode.DecodeArgs;
 pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
@@ -157,6 +159,7 @@ test "spawnIpcServer does not mark WorkerManager as busy" {
 test {
     _ = context;
     _ = decode;
+    _ = events;
     _ = ipc_server;
     _ = manager;
     _ = palette_scan;

@@ -5,6 +5,7 @@
 
 const context = @import("context.zig");
 const core = @import("core");
+const events = @import("events.zig");
 const geom = @import("geom");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -14,8 +15,8 @@ const thumbcache = @import("thumbcache");
 
 const EnabledThumbCacheConfig = thumbcache.EnabledThumbCacheConfig;
 const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
-const events = core.events;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
+const MpscQueue = core.MpscQueue;
 const PhysicalDims = geom.PhysicalDims;
 const PrecacheCancel = thumbcache.PrecacheCancel;
 const precacheFileThumbnail = thumbcache.precacheFileThumbnail;
@@ -88,7 +89,7 @@ pub const WorkerManager = struct {
 
     /// Thread-safe multi-producer single-consumer queue for
     /// background-to-main-thread event transport.
-    event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
+    event_queue: MpscQueue(events.BackgroundEvent) = .{},
 
     /// Encapsulated task group managing all spawned background worker threads
     /// under Zig 0.17 `std.Io`.

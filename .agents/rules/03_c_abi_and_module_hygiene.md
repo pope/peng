@@ -79,7 +79,7 @@
     `*const AppState` (compiled statically by default, or as a hot-reloadable
     shared library `viewer` / `libviewer` when built with `-Dhot_reload=true`).
 - **Engine Core (`src/core/`)**:
-  - State-free utilities (`display.zig`, `events.zig`, `image.zig`,
+  - State-free utilities (`display.zig`, `image.zig`, `mpsc_queue.zig`,
     `thumbcache.zig`) live in `src/core/`.
   - **Acyclic Dependency Invariant**: Pure modules (`geom`, `probe`, `vfs`,
     `triage`, `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`,

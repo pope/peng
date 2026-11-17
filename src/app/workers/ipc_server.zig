@@ -1,11 +1,11 @@
 const builtin = @import("builtin");
 const context = @import("context.zig");
-const core = @import("core");
+const events = @import("events.zig");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
 const std = @import("std");
 
-const BackgroundEvent = core.events.BackgroundEvent;
+const BackgroundEvent = events.BackgroundEvent;
 const WorkerManager = manager.WorkerManager;
 
 /// Thread arguments for spawning the background IPC server.

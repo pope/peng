@@ -231,7 +231,6 @@ pub fn build(b: *std.Build) void {
         "src/core/root.zig",
         &.{
             .{ .name = "geom", .module = geom_module },
-            .{ .name = "ipc", .module = ipc_module },
             .{ .name = "probe", .module = probe_module },
             .{ .name = "sdl", .module = sdl_module },
             .{ .name = "state", .module = state_module },

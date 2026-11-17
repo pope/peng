@@ -12,9 +12,9 @@ const vfs = @import("vfs");
 const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
+const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = image.CacheEntry;
 const DisplayState = core.display.DisplayState;
-const events = core.events;
 const getParentDirBuf = vfs.getParentDirBuf;
 const image = core.image;
 const ImageCache = image.ImageCache;
@@ -68,7 +68,7 @@ pub const AppState = struct {
     upload_staging: UploadStagingBuffer = .{},
 
     /// Queues
-    event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
+    event_batch: std.ArrayList(BackgroundEvent) = .empty,
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
     pending_selection_streams: std.ArrayList(std.Io.net.Stream) = .empty,
     pending_wait_load_streams: std.ArrayList(std.Io.net.Stream) = .empty,

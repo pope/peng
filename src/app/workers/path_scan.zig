@@ -1,12 +1,11 @@
 const context = @import("context.zig");
-const core = @import("core");
+const events = @import("events.zig");
 const manager = @import("manager.zig");
 const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
 
 const CancelCheck = vfs.CancelCheck;
-const events = core.events;
 const MediaEntry = vfs.MediaEntry;
 const scanDirectoryMediaEntries = vfs.scanDirectoryMediaEntries;
 const scanTargetMediaEntries = vfs.scanTargetMediaEntries;
