@@ -63,8 +63,9 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
     bypasses safety checks in ReleaseFast).
   - Model mutually exclusive states (`SlideshowMode`, `ScrollCadence`,
     `DisplayState`, `DisplayBackend`, `ResidentAsset`, `ThumbnailState`,
-    `RawMetadata`, `ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`,
-    `ImageTransition`, `BlurResources`, `RetainedResource`) via `union(enum)` and
+    `InFlightState`, `RawMetadata`, `ArchiveTelemetry`, `UploadMode`,
+    `MipmapTelemetry`, `ImageTransition`, `BlurResources`,
+    `RetainedResource`) via `union(enum)` and
     validation constructors (`PhysicalDims.initPositive`), never loose booleans,
     `0`/`0.0` dimension sentinels, interdependent optionals, or optional-surface
     event multiplexing (`dimensions_probed` vs `thumb_decoded`). Keep multi-role

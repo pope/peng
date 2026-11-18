@@ -35,10 +35,9 @@ fn togglePairStream(self: *AppState, now_ms: u64) void {
     const key = self.cache.activeKey(cur_id);
     const entry = self.cache.get(key) orelse return;
     if (!entry.resident.asset.isLoaded()) return;
-    if (entry.inflight) |inf| {
-        if (inf.has_thread) {
-            self.cache.cancelJob(inf.job_id);
-        }
+    switch (entry.inflight) {
+        .decoding => |dec| self.cache.cancelJob(dec.ticket.job_id),
+        .idle, .queued_decode, .uploading => {},
     }
     switch (entry.resident.asset) {
         .promoting_gpu => |*promo| {
@@ -60,9 +59,10 @@ fn togglePairStream(self: *AppState, now_ms: u64) void {
     };
     showCustomSnackbar(self, msg, now_ms);
     entry.inflight = .{
-        .stage = .decoding,
-        .start_time_ms = now_ms,
-        .target = target,
+        .queued_decode = .{
+            .start_time_ms = now_ms,
+            .target = target,
+        },
     };
 }
 
@@ -1000,7 +1000,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     const key = try app_st.cache.appendSlot(
         allocator,
         id0,
-        .{ .inflight = .{} },
+        .{},
     );
     app_st.cache.get(key).?.metadata.orientation = .rotate_270;
 
@@ -1333,11 +1333,14 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     defer {
         if (app_st.cache.get(key0)) |e| {
             e.resident.asset = .none;
-            e.inflight = .{ .has_thread = false };
+            e.inflight = .idle;
         }
     }
+    const ticket1 = app_st.cache.allocJob().?;
     _ = try app_st.cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket1 },
+        },
     });
 
     try app_st.pushIntent(.next_image);
@@ -1605,10 +1608,15 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
         "Stream: Standalone JPEG",
         app_st.viewer.ui.snackbar.getMessage(),
     );
-    try testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        app_st.cache.get(key).?.inflight.?.target,
-    );
+    switch (app_st.cache.get(key).?.inflight) {
+        .queued_decode => |q| try testing.expectEqual(
+            PairStreamTarget.standalone_jpeg,
+            q.target,
+        ),
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
 }
 
 test "sysExecuteIntents - refresh avoids aliasing and uses archive source" {
@@ -1710,21 +1718,29 @@ test "togglePairStream - requires loaded status before requesting target" {
     app_st.viewer.navigation.current_index = 0;
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
 
+    const ticket0 = app_st.cache.allocJob().?;
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
     const entry0 = app_st.cache.get(key0).?;
     entry0.metadata.raw_metadata = RawMetadata.init(6000, 4000);
 
     // 1. While inflight, toggle_pair_stream must be ignored.
     try executeIntent(&app_st, .toggle_pair_stream, 1000);
-    try std.testing.expectEqual(
-        @as(?PairStreamTarget, .adaptive),
-        if (entry0.inflight) |inf| inf.target else null,
-    );
+    switch (entry0.inflight) {
+        .decoding => |d| try std.testing.expectEqual(
+            PairStreamTarget.adaptive,
+            d.target,
+        ),
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 
     // 2. Once .loaded_gpu, toggle_pair_stream sets inflight target.
-    entry0.inflight = null;
+    app_st.cache.setInFlight(key0, .idle);
     entry0.resident.asset = .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
@@ -1735,10 +1751,15 @@ test "togglePairStream - requires loaded status before requesting target" {
         },
     };
     try executeIntent(&app_st, .toggle_pair_stream, 1000);
-    try std.testing.expectEqual(
-        @as(?PairStreamTarget, .standalone_jpeg),
-        if (entry0.inflight) |inf| inf.target else null,
-    );
+    switch (entry0.inflight) {
+        .queued_decode => |q| try std.testing.expectEqual(
+            PairStreamTarget.standalone_jpeg,
+            q.target,
+        ),
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
 }
 
 test "executeIntent - navigating onto failed slide skips crossfade" {
@@ -1762,7 +1783,7 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
     const id1_failed = app_st.viewer.navigation.getIdAt(1).?;
 
     _ = try app_st.cache.appendSlot(allocator, id0_failed, .{
-        .inflight = .{ .has_thread = false },
+        .inflight = .{ .queued_decode = .{} },
     });
     _ = try app_st.cache.appendSlot(allocator, id1_failed, .{
         .resident = .{ .asset = .failed },
@@ -1838,7 +1859,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     // Slide 0: 4000x2000 unrotated -> in 1024x768 headless viewport,
     // base scale is 1024/4000 = 0.256
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = false },
+        .inflight = .{ .queued_decode = .{} },
     });
     const entry0 = app_st.cache.get(key0).?;
     entry0.metadata.full_dims = .{ .w = 4000, .h = 2000 };
@@ -1847,7 +1868,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     // Slide 1: 4000x2000 with EXIF 90 deg rotation -> rotated dims 2000x4000,
     // base scale is 768/4000 = 0.192
     const key1 = try app_st.cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = false },
+        .inflight = .{ .queued_decode = .{} },
     });
     const entry1 = app_st.cache.get(key1).?;
     entry1.metadata.full_dims = .{ .w = 4000, .h = 2000 };
@@ -2088,11 +2109,10 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
             },
         },
         .inflight = .{
-            .stage = .decoding,
-            .has_thread = true,
-            .target = .raw_preview,
-            .job_id = ticket.job_id,
-            .job_epoch = ticket.epoch,
+            .decoding = .{
+                .target = .raw_preview,
+                .ticket = ticket,
+            },
         },
         .metadata = .{
             .raw_metadata = RawMetadata.init(6000, 4000),
@@ -2113,12 +2133,18 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
     try std.testing.expectEqual(@as(u16, 0), app_st.cache.job_alloc_mask);
 
     // New inflight task is queued with opposite stream target
-    const updated = app_st.cache.get(key).?.inflight.?;
-    try std.testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        updated.target,
-    );
-    try std.testing.expectEqual(@as(u64, 1000), updated.start_time_ms);
+    switch (app_st.cache.get(key).?.inflight) {
+        .queued_decode => |q| {
+            try std.testing.expectEqual(
+                PairStreamTarget.standalone_jpeg,
+                q.target,
+            );
+            try std.testing.expectEqual(@as(u64, 1000), q.start_time_ms);
+        },
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
 }
 
 test "togglePairStream - clears staged promoting_gpu without blanking" {
@@ -2182,12 +2208,18 @@ test "togglePairStream - clears staged promoting_gpu without blanking" {
             return error.TestExpectedLoadedGpu;
         },
     }
-    try std.testing.expect(entry.inflight != null);
-    try std.testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        entry.inflight.?.target,
-    );
-    try std.testing.expectEqual(@as(u64, 2000), entry.inflight.?.start_time_ms);
+    switch (entry.inflight) {
+        .queued_decode => |q| {
+            try std.testing.expectEqual(
+                PairStreamTarget.standalone_jpeg,
+                q.target,
+            );
+            try std.testing.expectEqual(@as(u64, 2000), q.start_time_ms);
+        },
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
 }
 
 test "executeIntent - start_slideshow opens prompt and clamps interval" {

@@ -161,25 +161,24 @@ fn takeStagedCpuAsset(
     entry: *CacheEntry,
     now_ms: u64,
 ) ?CpuAsset {
-    switch (entry.resident.asset) {
-        .loaded_cpu => |asset| {
+    const asset = switch (entry.resident.asset) {
+        .loaded_cpu => |cpu_asset| blk: {
             entry.resident.asset = .none;
-            entry.inflight = .{
-                .stage = .uploading,
-                .start_time_ms = now_ms,
-            };
-            return asset;
+            break :blk cpu_asset;
         },
-        .promoting_gpu => |promo| {
+        .promoting_gpu => |promo| blk: {
             entry.resident.asset = .{ .loaded_gpu = promo.active };
-            entry.inflight = .{
-                .stage = .uploading,
-                .start_time_ms = now_ms,
-            };
-            return promo.staged;
+            break :blk promo.staged;
         },
         .loaded_gpu, .none, .failed => return null,
+    };
+    switch (entry.inflight) {
+        .idle => entry.inflight = .{
+            .uploading = .{ .start_time_ms = now_ms },
+        },
+        .queued_decode, .decoding, .uploading => {},
     }
+    return asset;
 }
 
 fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
@@ -430,7 +429,10 @@ fn completeGpuUpload(
             .decode = asset.cpu.decode,
             .ingest = res.ingest,
         }, gpu_dev);
-        entry.inflight = null;
+        switch (entry.inflight) {
+            .uploading => entry.inflight = .idle,
+            .idle, .queued_decode, .decoding => {},
+        }
         entry.resident.thumbnail.markNotAvailableIfUnresolved();
         break :blk prev_gpu;
     };
@@ -507,7 +509,11 @@ fn checkLoadedGpuCrossfade(
 
 fn handleGpuUploadFailure(state: *AppState, target_key: ImageCacheKey) void {
     const entry = state.cache.get(target_key) orelse return;
-    entry.inflight = null;
+    switch (entry.inflight) {
+        .uploading => entry.inflight = .idle,
+        .idle => {},
+        .queued_decode, .decoding => return,
+    }
     switch (entry.resident.asset) {
         .loaded_gpu, .loaded_cpu, .promoting_gpu => {},
         .none, .failed => {
@@ -640,7 +646,7 @@ test "prepareCacheTextures - uploads loaded_cpu without double free" {
             return error.TestExpectedLoadedGpu;
         },
     }
-    try std.testing.expect(entry.inflight == null);
+    try std.testing.expect(entry.inflight.isIdle());
 }
 
 test "completeGpuUpload - enqueues thumb write before swapRemove" {
@@ -703,7 +709,7 @@ test "completeGpuUpload - enqueues thumb write before swapRemove" {
 
     // Slot 1 (tail of state.cache.slots): active index 5 being uploaded
     const key5 = try state.cache.appendSlot(allocator, id5, .{
-        .inflight = .{ .stage = .uploading },
+        .inflight = .{ .uploading = .{} },
     });
 
     const surf = sdl.Surface.create(32, 24, sdl.PixelFormat.rgba32) orelse
@@ -1073,4 +1079,567 @@ test "sysProcessAssetUploads - stamps and decays oversized staging buffer" {
         .unallocated => {},
         .allocated => return error.TestExpectedUnallocatedTransfer,
     }
+}
+
+test "toggle_pair_stream on loaded_cpu survives GPU upload and failure" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const intents_sys = @import("intents.zig");
+    const probe_pkg = @import("probe");
+    const vfs_pkg = @import("vfs");
+
+    // 1. Headless verification of takeStagedCpuAsset -> completeGpuUpload and
+    //    takeStagedCpuAsset -> handleGpuUploadFailure with .queued_decode
+    {
+        var state = try AppState.initHeadless(allocator, io);
+        defer state.deinit();
+
+        const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+        const raw_p = try dir_alloc.dupe(u8, "shot0.arw");
+        const jpg_p = try dir_alloc.dupe(u8, "shot0.jpg");
+        _ = try state.viewer.navigation.appendEntry(allocator, .{
+            .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p },
+        });
+        const raw_p1 = try dir_alloc.dupe(u8, "shot1.arw");
+        const jpg_p1 = try dir_alloc.dupe(u8, "shot1.jpg");
+        _ = try state.viewer.navigation.appendEntry(allocator, .{
+            .pair = .{ .raw_path = raw_p1, .jpeg_path = jpg_p1 },
+        });
+        state.viewer.navigation.current_index = 0;
+
+        const id0 = state.viewer.navigation.getIdAt(0).?;
+        const id1 = state.viewer.navigation.getIdAt(1).?;
+        const surf0 = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse
+            return;
+        const key0 = state.cache.appendSlot(allocator, id0, .{
+            .metadata = .{
+                .raw_metadata = probe_pkg.RawMetadata.init(6000.0, 4000.0),
+            },
+            .resident = .{
+                .asset = .{
+                    .loaded_cpu = .{
+                        .cpu = .{
+                            .surface = surf0,
+                            .w = 32.0,
+                            .h = 32.0,
+                            .size_bytes = 32 * 32 * 4,
+                        },
+                    },
+                },
+            },
+        }) catch |err| {
+            surf0.destroy();
+            return err;
+        };
+
+        try state.pushIntent(.toggle_pair_stream);
+        try intents_sys.sysExecuteIntents(.{
+            .state = &state,
+            .frame_allocator = allocator,
+            .now_ms = 1000,
+        });
+
+        const asset0 = takeStagedCpuAsset(state.cache.get(key0).?, 1005).?;
+        var transferred0 = false;
+        defer if (!transferred0) asset0.cpu.surface.destroy();
+
+        const stub = CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 32.0, .h = 32.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        );
+        const dummy_tex = switch (stub.resident.asset) {
+            .loaded_gpu => |g| g.gpu_texture,
+            .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
+        };
+        completeGpuUpload(
+            &state,
+            key0,
+            &asset0,
+            .{
+                .gpu_texture = dummy_tex,
+                .w = 32.0,
+                .h = 32.0,
+                .ingest = .{ .upload_time_ms = 0.1, .memory_size_bytes = 4096 },
+            },
+            null,
+            ImageCache.DEFAULT_MAX_VRAM_BYTES,
+            &transferred0,
+        );
+
+        switch (state.cache.get(key0).?.inflight) {
+            .queued_decode => |q| {
+                try std.testing.expectEqual(@as(u64, 1000), q.start_time_ms);
+                try std.testing.expectEqual(
+                    vfs_pkg.PairStreamTarget.standalone_jpeg,
+                    q.target,
+                );
+            },
+            .idle, .decoding, .uploading => {
+                return error.TestExpectedQueuedDecode;
+            },
+        }
+
+        // Failure path on a .loaded_cpu + .queued_decode slot preserves queue
+        const surf1 = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+            return;
+        const thumb1 = sdl.Surface.create(8, 8, sdl.PixelFormat.rgba32) orelse {
+            surf1.destroy();
+            return;
+        };
+        const key1 = state.cache.appendSlot(allocator, id1, .{
+            .resident = .{
+                .thumbnail = .{
+                    .staged_cpu = .{ .surface = thumb1 },
+                },
+                .asset = .{
+                    .loaded_cpu = .{
+                        .cpu = .{
+                            .surface = surf1,
+                            .w = 16.0,
+                            .h = 16.0,
+                            .size_bytes = 16 * 16 * 4,
+                        },
+                    },
+                },
+            },
+            .inflight = .{
+                .queued_decode = .{
+                    .start_time_ms = 2500,
+                    .target = .raw_preview,
+                },
+            },
+        }) catch |err| {
+            surf1.destroy();
+            thumb1.destroy();
+            return err;
+        };
+        state.viewer.navigation.current_index = 1;
+        state.viewer.image_transition = .{
+            .active = .{ .prev_index = 0, .prev_rotation = 0.0 },
+        };
+        const asset1 = takeStagedCpuAsset(state.cache.get(key1).?, 2510).?;
+        defer asset1.cpu.surface.destroy();
+        handleGpuUploadFailure(&state, key1);
+
+        const entry1 = state.cache.get(key1).?;
+        switch (entry1.resident.asset) {
+            .none => {},
+            .loaded_cpu, .loaded_gpu, .promoting_gpu, .failed => {
+                return error.TestExpectedNoneAsset;
+            },
+        }
+        try std.testing.expect(entry1.resident.thumbnail.isStagedCpu());
+        switch (state.viewer.image_transition) {
+            .active => {},
+            .none => return error.TestExpectedActiveTransition,
+        }
+        switch (entry1.inflight) {
+            .queued_decode => |q| {
+                try std.testing.expectEqual(@as(u64, 2500), q.start_time_ms);
+                try std.testing.expectEqual(
+                    vfs_pkg.PairStreamTarget.raw_preview,
+                    q.target,
+                );
+            },
+            .idle, .decoding, .uploading => {
+                return error.TestExpectedQueuedDecode;
+            },
+        }
+        try std.testing.expect(state.isCurrentSlideLoading());
+        try std.testing.expect(!state.isWaitLoadReady());
+
+        // Failure while .uploading clears inflight and transitions to .failed
+        entry1.inflight = .{ .uploading = .{ .start_time_ms = 2600 } };
+        handleGpuUploadFailure(&state, key1);
+        try std.testing.expect(entry1.inflight.isIdle());
+        switch (entry1.resident.asset) {
+            .failed => {},
+            .none, .loaded_cpu, .loaded_gpu, .promoting_gpu => {
+                return error.TestExpectedFailedAsset;
+            },
+        }
+        switch (entry1.resident.thumbnail) {
+            .not_available => {},
+            .none, .pending, .staged_cpu, .unloaded, .loaded => {
+                return error.TestExpectedUnavailableThumb;
+            },
+        }
+        switch (state.viewer.image_transition) {
+            .none => {},
+            .active => return error.TestExpectedNoneTransition,
+        }
+        try std.testing.expect(!state.isCurrentSlideLoading());
+        try std.testing.expect(state.isWaitLoadReady());
+    }
+
+    // 2. End-to-end GPU sysExecuteIntents -> sysProcessAssetUploads
+    _ = sdl.init(sdl.init_flags.video);
+    defer sdl.quit();
+
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var state = try AppState.initHeadless(allocator, io);
+    state.gpu_device = dev;
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const raw_p = try dir_alloc.dupe(u8, "gpu_shot.arw");
+    const jpg_p = try dir_alloc.dupe(u8, "gpu_shot.jpg");
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p },
+    });
+    state.viewer.navigation.current_index = 0;
+
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const surf = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse
+        return;
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .metadata = .{
+            .raw_metadata = probe_pkg.RawMetadata.init(6000.0, 4000.0),
+        },
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 64.0,
+                        .h = 64.0,
+                        .size_bytes = 64 * 64 * 4,
+                    },
+                },
+            },
+        },
+    });
+
+    try state.pushIntent(.toggle_pair_stream);
+    try intents_sys.sysExecuteIntents(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 3000,
+    });
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 3000,
+    });
+
+    const entry0 = state.cache.get(key0).?;
+    switch (entry0.resident.asset) {
+        .loaded_gpu => {},
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    }
+    switch (entry0.inflight) {
+        .queued_decode => |q| {
+            try std.testing.expectEqual(@as(u64, 3000), q.start_time_ms);
+            try std.testing.expectEqual(
+                vfs_pkg.PairStreamTarget.standalone_jpeg,
+                q.target,
+            );
+        },
+        .idle, .decoding, .uploading => return error.TestExpectedQueuedDecode,
+    }
+}
+
+test "neighbor loaded_cpu with decoding ticket preserves ticket on upload" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const events_mod = @import("../events.zig");
+    const vfs_pkg = @import("vfs");
+
+    // 1. Headless verification of completeGpuUpload and handleGpuUploadFailure
+    {
+        var state = try AppState.initHeadless(allocator, io);
+        defer state.deinit();
+
+        const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+        const p0 = try dir_alloc.dupe(u8, "n0.jpg");
+        const p1 = try dir_alloc.dupe(u8, "n1.jpg");
+        _ = try state.viewer.navigation.appendEntry(allocator, .{
+            .filesystem = .{ .path = p0 },
+        });
+        _ = try state.viewer.navigation.appendEntry(allocator, .{
+            .filesystem = .{ .path = p1 },
+        });
+        state.viewer.navigation.current_index = 1;
+
+        const id0 = state.viewer.navigation.getIdAt(0).?;
+        const id1 = state.viewer.navigation.getIdAt(1).?;
+        const ticket0 = state.cache.allocJob().?;
+        const surf0 = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse
+            return;
+        const key0 = state.cache.appendSlot(allocator, id0, .{
+            .resident = .{
+                .asset = .{
+                    .loaded_cpu = .{
+                        .cpu = .{
+                            .surface = surf0,
+                            .w = 32.0,
+                            .h = 32.0,
+                            .size_bytes = 32 * 32 * 4,
+                        },
+                    },
+                },
+            },
+            .inflight = .{
+                .decoding = .{
+                    .start_time_ms = 555,
+                    .target = .standalone_jpeg,
+                    .ticket = ticket0,
+                },
+            },
+        }) catch |err| {
+            surf0.destroy();
+            return err;
+        };
+
+        const ticket1 = state.cache.allocJob().?;
+        const surf1 = sdl.Surface.create(24, 24, sdl.PixelFormat.rgba32) orelse
+            return;
+        const key1 = state.cache.appendSlot(allocator, id1, .{
+            .resident = .{
+                .asset = .{
+                    .loaded_cpu = .{
+                        .cpu = .{
+                            .surface = surf1,
+                            .w = 24.0,
+                            .h = 24.0,
+                            .size_bytes = 24 * 24 * 4,
+                        },
+                    },
+                },
+            },
+            .inflight = .{
+                .decoding = .{
+                    .start_time_ms = 777,
+                    .target = .raw_preview,
+                    .ticket = ticket1,
+                },
+            },
+        }) catch |err| {
+            surf1.destroy();
+            return err;
+        };
+
+        // Upload completion on slot 0 preserves .decoding and ticket0
+        const asset0 = takeStagedCpuAsset(state.cache.get(key0).?, 2000).?;
+        var transferred0 = false;
+        defer if (!transferred0) asset0.cpu.surface.destroy();
+
+        const stub = CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 32.0, .h = 32.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        );
+        const dummy_tex = switch (stub.resident.asset) {
+            .loaded_gpu => |g| g.gpu_texture,
+            .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
+        };
+        completeGpuUpload(
+            &state,
+            key0,
+            &asset0,
+            .{
+                .gpu_texture = dummy_tex,
+                .w = 32.0,
+                .h = 32.0,
+                .ingest = .{ .upload_time_ms = 0.1, .memory_size_bytes = 4096 },
+            },
+            null,
+            ImageCache.DEFAULT_MAX_VRAM_BYTES,
+            &transferred0,
+        );
+
+        switch (state.cache.get(key0).?.inflight) {
+            .decoding => |dec| {
+                try std.testing.expectEqual(@as(u64, 555), dec.start_time_ms);
+                try std.testing.expectEqual(
+                    vfs_pkg.PairStreamTarget.standalone_jpeg,
+                    dec.target,
+                );
+                try std.testing.expectEqual(ticket0, dec.ticket);
+            },
+            .idle, .queued_decode, .uploading => {
+                return error.TestExpectedDecoding;
+            },
+        }
+
+        // Upload failure on slot 1 preserves .decoding and ticket1
+        const asset1 = takeStagedCpuAsset(state.cache.get(key1).?, 2005).?;
+        defer asset1.cpu.surface.destroy();
+        handleGpuUploadFailure(&state, key1);
+
+        const entry1_after_fail = state.cache.get(key1).?;
+        switch (entry1_after_fail.resident.asset) {
+            .none => {},
+            .loaded_cpu, .loaded_gpu, .promoting_gpu, .failed => {
+                return error.TestExpectedNoneAsset;
+            },
+        }
+        switch (entry1_after_fail.inflight) {
+            .decoding => |dec| {
+                try std.testing.expectEqual(@as(u64, 777), dec.start_time_ms);
+                try std.testing.expectEqual(
+                    vfs_pkg.PairStreamTarget.raw_preview,
+                    dec.target,
+                );
+                try std.testing.expectEqual(ticket1, dec.ticket);
+            },
+            .idle, .queued_decode, .uploading => {
+                return error.TestExpectedDecoding;
+            },
+        }
+        try std.testing.expect(state.isCurrentSlideLoading());
+        try std.testing.expect(!state.isWaitLoadReady());
+
+        // Worker completions release both tickets -> job_alloc_mask == 0
+        const dec_surf0 =
+            sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+        try state.workers.event_queue.push(allocator, io, .{
+            .image_decoded = .init(key0, ticket0.epoch, .{
+                .surface = dec_surf0,
+                .w = 64.0,
+                .h = 64.0,
+                .size_bytes = 64 * 64 * 4,
+                .mime_type = "image/jpeg",
+                .orientation = .normal,
+                .raw_metadata = .none,
+                .decode = .{},
+            }),
+        });
+        const dec_surf1 =
+            sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+        try state.workers.event_queue.push(allocator, io, .{
+            .image_decoded = .init(key1, ticket1.epoch, .{
+                .surface = dec_surf1,
+                .w = 64.0,
+                .h = 64.0,
+                .size_bytes = 64 * 64 * 4,
+                .mime_type = "image/jpeg",
+                .orientation = .normal,
+                .raw_metadata = .none,
+                .decode = .{},
+            }),
+        });
+        try std.testing.expect(events_mod.drainWorkerEvents(&state));
+        try std.testing.expect(state.cache.get(key0).?.inflight.isIdle());
+        try std.testing.expect(state.cache.get(key1).?.inflight.isIdle());
+        try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
+    }
+
+    // 2. End-to-end GPU sysProcessAssetUploads on neighbor + drainWorkerEvents
+    _ = sdl.init(sdl.init_flags.video);
+    defer sdl.quit();
+
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var state = try AppState.initHeadless(allocator, io);
+    state.gpu_device = dev;
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const p0 = try dir_alloc.dupe(u8, "gpu_neighbor.arw");
+    const p1 = try dir_alloc.dupe(u8, "gpu_active.jpg");
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = p0 },
+    });
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = p1 },
+    });
+    state.viewer.navigation.current_index = 1;
+
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const id1 = state.viewer.navigation.getIdAt(1).?;
+    const active_surf =
+        sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse return;
+    _ = try state.cache.appendSlot(allocator, id1, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = active_surf,
+                        .w = 32.0,
+                        .h = 32.0,
+                        .size_bytes = 32 * 32 * 4,
+                    },
+                },
+            },
+        },
+    });
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    });
+
+    const ticket0 = state.cache.allocJob().?;
+    const neighbor_surf =
+        sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse return;
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = neighbor_surf,
+                        .w = 32.0,
+                        .h = 32.0,
+                        .size_bytes = 32 * 32 * 4,
+                    },
+                },
+            },
+        },
+        .inflight = .{
+            .decoding = .{
+                .start_time_ms = 1000,
+                .target = .standalone_jpeg,
+                .ticket = ticket0,
+            },
+        },
+    });
+
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1016,
+    });
+
+    const entry0 = state.cache.get(key0).?;
+    switch (entry0.resident.asset) {
+        .loaded_gpu => {},
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    }
+    switch (entry0.inflight) {
+        .decoding => |dec| try std.testing.expectEqual(ticket0, dec.ticket),
+        .idle, .queued_decode, .uploading => return error.TestExpectedDecoding,
+    }
+
+    const dec_surf =
+        sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .init(key0, ticket0.epoch, .{
+            .surface = dec_surf,
+            .w = 64.0,
+            .h = 64.0,
+            .size_bytes = 64 * 64 * 4,
+            .mime_type = "image/jpeg",
+            .orientation = .normal,
+            .raw_metadata = .none,
+            .decode = .{},
+        }),
+    });
+    try std.testing.expect(events_mod.drainWorkerEvents(&state));
+    try std.testing.expect(state.cache.get(key0).?.inflight.isIdle());
+    try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
 }

@@ -19,6 +19,7 @@ const DecodeMode = workers_mod.DecodeMode;
 const DisplayState = core.display.DisplayState;
 const getParentDirBuf = vfs.getParentDirBuf;
 const ImageCache = cache.ImageCache;
+const InFlightState = cache.InFlightState;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
@@ -181,7 +182,7 @@ pub const AppState = struct {
             return false;
         }
         if (self.getCurrentEntry()) |entry| {
-            if (entry.inflight != null) {
+            if (!entry.inflight.isIdle()) {
                 return false;
             }
             return switch (entry.resident.asset) {
@@ -249,7 +250,7 @@ pub const AppState = struct {
             return false;
         const entry = self.cache.getEntry(self.cache.activeKey(cur_id)) orelse
             return false;
-        if (entry.inflight != null) {
+        if (!entry.inflight.isIdle()) {
             return true;
         }
         return switch (entry.resident.asset) {
@@ -869,6 +870,14 @@ pub const AppState = struct {
         pair_target: PairStreamTarget,
         now_ms: u64,
     ) !void {
+        const key = self.cache.activeKey(id);
+        if (self.cache.getEntry(key)) |entry| {
+            switch (entry.inflight) {
+                .idle, .queued_decode => {},
+                .decoding, .uploading => return error.SlotBusy,
+            }
+        }
+
         const ticket = self.cache.allocJob() orelse return error.OutOfMemory;
         errdefer self.cache.cancelJob(ticket.job_id);
 
@@ -884,30 +893,28 @@ pub const AppState = struct {
         const args = try self.allocator.create(workers_mod.DecodeArgs);
         errdefer self.allocator.destroy(args);
 
-        const key = self.cache.activeKey(id);
-        const prev_inflight = if (self.cache.get(key)) |entry|
-            entry.inflight
-        else
-            null;
-        if (self.cache.get(key)) |entry| {
-            if (entry.inflight) |*inf| {
-                inf.has_thread = true;
-                inf.job_id = ticket.job_id;
-                inf.job_epoch = ticket.epoch;
-            } else {
-                entry.inflight = .{
-                    .stage = .decoding,
-                    .has_thread = true,
-                    .start_time_ms = now_ms,
-                    .target = pair_target,
-                    .job_id = ticket.job_id,
-                    .job_epoch = ticket.epoch,
+        const prev_inflight: ?InFlightState =
+            if (self.cache.get(key)) |entry| blk: {
+                const prev = entry.inflight;
+                const start_ms = switch (prev) {
+                    .idle => now_ms,
+                    .queued_decode => |q| q.start_time_ms,
+                    .decoding, .uploading => unreachable,
                 };
-            }
-        }
+                entry.inflight = .{
+                    .decoding = .{
+                        .start_time_ms = start_ms,
+                        .target = pair_target,
+                        .ticket = ticket,
+                    },
+                };
+                break :blk prev;
+            } else null;
         errdefer {
-            if (self.cache.get(key)) |entry| {
-                entry.inflight = prev_inflight;
+            if (prev_inflight) |prev| {
+                if (self.cache.get(key)) |entry| {
+                    entry.inflight = prev;
+                }
             }
         }
 
@@ -1243,7 +1250,7 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     const key = try state.cache.appendSlot(
         std.testing.allocator,
         id0,
-        .{ .inflight = .{} },
+        .{},
     );
     state.cache.get(key).?.metadata.orientation = .rotate_90;
 
@@ -1367,12 +1374,16 @@ test "AppState.openPath spawns immediate decode for single image file" {
     const sample_jpg = "testfiles/images/000_0_1024x682.jpg";
     try state.openPath(sample_jpg);
 
-    // Slot 0 must be appended immediately with .inflight and .has_thread = true
+    // Slot 0 must be appended immediately in .decoding state
     const id0 = state.viewer.navigation.getIdAt(0).?;
     const entry0 = state.cache.get(state.cache.activeKey(id0));
     try std.testing.expect(entry0 != null);
-    try std.testing.expect(entry0.?.inflight != null);
-    try std.testing.expect(entry0.?.inflight.?.has_thread);
+    switch (entry0.?.inflight) {
+        .decoding => {},
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 }
 
 test "AppState.openPath acquires job ticket and epoch for single image" {
@@ -1387,31 +1398,35 @@ test "AppState.openPath acquires job ticket and epoch for single image" {
 
     const id0 = state.viewer.navigation.getIdAt(0).?;
     const entry0 = state.cache.get(state.cache.activeKey(id0)).?;
-    const inf = entry0.inflight.?;
+    const dec = switch (entry0.inflight) {
+        .decoding => |d| d,
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    };
 
-    try std.testing.expect(inf.has_thread);
-    try std.testing.expect(inf.job_id < cache.MAX_DECODE_JOBS);
-    try std.testing.expect(inf.job_epoch >= 1);
+    try std.testing.expect(dec.ticket.job_id < cache.MAX_DECODE_JOBS);
+    try std.testing.expect(dec.ticket.epoch >= 1);
 
-    const job_bit = @as(u16, 1) << @as(u4, @truncate(inf.job_id));
+    const job_bit = @as(u16, 1) << @as(u4, @truncate(dec.ticket.job_id));
     try std.testing.expect((state.cache.job_alloc_mask & job_bit) != 0);
     try std.testing.expectEqual(
-        inf.job_epoch,
-        state.cache.job_epochs[inf.job_id].load(.acquire),
+        dec.ticket.epoch,
+        state.cache.job_epochs[dec.ticket.job_id].load(.acquire),
     );
-    try std.testing.expect(state.cache.validateJobEpoch(0, inf.job_epoch));
+    try std.testing.expect(state.cache.validateJobEpoch(0, dec.ticket.epoch));
 
     // Cancelling the slot 0 job advances its pinned epoch and frees the bit
-    state.cache.cancelJob(inf.job_id);
+    state.cache.cancelJob(dec.ticket.job_id);
     try std.testing.expect((state.cache.job_alloc_mask & job_bit) == 0);
     try std.testing.expectEqual(
-        inf.job_epoch + 1,
-        state.cache.job_epochs[inf.job_id].load(.acquire),
+        dec.ticket.epoch + 1,
+        state.cache.job_epochs[dec.ticket.job_id].load(.acquire),
     );
 
     const reused = state.cache.allocJob().?;
-    try std.testing.expectEqual(inf.job_id, reused.job_id);
-    try std.testing.expectEqual(inf.job_epoch + 1, reused.epoch);
+    try std.testing.expectEqual(dec.ticket.job_id, reused.job_id);
+    try std.testing.expectEqual(dec.ticket.epoch + 1, reused.epoch);
     state.cache.releaseJob(reused.job_id);
 }
 

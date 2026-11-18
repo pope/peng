@@ -55,7 +55,11 @@ ______________________________________________________________________
   - All file header opens, dimension probes, and EXIF orientation reads run exclusively on background `decodeWorker` threads via Stage 1 (`header_probe_limit = 256 * 1024`), eliminating blocking filesystem/archive I/O from `sysUpdateCache` and `executeIntent(.reset_rotation)` (which reads `entry.metadata.orientation` directly from `getCurrentEntry()`, defaulting to `.normal`).
   - When `.speculative_thumb` finds no thumbnail or `.active_fast_scroll` completes Stage 2 full decode, main-thread event handlers set `entry.resident.thumbnail = .not_available` so subsequent frames never re-spawn thumbnail-only probes.
 - **Loading Grace Period (`LOADING_GRACE_PERIOD_MS = 35`)**:
-  When `entry.resident.asset == .none` (or `.inflight`) and no thumbnail is ready, `renderViewport` sizes `ImageCanvas` to `.fixed(draw_w)` / `.fixed(draw_h)` and delays the `"Loading image..."` text until `elapsed >= 35ms` (~2 frames at 60Hz), preventing UI text flashes on fast decodes.
+  When `entry.resident.asset == .none` with an active `InFlightState`
+  (`.queued_decode`, `.decoding`, or `.uploading`) and no thumbnail is ready,
+  `renderViewport` sizes `ImageCanvas` to `.fixed(draw_w)` / `.fixed(draw_h)`
+  and delays the `"Loading image..."` text until `elapsed > 35ms` (~2 frames
+  at 60Hz), preventing UI text flashes on fast decodes.
 - **EXIF APP1 & TIFF Rules**:
   - **APP1 Skipping**: When scanning JPEG markers for main image `SOF0`/`SOF2` dimensions, explicitly skip `APP1` (`0xFF, 0xE1`) segments (`idx += seg_len`) so embedded thumbnail SOF headers are not mistaken for main image dimensions.
   - **Truncated APP1 Tolerance**: Never discard an APP1 segment solely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and TIFF IFD0 headers.

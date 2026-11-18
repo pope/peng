@@ -826,8 +826,8 @@ fn renderImageCanvas(
         },
         .loaded_cpu => {},
         .none => {
-            if (entry.inflight) |dec| {
-                const elapsed = ui_model.current_time_ms -| dec.start_time_ms;
+            if (entry.inflight.startTimeMs()) |start_ms| {
+                const elapsed = ui_model.current_time_ms -| start_ms;
                 const show_loading = elapsed > state.LOADING_GRACE_PERIOD_MS;
                 const font_size: u16 = 22;
 
@@ -1210,7 +1210,6 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 
 test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
     const entry = CacheEntry{
-        .inflight = .{},
         .metadata = .{
             .full_dims = .{ .w = 6000.0, .h = 4000.0 },
             .orientation = .rotate_90,
@@ -1237,4 +1236,122 @@ test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
     try std.testing.expectEqual(@as(f32, 0.0), cached_uv.rotation_angle);
     try std.testing.expectEqual(@as(f32, 4000.0), cached_uv.source_w);
     try std.testing.expectEqual(@as(f32, 6000.0), cached_uv.source_h);
+}
+
+test "renderImageCanvas loading grace period across InFlightState variants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var data = MeasureTextUserData{};
+    var pal_state = try PaletteState.init(std.testing.allocator);
+    defer pal_state.deinit(std.testing.allocator);
+
+    var model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 1,
+        .current_index = 0,
+        .current_image_entry = null,
+        .current_entry = null,
+        .current_classification = .unflagged,
+        .view_mode = .default,
+        .visible_state = .empty_directory,
+        .visible_count = 1,
+        .visible_position = 1,
+        .is_loading_files = false,
+        .slideshow = .inactive,
+        .manga_mode = false,
+        .overlays = .{},
+        .window_title = "test",
+        .viewport = .{},
+        .palette = &pal_state,
+        .snackbar = .none,
+        .anim_values = @splat(1.0),
+        .debug_show_thumb = false,
+        .is_thumb_crossfading = false,
+        .image_dissolve = .none,
+        .current_time_ms = 1000,
+    };
+
+    const draw_dims = LogicalDims{ .w = 800.0, .h = 600.0 };
+    const view_dims = LogicalDims{ .w = 1000.0, .h = 800.0 };
+
+    // 1. .idle never emits loading text regardless of current_time_ms
+    var draw_list = UiDrawList{ .allocator = alloc };
+    try renderImageCanvas(
+        &draw_list,
+        model,
+        .{ .inflight = .idle },
+        draw_dims,
+        view_dims,
+        0.0,
+        alloc,
+        &data,
+    );
+    try std.testing.expectEqual(@as(usize, 0), draw_list.commands.items.len);
+
+    // 2. Active variants suppress loading text at <= LOADING_GRACE_PERIOD_MS
+    // and emit loading text once elapsed > LOADING_GRACE_PERIOD_MS.
+    const active_states = [_]cache.InFlightState{
+        .{
+            .queued_decode = .{ .start_time_ms = 100 },
+        },
+        .{
+            .decoding = .{
+                .start_time_ms = 100,
+                .ticket = .{ .job_id = 0, .epoch = 1 },
+            },
+        },
+        .{
+            .uploading = .{ .start_time_ms = 100 },
+        },
+    };
+    for (active_states) |inf_state| {
+        const entry = CacheEntry{ .inflight = inf_state };
+
+        draw_list.commands.clearRetainingCapacity();
+        model.current_time_ms = 100 + state.LOADING_GRACE_PERIOD_MS;
+        try renderImageCanvas(
+            &draw_list,
+            model,
+            entry,
+            draw_dims,
+            view_dims,
+            0.0,
+            alloc,
+            &data,
+        );
+        try std.testing.expectEqual(
+            @as(usize, 0),
+            draw_list.commands.items.len,
+        );
+
+        draw_list.commands.clearRetainingCapacity();
+        model.current_time_ms = 100 + state.LOADING_GRACE_PERIOD_MS + 1;
+        try renderImageCanvas(
+            &draw_list,
+            model,
+            entry,
+            draw_dims,
+            view_dims,
+            0.0,
+            alloc,
+            &data,
+        );
+        try std.testing.expectEqual(
+            @as(usize, 1),
+            draw_list.commands.items.len,
+        );
+        switch (draw_list.commands.items[0].payload) {
+            .text => {},
+            .rectangle,
+            .border,
+            .text_runs,
+            .image,
+            .atlas_preview,
+            .scissor_start,
+            .scissor_end,
+            => return error.TestExpectedLoadingText,
+        }
+    }
 }

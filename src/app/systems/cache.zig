@@ -27,7 +27,7 @@ fn checkPairPromotion(
         return;
     if (!media_item.isPair()) return;
     const entry_val = state.cache.getEntry(key) orelse return;
-    if (entry_val.inflight != null) return;
+    if (!entry_val.inflight.isIdle()) return;
     switch (entry_val.resident.asset) {
         .loaded_gpu, .loaded_cpu => {},
         .none, .promoting_gpu, .failed => return,
@@ -217,8 +217,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 d_id,
                 .{
                     .inflight = .{
-                        .stage = .decoding,
-                        .start_time_ms = ctx.now_ms,
+                        .queued_decode = .{ .start_time_ms = ctx.now_ms },
                     },
                 },
             );
@@ -226,14 +225,11 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
         if (state.cache.getEntry(key)) |entry| {
             const is_active_slot = (d_id == cur_id);
-            const is_decoding = if (entry.inflight) |inf|
-                (switch (inf.stage) {
-                    .decoding => !inf.has_thread,
-                    .uploading => false,
-                })
-            else
-                false;
-            if (is_decoding) {
+            const is_queued = switch (entry.inflight) {
+                .queued_decode => true,
+                .idle, .decoding, .uploading => false,
+            };
+            if (is_queued) {
                 const thumb_ready = switch (entry.resident.thumbnail) {
                     .not_available, .staged_cpu, .loaded => true,
                     .none, .pending, .unloaded => false,
@@ -275,12 +271,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
         const key = state.cache.activeKey(req.id);
         const entry = state.cache.get(key) orelse continue;
-        const inf = entry.inflight orelse continue;
-        const awaiting_decode = switch (inf.stage) {
-            .decoding => !inf.has_thread,
-            .uploading => false,
+        const queued = switch (entry.inflight) {
+            .queued_decode => |q| q,
+            .idle, .decoding, .uploading => continue,
         };
-        if (!awaiting_decode) continue;
 
         const decode_mode: DecodeMode = if (is_fast_scrolling) blk: {
             if (req.id == cur_id) {
@@ -300,7 +294,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             req.id,
             req.entry,
             decode_mode,
-            inf.target,
+            queued.target,
             ctx.now_ms,
         ) catch |err| {
             std.log.err(
@@ -376,7 +370,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
             },
         },
     }, null);
-    state.cache.setInFlight(state.cache.activeKey(id0), null);
+    state.cache.setInFlight(state.cache.activeKey(id0), .idle);
 
     // Run sysUpdateCache again: now that index 0 is ready, neighbors should populate
     try sysUpdateCache(ctx);
@@ -521,8 +515,11 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     state.viewer.navigation.cadence.recordNavigation(1000);
 
     // Pre-populate active slot 0 as decoding without thumbnail yet
+    const ticket0 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .stage = .decoding, .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
 
     const ctx = FrameContext{
@@ -588,8 +585,12 @@ test "sysUpdateCache - defers header probing off render thread" {
         cache.ThumbnailState.none,
         entry.?.resident.thumbnail,
     );
-    try std.testing.expect(entry.?.inflight != null);
-    try std.testing.expect(entry.?.inflight.?.has_thread);
+    switch (entry.?.inflight) {
+        .decoding => {},
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 }
 
 test "sysUpdateCache - active image without thumb decodes in fast scroll" {
@@ -625,8 +626,12 @@ test "sysUpdateCache - active image without thumb decodes in fast scroll" {
         cache.ThumbnailState.none,
         entry.?.resident.thumbnail,
     );
-    try std.testing.expect(entry.?.inflight != null);
-    try std.testing.expect(entry.?.inflight.?.has_thread);
+    switch (entry.?.inflight) {
+        .decoding => {},
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 
     // Await the .active_fast_scroll worker and verify single-pass fallthrough
     state.workers.group.await(io) catch {};
@@ -682,20 +687,25 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
             RawMetadata.init(6000.0, 4000.0);
     }
 
-    // When zoom is 1.0x, inflight remains null
+    // When zoom is 1.0x, inflight remains .idle
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);
-    try std.testing.expect(state.cache.get(key).?.inflight == null);
+    try std.testing.expect(state.cache.get(key).?.inflight.isIdle());
     try std.testing.expect(
         state.cache.get(key).?.resident.asset == .loaded_cpu,
     );
 
-    // When zoom > 1.0x, zoom promotion sets inflight while preserving
+    // When zoom > 1.0x, zoom promotion sets .decoding while preserving
     // resident asset
     state.viewer.viewport.mode = .manual;
     state.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
     try sysUpdateCache(ctx);
-    try std.testing.expect(state.cache.get(key).?.inflight != null);
+    switch (state.cache.get(key).?.inflight) {
+        .decoding => {},
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
     try std.testing.expect(
         state.cache.get(key).?.resident.asset == .loaded_cpu,
     );
@@ -862,7 +872,7 @@ test "sysUpdateCache - respects ViewMode visibility filtering" {
             .ingest = .{ .memory_size_bytes = 200 },
         },
     }, null);
-    state.cache.setInFlight(state.cache.activeKey(id4), null);
+    state.cache.setInFlight(state.cache.activeKey(id4), .idle);
     const vis = state.viewer.navigation.getVisibleNeighbors();
     state.cache.enforceVramBudget(
         null,
@@ -900,23 +910,29 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
 
+    const ticket0 = state.cache.allocJob().?;
     const key0 = try state.cache.appendSlot(allocator, id0, .{
         .inflight = .{
-            .stage = .decoding,
-            .has_thread = true,
-            .target = .standalone_jpeg,
+            .decoding = .{
+                .target = .standalone_jpeg,
+                .ticket = ticket0,
+            },
         },
     });
     const entry0 = state.cache.get(key0).?;
 
-    // 1. While inflight != null, checkPairPromotion must not spawn a duplicate
+    // 1. While !isIdle(), checkPairPromotion must not spawn a duplicate
     // promotion worker.
     checkPairPromotion(&state, key0, 1000);
-    try std.testing.expect(entry0.inflight != null);
-    try std.testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        entry0.inflight.?.target,
-    );
+    switch (entry0.inflight) {
+        .decoding => |dec| try std.testing.expectEqual(
+            PairStreamTarget.standalone_jpeg,
+            dec.target,
+        ),
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
     try std.testing.expectEqual(
         @as(usize, 0),
         state.workers.active_decode_threads.load(.acquire),
@@ -933,11 +949,15 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
         },
     };
     checkPairPromotion(&state, key0, 1000);
-    try std.testing.expect(entry0.inflight != null);
-    try std.testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        entry0.inflight.?.target,
-    );
+    switch (entry0.inflight) {
+        .decoding => |dec| try std.testing.expectEqual(
+            PairStreamTarget.standalone_jpeg,
+            dec.target,
+        ),
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
     try std.testing.expectEqual(
         @as(usize, 0),
         state.workers.active_decode_threads.load(.acquire),
@@ -987,15 +1007,15 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
             return error.TestExpectedLoadedGpu;
         },
     }
-    try std.testing.expect(entry.inflight != null);
-    try std.testing.expectEqual(
-        cache.InFlightStage.decoding,
-        entry.inflight.?.stage,
-    );
-    try std.testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        entry.inflight.?.target,
-    );
+    switch (entry.inflight) {
+        .decoding => |dec| try std.testing.expectEqual(
+            PairStreamTarget.standalone_jpeg,
+            dec.target,
+        ),
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 }
 
 test "sysUpdateCache fast-scroll throttling deterministic with ctx.now_ms" {
@@ -1077,12 +1097,15 @@ test "AppState.spawnSlotDecode stamps now_ms and job ticket on inflight" {
     );
 
     const entry = state.cache.get(key0).?;
-    try std.testing.expect(entry.inflight != null);
-    try std.testing.expectEqual(
-        @as(u64, 4200),
-        entry.inflight.?.start_time_ms,
-    );
-    try std.testing.expect(entry.inflight.?.job_epoch >= 1);
+    switch (entry.inflight) {
+        .decoding => |dec| {
+            try std.testing.expectEqual(@as(u64, 4200), dec.start_time_ms);
+            try std.testing.expect(dec.ticket.epoch >= 1);
+        },
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 }
 
 test "checkPairPromotion - Fit mode waits until cadence settles past 250ms" {
@@ -1120,16 +1143,20 @@ test "checkPairPromotion - Fit mode waits until cadence settles past 250ms" {
     // At elapsed == 250ms, Fit-mode promotion is still throttled
     state.viewer.navigation.cadence.recordNavigation(1000);
     checkPairPromotion(&state, key0, 1250);
-    try std.testing.expect(state.cache.get(key0).?.inflight == null);
+    try std.testing.expect(state.cache.get(key0).?.inflight.isIdle());
 
     // At elapsed == 251ms (> 250ms), Fit-mode promotion spawns
     checkPairPromotion(&state, key0, 1251);
     const promoted = state.cache.get(key0).?;
-    try std.testing.expect(promoted.inflight != null);
-    try std.testing.expectEqual(
-        PairStreamTarget.standalone_jpeg,
-        promoted.inflight.?.target,
-    );
+    switch (promoted.inflight) {
+        .decoding => |dec| try std.testing.expectEqual(
+            PairStreamTarget.standalone_jpeg,
+            dec.target,
+        ),
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 }
 
 test "sysUpdateCache - foreground burst spawns active when pool saturated" {
@@ -1162,7 +1189,7 @@ test "sysUpdateCache - foreground burst spawns active when pool saturated" {
     // to_spawn in the same sysUpdateCache pass.
     _ = try state.cache.appendSlot(allocator, id0, .{
         .resident = .{ .thumbnail = .not_available },
-        .inflight = .{ .stage = .decoding, .has_thread = false },
+        .inflight = .{ .queued_decode = .{} },
     });
     state.viewer.navigation.cadence.recordNavigation(1000);
 
@@ -1180,13 +1207,21 @@ test "sysUpdateCache - foreground burst spawns active when pool saturated" {
 
     // Active slide id0 must spawn via .foreground burst headroom (3 < 5)
     const entry0 = state.cache.get(state.cache.activeKey(id0)).?;
-    try std.testing.expect(entry0.inflight != null);
-    try std.testing.expect(entry0.inflight.?.has_thread);
+    switch (entry0.inflight) {
+        .decoding => {},
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 
     // Speculative neighbor id1 must be skipped via .background limit (3 >= 2)
     const entry1 = state.cache.get(state.cache.activeKey(id1)).?;
-    try std.testing.expect(entry1.inflight != null);
-    try std.testing.expect(!entry1.inflight.?.has_thread);
+    switch (entry1.inflight) {
+        .queued_decode => {},
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
 }
 
 test "sysUpdateCache - brisk scroll keeps staged thumb until settled" {
@@ -1226,7 +1261,7 @@ test "sysUpdateCache - brisk scroll keeps staged thumb until settled" {
         .resident = .{
             .thumbnail = .{ .staged_cpu = .{ .surface = th_surf } },
         },
-        .inflight = .{ .stage = .decoding, .has_thread = false },
+        .inflight = .{ .queued_decode = .{} },
     });
 
     // At t=1200 (> 35ms after 1120, < 200ms), brisk scroll remains active:
@@ -1242,8 +1277,12 @@ test "sysUpdateCache - brisk scroll keeps staged thumb until settled" {
     });
 
     const entry2_brisk = state.cache.get(state.cache.activeKey(id2)).?;
-    try std.testing.expect(entry2_brisk.inflight != null);
-    try std.testing.expect(!entry2_brisk.inflight.?.has_thread);
+    switch (entry2_brisk.inflight) {
+        .queued_decode => {},
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
     try std.testing.expect(state.cache.get(state.cache.activeKey(id3)) != null);
 
     // At t=1320 (200ms after 1120), cadence settles and active slide spawns
@@ -1258,8 +1297,12 @@ test "sysUpdateCache - brisk scroll keeps staged thumb until settled" {
     });
 
     const entry2_settled = state.cache.get(state.cache.activeKey(id2)).?;
-    try std.testing.expect(entry2_settled.inflight != null);
-    try std.testing.expect(entry2_settled.inflight.?.has_thread);
+    switch (entry2_settled.inflight) {
+        .decoding => {},
+        .idle, .queued_decode, .uploading => {
+            return error.TestExpectedDecoding;
+        },
+    }
 
     state.workers.group.await(io) catch {};
     var full_seen = false;

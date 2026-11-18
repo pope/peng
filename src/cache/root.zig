@@ -180,20 +180,49 @@ pub const CacheResident = struct {
     }
 };
 
-/// Execution stage of an in-flight background worker job.
-pub const InFlightStage = enum {
-    decoding,
-    uploading,
-};
-
-/// In-flight decode or upload task metadata with per-job cancellation epoch.
-pub const InFlightDecode = struct {
-    stage: InFlightStage = .decoding,
-    has_thread: bool = false,
+/// Deferred decode request queued for a cache slot awaiting a worker thread.
+pub const QueuedDecode = struct {
     start_time_ms: u64 = 0,
     target: PairStreamTarget = .adaptive,
-    job_id: u8 = 0,
-    job_epoch: u32 = 0,
+};
+
+/// Active background worker decode job bound to a pinned cancellation ticket.
+pub const ActiveDecode = struct {
+    start_time_ms: u64 = 0,
+    target: PairStreamTarget = .adaptive,
+    ticket: JobTicket,
+};
+
+/// Active main-thread GPU texture upload staged from a decoded CPU surface.
+pub const ActiveUpload = struct {
+    start_time_ms: u64 = 0,
+};
+
+/// Mutually exclusive in-flight lifecycle state for a cache slot.
+pub const InFlightState = union(enum) {
+    idle,
+    queued_decode: QueuedDecode,
+    decoding: ActiveDecode,
+    uploading: ActiveUpload,
+
+    /// Returns `true` when no decode or GPU upload is queued or active.
+    pub inline fn isIdle(self: InFlightState) bool {
+        return switch (self) {
+            .idle => true,
+            .queued_decode, .decoding, .uploading => false,
+        };
+    }
+
+    /// Returns the millisecond timestamp when the queued or active job began,
+    /// or `null` when `.idle`.
+    pub inline fn startTimeMs(self: InFlightState) ?u64 {
+        return switch (self) {
+            .idle => null,
+            .queued_decode => |q| q.start_time_ms,
+            .decoding => |d| d.start_time_ms,
+            .uploading => |u| u.start_time_ms,
+        };
+    }
 };
 
 /// State of a cached image's preview thumbnail (none, pending, staged CPU
@@ -274,7 +303,7 @@ pub const ThumbnailState = union(enum) {
 pub const CacheEntry = struct {
     metadata: CacheMetadata = .{},
     resident: CacheResident = .{},
-    inflight: ?InFlightDecode = null,
+    inflight: InFlightState = .idle,
 
     /// Constructs a synthetic GPU-resident `CacheEntry` for unit testing
     /// layout and viewport logic without initializing a real GPU device.
@@ -438,7 +467,7 @@ pub const CacheEntry = struct {
     /// Releases resident thumbnail, primary assets, and in-flight state.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         self.resident.deinit(gpu_device);
-        self.inflight = null;
+        self.inflight = .idle;
     }
 };
 
@@ -534,8 +563,8 @@ pub const ImageCache = struct {
         self.job_alloc_mask = 0;
     }
 
-    /// Validates whether a completed job's epoch matches the slot's
-    /// active inflight decode task.
+    /// Validates whether a completed job's epoch matches the slot's active
+    /// `.decoding` job ticket.
     pub fn validateJobEpoch(
         self: *const ImageCache,
         slot_idx: usize,
@@ -543,10 +572,10 @@ pub const ImageCache = struct {
     ) bool {
         if (slot_idx >= self.slots.len) return false;
         const entry = self.slots.items(.entry)[slot_idx];
-        if (entry.inflight) |inf| {
-            return inf.job_epoch == job_epoch;
-        }
-        return false;
+        return switch (entry.inflight) {
+            .decoding => |dec| dec.ticket.epoch == job_epoch,
+            .idle, .queued_decode, .uploading => false,
+        };
     }
 
     /// Atomically increments the cache generation epoch to invalidate
@@ -648,26 +677,27 @@ pub const ImageCache = struct {
         entry.resident.asset = asset;
     }
 
-    /// Updates or clears the in-flight decode task state for a cache slot.
+    /// Updates or clears the in-flight lifecycle state for a cache slot,
+    /// cancelling any superseded `.decoding` job ticket.
     pub fn setInFlight(
         self: *ImageCache,
         key: ImageCacheKey,
-        inflight: ?InFlightDecode,
+        inflight: InFlightState,
     ) void {
         const idx = self.getIndex(key) orelse return;
         const entry = &self.slots.items(.entry)[idx];
-        if (entry.inflight) |old_inf| {
-            if (old_inf.has_thread) {
-                if (inflight) |new_inf| {
-                    if (!new_inf.has_thread or
-                        old_inf.job_id != new_inf.job_id)
-                    {
-                        self.cancelJob(old_inf.job_id);
+        switch (entry.inflight) {
+            .decoding => |old_dec| switch (inflight) {
+                .decoding => |new_dec| {
+                    if (old_dec.ticket.job_id != new_dec.ticket.job_id) {
+                        self.cancelJob(old_dec.ticket.job_id);
                     }
-                } else {
-                    self.cancelJob(old_inf.job_id);
-                }
-            }
+                },
+                .idle, .queued_decode, .uploading => {
+                    self.cancelJob(old_dec.ticket.job_id);
+                },
+            },
+            .idle, .queued_decode, .uploading => {},
         }
         entry.inflight = inflight;
     }
@@ -696,10 +726,9 @@ pub const ImageCache = struct {
         gpu_device: ?sdl.gpu.Device,
     ) void {
         var entry = self.slots.items(.entry)[index_in_list];
-        if (entry.inflight) |inf| {
-            if (inf.has_thread) {
-                self.cancelJob(inf.job_id);
-            }
+        switch (entry.inflight) {
+            .decoding => |dec| self.cancelJob(dec.ticket.job_id),
+            .idle, .queued_decode, .uploading => {},
         }
         self.slots.swapRemove(index_in_list);
         entry.deinit(gpu_device);
@@ -849,7 +878,7 @@ pub const ImageCache = struct {
             const key = self.activeKey(id);
             if (self.getIndex(key)) |i| {
                 const entry = self.slots.items(.entry)[i];
-                if (entry.inflight != null) return true;
+                if (!entry.inflight.isIdle()) return true;
                 switch (entry.resident.asset) {
                     .loaded_gpu => {
                         const staged = entry.resident.thumbnail.isStagedCpu();
@@ -1535,15 +1564,19 @@ test "hasUnreadyPrefetchSlots" {
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     // One slot is decoding -> unready
+    const ticket = cache.allocJob().?;
     cache.setInFlight(
         cache.activeKey(mock_nav.getIdAt(2).?),
-        .{ .stage = .decoding },
+        .{
+            .decoding = .{ .ticket = ticket },
+        },
     );
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     // One slot is loaded_cpu: unready if has_gpu=true, ready if has_gpu=false
     const surf = sdl.Surface.create(1, 1, sdl.PixelFormat.rgba32) orelse return;
-    cache.setInFlight(cache.activeKey(mock_nav.getIdAt(2).?), null);
+    cache.setInFlight(cache.activeKey(mock_nav.getIdAt(2).?), .idle);
+    try std.testing.expectEqual(@as(u16, 0), cache.job_alloc_mask);
     cache.setResidentAsset(cache.activeKey(mock_nav.getIdAt(2).?), .{
         .loaded_cpu = .{
             .cpu = .{
@@ -1575,25 +1608,48 @@ test "ImageCache.setResidentAsset and setInFlight" {
     const id20 = MediaId.fromU32(20);
 
     _ = cache.advanceGeneration();
+    const ticket10 = cache.allocJob().?;
+    const ticket20 = cache.allocJob().?;
     _ = try cache.appendSlot(allocator, id10, .{
-        .inflight = .{ .stage = .decoding },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket10 },
+        },
     });
     _ = try cache.appendSlot(allocator, id20, .{
-        .inflight = .{ .stage = .decoding },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket20 },
+        },
     });
 
     // Test updating resident asset and in-flight status
+    const key10 = ImageCacheKey{ .id = id10, .generation = 1 };
     const key20 = ImageCacheKey{ .id = id20, .generation = 1 };
     cache.setResidentAsset(key20, .failed, null);
-    cache.setInFlight(key20, null);
+    cache.setInFlight(key20, .idle);
 
     try std.testing.expectEqual(
         ResidentAsset.failed,
         cache.slots.items(.entry)[1].resident.asset,
     );
     try std.testing.expectEqual(
-        @as(?InFlightDecode, null),
+        InFlightState.idle,
         cache.slots.items(.entry)[1].inflight,
+    );
+    try std.testing.expectEqual(
+        ticket20.epoch + 1,
+        cache.job_epochs[ticket20.job_id].load(.acquire),
+    );
+    const bit10 = @as(u16, 1) << @as(u4, @truncate(ticket10.job_id));
+    try std.testing.expectEqual(bit10, cache.job_alloc_mask);
+
+    // Transitioning .decoding -> .queued_decode also cancels the job ticket
+    cache.setInFlight(key10, .{
+        .queued_decode = .{ .start_time_ms = 55 },
+    });
+    try std.testing.expectEqual(@as(u16, 0), cache.job_alloc_mask);
+    try std.testing.expectEqual(
+        ticket10.epoch + 1,
+        cache.job_epochs[ticket10.job_id].load(.acquire),
     );
 }
 
@@ -1769,8 +1825,11 @@ test "ImageCache - Key lookup by MediaId remains valid after sort shift" {
     defer cache.deinit(allocator, null);
 
     const id1 = MediaId.fromU32(1);
+    const ticket1 = cache.allocJob().?;
     const key1 = try cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket1 },
+        },
     });
 
     const id2 = MediaId.fromU32(2);
@@ -1833,9 +1892,7 @@ test "removeAndDeinit - Cancels active in-flight job on slot eviction" {
     const id = MediaId.fromU32(100);
     _ = try cache.appendSlot(allocator, id, .{
         .inflight = .{
-            .has_thread = true,
-            .job_id = ticket.job_id,
-            .job_epoch = ticket.epoch,
+            .decoding = .{ .ticket = ticket },
         },
     });
 
@@ -1852,12 +1909,40 @@ test "removeAndDeinit - Cancels active in-flight job on slot eviction" {
     try std.testing.expectEqual(@as(u16, 0), cache.job_alloc_mask);
 }
 
-test "InFlightDecode defaults" {
-    const inf: InFlightDecode = .{};
-    try std.testing.expectEqual(@as(u64, 0), inf.start_time_ms);
-    try std.testing.expect(!inf.has_thread);
-    try std.testing.expectEqual(InFlightStage.decoding, inf.stage);
-    try std.testing.expectEqual(PairStreamTarget.adaptive, inf.target);
+test "ImageCache.validateJobEpoch" {
+    const allocator = std.testing.allocator;
+    var cache = ImageCache{};
+    defer cache.deinit(allocator, null);
+
+    const id_idle = MediaId.fromU32(1);
+    const id_queued = MediaId.fromU32(2);
+    const id_uploading = MediaId.fromU32(3);
+    const id_decoding = MediaId.fromU32(4);
+
+    _ = try cache.appendSlot(allocator, id_idle, .{});
+    _ = try cache.appendSlot(allocator, id_queued, .{
+        .inflight = .{ .queued_decode = .{} },
+    });
+    _ = try cache.appendSlot(allocator, id_uploading, .{
+        .inflight = .{ .uploading = .{} },
+    });
+
+    const ticket = cache.allocJob().?;
+    _ = try cache.appendSlot(allocator, id_decoding, .{
+        .inflight = .{
+            .decoding = .{ .ticket = ticket },
+        },
+    });
+
+    try std.testing.expect(!cache.validateJobEpoch(0, 0));
+    try std.testing.expect(!cache.validateJobEpoch(0, 1));
+    try std.testing.expect(!cache.validateJobEpoch(1, 0));
+    try std.testing.expect(!cache.validateJobEpoch(1, 1));
+    try std.testing.expect(!cache.validateJobEpoch(2, 0));
+    try std.testing.expect(!cache.validateJobEpoch(2, 1));
+    try std.testing.expect(cache.validateJobEpoch(3, ticket.epoch));
+    try std.testing.expect(!cache.validateJobEpoch(3, ticket.epoch + 1));
+    try std.testing.expect(!cache.validateJobEpoch(99, ticket.epoch));
 }
 
 test "CacheEntry - updateFullDims and monotonic probed metadata integration" {

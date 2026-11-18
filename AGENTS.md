@@ -105,7 +105,7 @@ ______________________________________________________________________
   - `switch` on domain enums and tagged unions (`PaletteMode`, `PromptKind`,
     `EditParam`, `AppIntent`, `AdjustIntent`, `IpcCommand`, `ZoomPreset`,
     `TextureScaleMode`, `DecodeMode`, `DecodePriority`, `ScrollCadence`,
-    `ResidentAsset`, `InFlightStage`, `ThumbnailState`, `DisplayState`,
+    `ResidentAsset`, `InFlightState`, `ThumbnailState`, `DisplayState`,
     `DragState`, `MediaEntry`, `BackgroundEvent`) **MUST** list every variant
     without `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec`
     for `EditParam` metadata.

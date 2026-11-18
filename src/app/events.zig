@@ -117,12 +117,11 @@ fn handleDecodeFailedEvent(
     is_current: bool,
 ) void {
     const entry = state.cache.get(key) orelse return;
-    if (entry.inflight) |inf| {
-        if (inf.has_thread) {
-            state.cache.releaseJob(inf.job_id);
-        }
+    switch (entry.inflight) {
+        .decoding => |dec| state.cache.releaseJob(dec.ticket.job_id),
+        .idle, .queued_decode, .uploading => {},
     }
-    entry.inflight = null;
+    entry.inflight = .idle;
     switch (entry.resident.asset) {
         .loaded_gpu, .loaded_cpu, .promoting_gpu => {
             entry.resident.thumbnail.markNotAvailableIfUnresolved();
@@ -205,11 +204,17 @@ fn handleDimensionsProbedEvent(
             probed.raw_metadata,
         );
         if (probed.thumb_only) {
-            if (entry.inflight) |*dec| {
-                if (dec.has_thread) {
-                    state.cache.releaseJob(dec.job_id);
-                    dec.has_thread = false;
-                }
+            switch (entry.inflight) {
+                .decoding => |dec| {
+                    state.cache.releaseJob(dec.ticket.job_id);
+                    entry.inflight = .{
+                        .queued_decode = .{
+                            .start_time_ms = dec.start_time_ms,
+                            .target = dec.target,
+                        },
+                    };
+                },
+                .idle, .queued_decode, .uploading => {},
             }
         }
         entry.resident.thumbnail.markNotAvailableIfUnresolved();
@@ -258,11 +263,17 @@ fn handleExifThumbnailEvent(
             thumb_data.raw_metadata,
         );
         if (thumb_data.thumb_only) {
-            if (entry.inflight) |*dec| {
-                if (dec.has_thread) {
-                    state.cache.releaseJob(dec.job_id);
-                    dec.has_thread = false;
-                }
+            switch (entry.inflight) {
+                .decoding => |dec| {
+                    state.cache.releaseJob(dec.ticket.job_id);
+                    entry.inflight = .{
+                        .queued_decode = .{
+                            .start_time_ms = dec.start_time_ms,
+                            .target = dec.target,
+                        },
+                    };
+                },
+                .idle, .queued_decode, .uploading => {},
             }
         }
         break :blk entry.resident.asset.isLoaded();
@@ -295,14 +306,12 @@ fn handleImageDecodedEvent(
     decoded_data: *events.ImageDecodedPayload,
 ) void {
     const entry = state.cache.get(key) orelse return;
-    if (entry.inflight) |*inf| {
-        if (inf.has_thread) {
-            state.cache.releaseJob(inf.job_id);
-            inf.has_thread = false;
-        }
+    switch (entry.inflight) {
+        .decoding => |dec| state.cache.releaseJob(dec.ticket.job_id),
+        .idle, .queued_decode, .uploading => {},
     }
+    entry.inflight = .idle;
     const surf = decoded_data.surface orelse return;
-    entry.inflight = null;
     applyDecodedMetadata(entry, decoded_data);
     entry.resident.thumbnail.discardStagedAndMarkUnavailable();
 
@@ -354,7 +363,6 @@ fn applyDecodedMetadata(
     decoded_data: *const events.ImageDecodedPayload,
 ) void {
     entry.metadata.orientation = decoded_data.orientation;
-    entry.inflight = null;
     if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
         entry.updateFullDims(s_dims);
     }
@@ -521,14 +529,17 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     defer state.deinit();
 
     const id0 = MediaId.fromU32(1);
+    const ticket0 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
 
     try state.workers.event_queue.push(allocator, io, .{
         .exif_orientation_parsed = .init(
             state.cache.activeKey(id0),
-            0,
+            ticket0.epoch,
             .{ .orientation = .rotate_90 },
         ),
     });
@@ -540,12 +551,16 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     );
 
     try state.workers.event_queue.push(allocator, io, .{
-        .decode_failed = .init(state.cache.activeKey(id0), 0, .{}),
+        .decode_failed = .init(state.cache.activeKey(id0), ticket0.epoch, .{}),
     });
     const processed2 = drainWorkerEvents(&state);
     try std.testing.expect(processed2);
     const fail_asset = state.cache.slots.items(.entry)[0].resident.asset;
     try std.testing.expectEqual(@as(@TypeOf(fail_asset), .failed), fail_asset);
+    try std.testing.expect(
+        state.cache.slots.items(.entry)[0].inflight.isIdle(),
+    );
+    try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
 }
 
 test "drainWorkerEvents - directory_scan_result and ipc_command" {
@@ -640,13 +655,19 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
     const id1 = MediaId.fromU32(2);
 
     // Slot 0 is decoding
+    const ticket0 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
 
     // Slot 1 is decoding
+    const ticket1 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket1 },
+        },
     });
 
     const surf = sdl.Surface.create(
@@ -657,7 +678,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
 
     // Neighbor index 1 finishes decoding before index 0
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(state.cache.activeKey(id1), 0, .{
+        .image_decoded = .init(state.cache.activeKey(id1), ticket1.epoch, .{
             .surface = surf,
             .w = 10,
             .h = 10,
@@ -681,19 +702,26 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
     try std.testing.expect(entry1.resident.asset == .loaded_cpu);
 }
 
-test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_thread" {
+test "drainWorkerEvents - dimensions_probed sets dimensions and queues decode" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const id0 = MediaId.fromU32(1);
+    const ticket0 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{
+                .start_time_ms = 500,
+                .target = .standalone_jpeg,
+                .ticket = ticket0,
+            },
+        },
     });
 
     try state.workers.event_queue.push(allocator, io, .{
-        .dimensions_probed = .init(state.cache.activeKey(id0), 0, .{
+        .dimensions_probed = .init(state.cache.activeKey(id0), ticket0.epoch, .{
             .source_dims = .{ .w = 1920.0, .h = 1080.0 },
             .orientation = .normal,
             .thumb_only = true,
@@ -708,7 +736,19 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
         PhysicalDims{ .w = 1920.0, .h = 1080.0 },
         entry.metadata.full_dims.?,
     );
-    try std.testing.expect(!entry.inflight.?.has_thread);
+    switch (entry.inflight) {
+        .queued_decode => |q| {
+            try std.testing.expectEqual(@as(u64, 500), q.start_time_ms);
+            try std.testing.expectEqual(
+                vfs.PairStreamTarget.standalone_jpeg,
+                q.target,
+            );
+        },
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
+    try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
 }
 
 test "drainWorkerEvents - palette_folder_count updates directory and archive entries" {
@@ -832,8 +872,11 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     const id1 = MediaId.fromU32(2);
 
     // Slot 0 is currently decoding; slot 1 is already .loaded_gpu and promoting
+    const ticket0 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
     const key1 = try state.cache.appendSlot(
         allocator,
@@ -845,19 +888,25 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     );
     const expected_vram: usize = 1600 * 1200 * 4;
     const entry1 = state.cache.get(key1).?;
-    entry1.inflight = .{ .stage = .decoding };
+    const ticket1_fail = state.cache.allocJob().?;
+    entry1.inflight = .{
+        .decoding = .{ .ticket = ticket1_fail },
+    };
     try std.testing.expectEqual(expected_vram, state.cache.getTotalVramBytes());
 
     // 1. If decode fails while .loaded_gpu, keep .loaded_gpu and clear
     // inflight instead of clobbering with .failed.
     handleDecodeFailedEvent(&state, key1, true);
-    try std.testing.expect(entry1.inflight == null);
+    try std.testing.expect(entry1.inflight.isIdle());
     try std.testing.expect(entry1.resident.asset.hasGpuTexture());
     try std.testing.expectEqual(expected_vram, state.cache.getTotalVramBytes());
 
     // 2. When a promotion finishes decoding on CPU, .loaded_gpu transitions
     // to .promoting_gpu, keeping the active GPU texture and VRAM intact.
-    entry1.inflight = .{ .stage = .decoding };
+    const ticket1_promo = state.cache.allocJob().?;
+    entry1.inflight = .{
+        .decoding = .{ .ticket = ticket1_promo },
+    };
     const promoted_surf = sdl.Surface.create(
         32,
         24,
@@ -865,7 +914,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     ) orelse return error.SurfaceFailed;
 
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key1, 0, .{
+        .image_decoded = .init(key1, ticket1_promo.epoch, .{
             .surface = promoted_surf,
             .w = 32,
             .h = 24,
@@ -881,7 +930,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     });
 
     try std.testing.expect(drainWorkerEvents(&state));
-    try std.testing.expect(entry1.inflight == null);
+    try std.testing.expect(entry1.inflight.isIdle());
     switch (entry1.resident.asset) {
         .promoting_gpu => |*promo| {
             try std.testing.expectEqual(@as(f32, 32.0), promo.staged.cpu.w);
@@ -909,8 +958,11 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
 
     state.viewer.navigation.current_index = 0;
     const id0 = MediaId.fromU32(1);
+    const ticket0 = state.cache.allocJob().?;
     const key0 = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
     const entry0 = state.cache.get(key0).?;
 
@@ -921,7 +973,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, 0, .{
+        .image_decoded = .init(key0, ticket0.epoch, .{
             .surface = preview_surf,
             .w = 1616,
             .h = 1080,
@@ -944,14 +996,17 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     try std.testing.expect(entry0.metadata.raw_metadata.isRaw());
 
     // 2. Promotion to 6000x4000 standalone JPEG upgrades full_dims
-    entry0.inflight = .{ .stage = .decoding };
+    const ticket1 = state.cache.allocJob().?;
+    entry0.inflight = .{
+        .decoding = .{ .ticket = ticket1 },
+    };
     const full_surf = sdl.Surface.create(
         60,
         40,
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, 0, .{
+        .image_decoded = .init(key0, ticket1.epoch, .{
             .surface = full_surf,
             .w = 6000,
             .h = 4000,
@@ -977,14 +1032,17 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     try std.testing.expectEqual(@as(f32, 4000), auth.h);
 
     // 3. Toggling back to 1616x1080 preview does not regress full_dims
-    entry0.inflight = .{ .stage = .decoding };
+    const ticket2 = state.cache.allocJob().?;
+    entry0.inflight = .{
+        .decoding = .{ .ticket = ticket2 },
+    };
     const toggle_surf = sdl.Surface.create(
         16,
         10,
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, 0, .{
+        .image_decoded = .init(key0, ticket2.epoch, .{
             .surface = toggle_surf,
             .w = 1616,
             .h = 1080,
@@ -1091,8 +1149,11 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
     );
     const id_b = state.viewer.navigation.getIdAt(0).?;
     state.viewer.navigation.current_index = 0;
+    const ticket_b = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id_b, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket_b },
+        },
     });
 
     var scan_arena2 = std.heap.ArenaAllocator.init(allocator);
@@ -1171,8 +1232,11 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
     state.viewer.navigation.current_index = 1;
 
     const id1 = state.viewer.navigation.getIdAt(1).?;
+    const ticket1 = state.cache.allocJob().?;
     const key1 = try state.cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket1 },
+        },
     });
     state.viewer.image_transition = .{ .active = .{
         .prev_index = 0,
@@ -1184,7 +1248,7 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
     state.viewer.animations.setImmediate(.image_crossfade, 0.0);
 
     try state.workers.event_queue.push(allocator, io, .{
-        .decode_failed = .init(key1, 0, .{}),
+        .decode_failed = .init(key1, ticket1.epoch, .{}),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
@@ -1252,8 +1316,11 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
 
     const main_surf = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32).?;
     const id0 = MediaId.fromU32(1);
+    const ticket0 = state.cache.allocJob().?;
     const key0 = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
@@ -1279,7 +1346,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
 
     const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32).?;
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .init(key0, 0, .{
+        .thumb_decoded = .init(key0, ticket0.epoch, .{
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
@@ -1319,8 +1386,11 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
     try std.testing.expectEqual(@as(u32, 1), target_id.toU32());
     state.viewer.navigation.current_index = 0;
 
+    const ticket0 = state.cache.allocJob().?;
     const key0 = try state.cache.appendSlot(allocator, target_id, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
     const cur_gen = state.cache.generation.load(.acquire);
 
@@ -1368,7 +1438,7 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
     // 4. In-flight job resolution: a SlotBound created with key0 resolves
     const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32).?;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, 0, .{
+        .image_decoded = .init(key0, ticket0.epoch, .{
             .surface = surf,
             .w = 10.0,
             .h = 10.0,
@@ -1397,8 +1467,11 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
     );
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
+    const ticket0 = state.cache.allocJob().?;
     const key0 = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
     const entry = state.cache.get(key0).?;
 
@@ -1407,7 +1480,7 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
 
     // Push both thumb_decoded and image_decoded in same batch
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .init(key0, 0, .{
+        .thumb_decoded = .init(key0, ticket0.epoch, .{
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
@@ -1418,7 +1491,7 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
         }),
     });
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, 0, .{
+        .image_decoded = .init(key0, ticket0.epoch, .{
             .surface = full_surf,
             .w = 64.0,
             .h = 64.0,
@@ -1459,8 +1532,11 @@ test "handleImageDecodedEvent - keeps loaded_gpu and stages promoting_gpu" {
     const id1 = state.viewer.navigation.getIdAt(1).?;
 
     // Slide 0 (current) is still decoding in-flight (not ready)
+    const ticket0 = state.cache.allocJob().?;
     _ = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
 
     // Slide 1 (non-current) already has a loaded GPU texture
@@ -1526,14 +1602,17 @@ test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
     state.gpu_enabled = true;
 
     const id0 = MediaId.fromU32(1);
+    const ticket0 = state.cache.allocJob().?;
     const key0 = try state.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket0 },
+        },
     });
 
     const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
         return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .init(key0, 0, .{
+        .thumb_decoded = .init(key0, ticket0.epoch, .{
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
@@ -1557,7 +1636,7 @@ test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
     const full_surf = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse
         return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, 0, .{
+        .image_decoded = .init(key0, ticket0.epoch, .{
             .surface = full_surf,
             .w = 64.0,
             .h = 64.0,
@@ -1620,14 +1699,17 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
         }
     }
 
+    const ticket1 = state.cache.allocJob().?;
     const key1 = try state.cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket1 },
+        },
     });
 
     const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
         return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .init(key1, 0, .{
+        .thumb_decoded = .init(key1, ticket1.epoch, .{
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
@@ -1650,7 +1732,7 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
     ));
 
     try state.workers.event_queue.push(allocator, io, .{
-        .decode_failed = .init(key1, 0, .{}),
+        .decode_failed = .init(key1, ticket1.epoch, .{}),
     });
     try std.testing.expect(drainWorkerEvents(&state));
 
@@ -1669,4 +1751,78 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
         neighbors,
         true,
     ));
+}
+
+test "drainWorkerEvents - thumb_only thumb_decoded queues decode" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+    state.gpu_enabled = true;
+
+    const id0 = MediaId.fromU32(1);
+    const ticket0 = state.cache.allocJob().?;
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .inflight = .{
+            .decoding = .{
+                .start_time_ms = 777,
+                .target = .raw_preview,
+                .ticket = ticket0,
+            },
+        },
+    });
+
+    const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .thumb_decoded = .init(key0, ticket0.epoch, .{
+            .surface = thumb_surf,
+            .w = 16.0,
+            .h = 16.0,
+            .source_dims = .{ .w = 6000.0, .h = 4000.0 },
+            .orientation = .normal,
+            .thumb_only = true,
+            .dct_snapped = false,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+
+    const entry0 = state.cache.get(key0).?;
+    switch (entry0.inflight) {
+        .queued_decode => |q| {
+            try std.testing.expectEqual(@as(u64, 777), q.start_time_ms);
+            try std.testing.expectEqual(
+                vfs.PairStreamTarget.raw_preview,
+                q.target,
+            );
+        },
+        .idle, .decoding, .uploading => {
+            return error.TestExpectedQueuedDecode;
+        },
+    }
+    try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
+    try std.testing.expectEqual(
+        ticket0.epoch + 1,
+        state.cache.job_epochs[ticket0.job_id].load(.acquire),
+    );
+    try std.testing.expect(entry0.resident.thumbnail.isStagedCpu());
+
+    // Stale image_decoded carrying the old ticket epoch is rejected
+    const stale_surf = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .init(key0, ticket0.epoch, .{
+            .surface = stale_surf,
+            .w = 32.0,
+            .h = 32.0,
+            .size_bytes = 4096,
+            .mime_type = "image/jpeg",
+            .orientation = .normal,
+            .raw_metadata = .none,
+            .decode = .{},
+        }),
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(entry0.resident.asset == .none);
 }

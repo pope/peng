@@ -764,7 +764,7 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
     app_st.viewer.navigation.current_index = 0;
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .inflight = .{ .has_thread = false },
+        .inflight = .{ .queued_decode = .{} },
     });
     const entry0 = app_st.cache.get(key0).?;
     entry0.metadata.full_dims = .{ .w = 800.0, .h = 600.0 };

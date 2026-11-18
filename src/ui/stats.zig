@@ -288,8 +288,9 @@ fn renderInfoOverlay(
                     .{ gpu.w, gpu.h, megapixels, prev_suffix },
                 );
             },
-            .none => {
-                if (entry.inflight != null) {
+            .none => switch (entry.inflight) {
+                .idle => {},
+                .queued_decode, .decoding, .uploading => {
                     disk_size_str = "Loading...";
                     mime_type = "Loading...";
                     if (entry.metadata.raw_metadata.isRaw()) {
@@ -303,7 +304,7 @@ fn renderInfoOverlay(
                     } else {
                         res_str = "Loading...";
                     }
-                }
+                },
             },
             .failed => {
                 disk_size_str = "Failed";
@@ -693,14 +694,15 @@ pub fn renderStatsOverlay(
                     .{gpu.ingest.upload_time_ms},
                 );
             },
-            .none => {
-                if (entry.inflight != null) {
+            .none => switch (entry.inflight) {
+                .idle => {},
+                .queued_decode, .decoding, .uploading => {
                     mem_size_str = "Loading...";
                     read_str = "Loading...";
                     decode_str = "Loading...";
                     convert_str = "Loading...";
                     upload_str = "Loading...";
-                }
+                },
             },
             .failed => {
                 mem_size_str = "Failed";

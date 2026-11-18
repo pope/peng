@@ -286,12 +286,15 @@ test "SlotBound.resolve validates cache key and presence" {
     defer cache.deinit(allocator, null);
 
     const id3 = MediaId.fromU32(3);
+    const ticket = cache.allocJob().?;
     const key = try cache.appendSlot(allocator, id3, .{
-        .inflight = .{ .has_thread = true, .job_epoch = 0 },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket },
+        },
     });
     var bound = SlotBound(ExifParsedPayload).init(
         key,
-        0,
+        ticket.epoch,
         .{ .orientation = .rotate_90 },
     );
 
@@ -318,12 +321,15 @@ test "SlotBound - Direct resolution by MediaId with zero alias_index" {
     defer cache.deinit(allocator, null);
 
     const id1 = MediaId.fromU32(1);
+    const ticket = cache.allocJob().?;
     const key0 = try cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true, .job_epoch = 0 },
+        .inflight = .{
+            .decoding = .{ .ticket = ticket },
+        },
     });
     var bound = SlotBound(ExifParsedPayload).init(
         key0,
-        0,
+        ticket.epoch,
         .{ .orientation = .rotate_180 },
     );
 
@@ -342,23 +348,45 @@ test "SlotBound - resolve rejects payload when job epoch has advanced" {
     defer cache.deinit(allocator, null);
 
     const id = MediaId.fromU32(42);
+    const ticket = cache.allocJob().?;
     const key = try cache.appendSlot(allocator, id, .{
         .inflight = .{
-            .has_thread = true,
-            .job_epoch = 1,
+            .decoding = .{ .ticket = ticket },
         },
     });
 
     var bound = SlotBound(ExifParsedPayload).init(
         key,
-        1,
+        ticket.epoch,
         .{ .orientation = .rotate_90 },
     );
 
     try std.testing.expect(bound.resolve(&cache) != null);
 
-    cache.get(key).?.inflight.?.job_epoch = 2;
+    // Advancing epoch via cancel + new .decoding ticket rejects old payload
+    cache.cancelJob(ticket.job_id);
+    const next_ticket = cache.allocJob().?;
+    cache.setInFlight(key, .{
+        .decoding = .{ .ticket = next_ticket },
+    });
     try std.testing.expect(bound.resolve(&cache) == null);
+
+    var next_bound = SlotBound(ExifParsedPayload).init(
+        key,
+        next_ticket.epoch,
+        .{ .orientation = .rotate_90 },
+    );
+    try std.testing.expect(next_bound.resolve(&cache) != null);
+
+    // Transitioning to .queued_decode, .uploading, or .idle rejects payload
+    cache.setInFlight(key, .{ .queued_decode = .{} });
+    try std.testing.expect(next_bound.resolve(&cache) == null);
+
+    cache.get(key).?.inflight = .{ .uploading = .{} };
+    try std.testing.expect(next_bound.resolve(&cache) == null);
+
+    cache.setInFlight(key, .idle);
+    try std.testing.expect(next_bound.resolve(&cache) == null);
 }
 
 test "DirectoryScanResultPayload O(1) deinit without memory leaks" {
