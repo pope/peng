@@ -137,8 +137,8 @@ ______________________________________________________________________
     (Phase 2) and rendering (Phase 3), keeping `app` and `ui` decoupled with
     zero `@import("ui")` in `src/app/`.
   - Prior to calling `ui.layout.renderFrame`, `src/viewer.zig` calls
-    `app_state.frame_metrics.present.settleBeforeRender(input.now_ms, is_paced_step)` and then (`buildUiViewModel`) constructs `UiViewModel`
-    (`src/ui/view_model.zig`)
+    `app_state.frame_metrics.present.settle(input.now_ms)` and then
+    (`buildUiViewModel`) constructs `UiViewModel` (`src/ui/view_model.zig`)
     from `*const AppState` and `*const RenderResources` as a fully immutable
     snapshot struct containing const pointers and value types (gathering
     `snapshotStats()` — including rolling 60-frame `FrameMetrics` summaries and
@@ -146,16 +146,18 @@ ______________________________________________________________________
     only when HUD panels are visible).
   - Phase 3 keeps `ui` clock-free and splits CPU layout from GPU submission:
     `ui.layout.renderFrame` returns `gpu.pass.PassTimings` (`total_pass_ms`,
-    `gpu_encode_ms`, `swapchain_wait_ms`) directly from `gpu.pass.executeFrame`.
+    `gpu_encode_ms`, `swapchain_wait_ms`, `swapchain_present_ts`) directly from
+    `gpu.pass.executeFrame`.
     `executeFrame` brackets `win.waitAndAcquireSwapchainTexture` as
-    `swapchain_wait_ms` and subtracts it with `-|` from `total_pass_ms` to
-    yield active CPU `gpu_encode_ms`. `updateFrame` (`src/viewer.zig`) measures
+    `swapchain_wait_ms`, subtracts it with `-|` from `total_pass_ms` to yield
+    active CPU `gpu_encode_ms`, and stamps `swapchain_present_ts` upon window
+    swapchain `cmd_buf.submit()`. `updateFrame` (`src/viewer.zig`) measures
     total Phase 3 elapsed duration via `std.Io.Clock.awake.now(app_state.io)`
     (across `buildUiViewModel`, `renderFrame`, and non-screenshot
     `handleScreenshotPostRender`) and derives
     `ui_layout_ms = @max(0.0, phase3_total_ms - pass_timings.total_pass_ms)`
-    before recording all phases plus `(phase3_end, input.now_ms, is_paced_step)` into `frame_metrics` (`FrameSample.totalMs()` excludes
-    `swapchain_wait_ms`).
+    before recording all phases plus `pass_timings.swapchain_present_ts` into
+    `frame_metrics` (`FrameSample.totalMs()` excludes `swapchain_wait_ms`).
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 

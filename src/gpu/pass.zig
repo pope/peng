@@ -58,22 +58,26 @@ pub const FrameTargetOptions = struct {
     capture_filename: ?[:0]const u8 = null,
 };
 
-/// Total pass duration, active GPU command encoding duration, and swapchain
-/// acquisition wait duration returned by `executeFrame` in milliseconds.
+/// Total pass duration, active GPU command encoding duration, swapchain
+/// acquisition wait duration, and optional window swapchain submission
+/// timestamp returned by `executeFrame`.
 pub const PassTimings = struct {
     total_pass_ms: f64 = 0.0,
     gpu_encode_ms: f64 = 0.0,
     swapchain_wait_ms: f64 = 0.0,
+    swapchain_present_ts: ?std.Io.Timestamp = null,
 };
 
 fn buildPassTimings(
     total_pass: std.Io.Duration,
     swapchain_wait: std.Io.Duration,
+    swapchain_present_ts: ?std.Io.Timestamp,
 ) PassTimings {
     return .{
         .total_pass_ms = state.durationToMs(total_pass),
         .gpu_encode_ms = state.activeDurationMs(total_pass, swapchain_wait),
         .swapchain_wait_ms = state.durationToMs(swapchain_wait),
+        .swapchain_present_ts = swapchain_present_ts,
     };
 }
 
@@ -876,7 +880,9 @@ fn executeRenderPacket(
 
 /// Orchestrates command buffer acquisition, swapchain vs headless target
 /// binding, invocation of render callback, screenshot capture, and fence sync.
-/// Returns pass, active GPU encoding, and swapchain wait timings in ms.
+/// Returns `PassTimings` with pass, active GPU encode, and swapchain wait
+/// durations in milliseconds plus the optional window swapchain submit
+/// timestamp.
 pub fn executeFrame(
     gpu_res: *RenderResources,
     view_params: ViewportParams,
@@ -892,6 +898,7 @@ pub fn executeFrame(
     const io = gpu_res.io;
     const pass_start = std.Io.Clock.awake.now(io);
     var swapchain_wait: std.Io.Duration = .zero;
+    var swapchain_present_ts: ?std.Io.Timestamp = null;
 
     const dev = gpu_res.device;
     const cmd_buf = dev.acquireCommandBuffer() orelse
@@ -985,6 +992,7 @@ pub fn executeFrame(
             return buildPassTimings(
                 pass_start.untilNow(io, .awake),
                 swapchain_wait,
+                null,
             );
         }
 
@@ -1064,7 +1072,9 @@ pub fn executeFrame(
             }
         } else {
             cmd_buf_submitted = true;
-            _ = cmd_buf.submit();
+            if (cmd_buf.submit()) {
+                swapchain_present_ts = std.Io.Clock.awake.now(io);
+            }
         }
     } else {
         cmd_buf_submitted = true;
@@ -1073,7 +1083,11 @@ pub fn executeFrame(
             return error.SwapchainTextureUnavailable;
         }
     }
-    return buildPassTimings(pass_start.untilNow(io, .awake), swapchain_wait);
+    return buildPassTimings(
+        pass_start.untilNow(io, .awake),
+        swapchain_wait,
+        swapchain_present_ts,
+    );
 }
 
 test "intersectScissor computes correct overlapping rectangle" {
@@ -1288,20 +1302,31 @@ test "findBlurSplit pairs initialized resources with blurred_surface index" {
 }
 
 test "buildPassTimings subtracts swapchain wait saturating safely" {
+    const present_ts = std.Io.Timestamp.fromNanoseconds(50_000_000);
     const t = buildPassTimings(
         .{ .nanoseconds = 17_500_000 },
         .{ .nanoseconds = 16_000_000 },
+        present_ts,
     );
     try std.testing.expectEqual(@as(f64, 17.5), t.total_pass_ms);
     try std.testing.expectEqual(@as(f64, 1.5), t.gpu_encode_ms);
     try std.testing.expectEqual(@as(f64, 16.0), t.swapchain_wait_ms);
+    try std.testing.expectEqual(
+        @as(?std.Io.Timestamp, present_ts),
+        t.swapchain_present_ts,
+    );
 
     // Clock anomaly / wait exceeding total pass duration saturates to 0.0.
     const clamped = buildPassTimings(
         .{ .nanoseconds = -1_000_000 },
         .{ .nanoseconds = 5_000_000 },
+        null,
     );
     try std.testing.expectEqual(@as(f64, 0.0), clamped.total_pass_ms);
     try std.testing.expectEqual(@as(f64, 0.0), clamped.gpu_encode_ms);
     try std.testing.expectEqual(@as(f64, 5.0), clamped.swapchain_wait_ms);
+    try std.testing.expectEqual(
+        @as(?std.Io.Timestamp, null),
+        clamped.swapchain_present_ts,
+    );
 }

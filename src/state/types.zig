@@ -104,11 +104,6 @@ pub const FrameInput = struct {
     now_ms: u64 = 0,
     /// Active CPU time spent in `pollFrameInput` excluding idle event wait.
     poll_cpu_ms: f64 = 0.0,
-    /// Blocking OS event-wait sleep duration spent inside `pollFrameInput`.
-    wait_sleep_ms: f64 = 0.0,
-    /// True when `pollFrameInput`'s initial poll/wait returned a pending event
-    /// rather than timing out with an empty queue.
-    wait_woke_on_event: bool = false,
 
     /// Returns the sanitized display DPI scale factor for this frame.
     pub inline fn dpiScale(self: FrameInput) DpiScale {

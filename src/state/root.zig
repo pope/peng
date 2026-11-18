@@ -64,7 +64,6 @@ pub const ImageEdits = viewport.ImageEdits;
 pub const ImageTransition = types.ImageTransition;
 pub const IngestTelemetry = telemetry.IngestTelemetry;
 pub const InteractionState = interaction.InteractionState;
-pub const isPassiveStepPaced = telemetry.isPassiveStepPaced;
 pub const LOADING_GRACE_PERIOD_MS = types.LOADING_GRACE_PERIOD_MS;
 pub const MediaItem = navigation.MediaItem;
 pub const MediaItemSlice = navigation.MediaItemSlice;

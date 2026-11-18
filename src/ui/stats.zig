@@ -907,14 +907,11 @@ pub fn renderStatsOverlay(
         .{ s.frame.swapchain_wait.mean, s.frame.swapchain_wait.max },
     );
     const fps_str: []const u8 = switch (s.frame.present) {
-        .active => |fps| try frame_allocator.print(
-            "{d:.1} FPS (low {d:.1})",
-            .{ fps.mean_fps, fps.low_fps },
-        ),
-        .idle => |idle| if (idle.last_burst_fps) |last|
+        .active => |fps| try frame_allocator.print("{d:.1} FPS", .{fps}),
+        .idle => |idle| if (idle.last_fps) |last|
             try frame_allocator.print("Idle (last {d:.1} FPS)", .{last})
         else
-            "Idle (Event-Driven)",
+            "Idle",
     };
     try hud.addRow("Frame Rate", fps_str);
     try hud.addRow("Frame CPU", frame_total_str);
@@ -1183,7 +1180,7 @@ test "renderStatsOverlay emits per-phase frame timings and max spikes" {
 
     const expected = [_][]const u8{
         "Frame Rate",
-        "Idle (Event-Driven)",
+        "Idle",
         "Frame CPU",
         "4.00 ± 0.31 ms (max 6.75)",
         "  1. Ingest",
@@ -1260,7 +1257,7 @@ test "renderStatsOverlay formats active and settled PresentCadence" {
     const dims = LogicalDims{ .w = 1024.0, .h = 768.0 };
     const measure_data = MeasureTextUserData{};
 
-    // 1. Active streaming burst -> "120.0 FPS (low 118.4)"
+    // 1. Latched swapchain FPS -> "120.0 FPS"
     var interaction_active: state.InteractionState = .{};
     interaction_active.beginFrameLayout();
     var list_active = UiDrawList{ .allocator = frame_alloc };
@@ -1278,9 +1275,7 @@ test "renderStatsOverlay formats active and settled PresentCadence" {
             .debug_show_thumb = false,
             .stats = .{
                 .frame = .{
-                    .present = .{
-                        .active = .{ .mean_fps = 120.0, .low_fps = 118.4 },
-                    },
+                    .present = .{ .active = 120.0 },
                 },
             },
         },
@@ -1290,11 +1285,9 @@ test "renderStatsOverlay formats active and settled PresentCadence" {
         &measure_data,
     );
     try std.testing.expect(drawListHasText(&list_active, "Frame Rate"));
-    try std.testing.expect(
-        drawListHasText(&list_active, "120.0 FPS (low 118.4)"),
-    );
+    try std.testing.expect(drawListHasText(&list_active, "120.0 FPS"));
 
-    // 2. Settled idle with last burst FPS -> "Idle (last 120.0 FPS)"
+    // 2. Settled idle with last FPS -> "Idle (last 120.0 FPS)"
     var interaction_idle: state.InteractionState = .{};
     interaction_idle.beginFrameLayout();
     var list_idle = UiDrawList{ .allocator = frame_alloc };
@@ -1313,7 +1306,7 @@ test "renderStatsOverlay formats active and settled PresentCadence" {
             .stats = .{
                 .frame = .{
                     .present = .{
-                        .idle = .{ .last_burst_fps = 120.0 },
+                        .idle = .{ .last_fps = 120.0 },
                     },
                 },
             },

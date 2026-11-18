@@ -541,8 +541,6 @@ pub fn pollFrameInput(
         .delta_time_ms = delta_time_ms,
         .now_ms = current_ticks,
         .poll_cpu_ms = poll_cpu_ms,
-        .wait_sleep_ms = state.durationToMs(wait_sleep),
-        .wait_woke_on_event = wait_success,
     };
 }
 

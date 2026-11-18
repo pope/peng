@@ -177,15 +177,13 @@ ______________________________________________________________________
   (`mean`, `stdev`, `max`) for `FrameMetrics` (`ingest`, `intents`, `sync`,
   `ui_layout`, `gpu_encode`, `swapchain_wait`, and `total` — excluding blocking
   OS event-wait sleep via `FrameInput.poll_cpu_ms` and VSync/GPU backpressure
-  `swapchain_wait_ms`), while `PresentTracker` (5-state `Phase`: `.idle`,
-  `.primed`, `.warming`, `.settling`, `.streaming` with
-  `PRESENT_IDLE_GAP_MS = 250` and `is_paced_step` gating against passive
-  event-wait sleep + VRR cold-wake transients) derives event-driven
-  `PresentCadence` (`mean_fps = 1000.0 / summary.mean`,
-  `low_fps = 1000.0 / summary.max` across its 60-interval `RenderStats` window,
-  settling once via `settleBeforeRender` before `buildUiViewModel`—or via
-  `.settling` with `settleTimeoutMs == 0` when a `.streaming` burst expires in
-  `record`—and `stats_panel.visible`-gated `settleTimeoutMs` in
+  `swapchain_wait_ms`), while `PresentTracker` (`Accumulator` + `Display`
+  unions with `PRESENT_IDLE_GAP_MS = 1000`, `100ms` initial bootstrap, `500ms`
+  latch window, and `150ms` contiguous gap guard skipping cold-wake scanouts
+  and `ScrollCadence` `+200ms` settle wakeups) measures actual window swapchain
+  `cmd_buf.submit()` timestamps (`PassTimings.swapchain_present_ts`) into
+  `PresentCadence` (settling once via `present.settle` before
+  `buildUiViewModel` and `stats_panel.visible`-gated `settleTimeoutMs` in
   `AppState.getWaitTimeoutMs` without waking idle viewers), and
   `UiRenderMetrics` reports
   `last_ui_batch_count`, `last_ui_vertex_count`, and font-atlas usage.

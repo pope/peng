@@ -53,14 +53,15 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
 
 - **Frame Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
   - Return `.wait_indefinite` (0% CPU) when `.hidden` or settled idle; `.poll`
-    when background events were drained; `8ms` tick when `isBusy()`, loading,
-    dragging, gliding (`pan_controller`/`zoom_controller`), unpopulated prefetch
-    cache, or resized; and `getWaitTimeoutMs` for transient overlays,
+    when background events were drained or during active `hasVisualMotion` on a
+    visible GPU swapchain window; `8ms` tick when `hasPendingAsyncWork()` or
+    headless motion is active; and `getWaitTimeoutMs` for transient overlays,
+    unpaused `SlideshowMode.remainingTimeoutMs`,
     `ScrollCadence.settleTimeoutMs` (`35ms` `.single_step`, `200ms`
     `.brisk_scroll`, `251ms` promotion), `upload_staging.decayTimeoutMs`, and
-    `PresentTracker.settleTimeoutMs` (`250ms` `PRESENT_IDLE_GAP_MS`, gated on
-    `stats_panel.visible` so `.streaming` -> `.settling`/`.idle` -> `.primed`
-    wakes once with zero infinite redraw loop).
+    `PresentTracker.settleTimeoutMs` (`1000ms` `PRESENT_IDLE_GAP_MS`, gated on
+    `stats_panel.visible` so `.active` -> `.idle` wakes once with zero infinite
+    redraw loop).
 - **Modal Input Decoupling & Scroll Containers**:
   - Gate modal input on `isAcceptingInput()` (`PaletteLifecycle.open`), render
     `visibleMode()` and pass `captures_pointer = false` while `.closing`, and
