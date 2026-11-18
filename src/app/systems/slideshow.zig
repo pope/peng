@@ -13,14 +13,22 @@ const FrameInput = state_pkg.FrameInput;
 ///
 /// Responsibilities:
 /// 1. Checks if slideshow playback is paused (command palette open, viewport
-///    dragging, active slide decoding, or explicit pause).
-/// 2. If unpaused, advances the accumulated slideshow timer by `ctx.delta_time_ms`.
+///    dragging, active slide decoding, hidden/suspended window, or explicit
+///    pause) and disarms the monotonic tick anchor while paused.
+/// 2. If unpaused, advances the slideshow timer via `ctx.now_ms` (falling back
+///    to `ctx.delta_time_ms` on initial arming or synthetic tests).
 /// 3. Emits `.next_image` application intent once the accumulated duration
 ///    reaches or exceeds the configured interval.
 pub fn sysUpdateSlideshow(ctx: FrameContext) !void {
     const state = ctx.state;
-    if (state.isSlideshowPaused()) return;
-    if (state.viewer.navigation.slideshow.tick(@floatCast(ctx.delta_time_ms))) {
+    if (state.isSlideshowPaused()) {
+        state.viewer.navigation.slideshow.syncClock(ctx.now_ms, false);
+        return;
+    }
+    if (state.viewer.navigation.slideshow.tick(
+        ctx.now_ms,
+        ctx.delta_time_ms,
+    )) {
         try state.pushIntent(.next_image);
     }
 }
@@ -171,4 +179,52 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     try std.testing.expect(!state.isSlideshowPaused());
     try sysUpdateSlideshow(ctx_2s);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+}
+
+test "sysUpdateSlideshow advances across sleep with clamped delta_time_ms" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "img1.jpg" },
+    });
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "img2.jpg" },
+    });
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{ .asset = .failed },
+    });
+
+    state.viewer.navigation.slideshow = .{
+        .active = .{ .interval_s = 3.0 },
+    };
+    state.viewer.navigation.slideshow.syncClock(1000, true);
+
+    // Wake after 2000ms timeout cap (t=3000ms) with clamped 33.333ms delta
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = 33.333,
+        .now_ms = 3000,
+    });
+    try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
+    try std.testing.expectEqual(@as(?i32, 1000), state.getWaitTimeoutMs(3000));
+
+    // Wake after remaining 1000ms (t=4000ms) -> queues .next_image
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = 33.333,
+        .now_ms = 4000,
+    });
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+    try std.testing.expectEqual(
+        intents.AppIntent.next_image,
+        state.pending_intents.items[0],
+    );
 }

@@ -46,7 +46,7 @@ pub fn updateFrame(
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
-    const was_frame_paced = app_state.isFramePaced(cur_win_w, cur_win_h);
+    const was_frame_paced = app_state.hasVisualMotion(cur_win_w, cur_win_h);
     const wait_strategy = app_state.computeFrameWaitStrategy(
         cur_win_w,
         cur_win_h,

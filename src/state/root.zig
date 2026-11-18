@@ -84,6 +84,7 @@ pub const PresentTracker = telemetry.PresentTracker;
 pub const QuitRequest = types.QuitRequest;
 pub const RenderStats = telemetry.RenderStats;
 pub const ScrollCadence = types.ScrollCadence;
+pub const SlideshowClock = types.SlideshowClock;
 pub const SlideshowMode = types.SlideshowMode;
 pub const SnackbarDisplay = types.SnackbarDisplay;
 pub const SnackbarNotification = snackbar.SnackbarNotification;

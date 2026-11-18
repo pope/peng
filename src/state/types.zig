@@ -212,28 +212,63 @@ pub const FloatingPanel = struct {
     offset_y: f32 = 0.0,
 };
 
+/// Playback and monotonic clock state of an active slideshow.
+pub const SlideshowClock = union(enum) {
+    /// Unpaused, awaiting a monotonic frame timestamp to anchor.
+    unarmed,
+    /// Actively measuring elapsed time since monotonic `last_tick_ms`.
+    running: u64,
+    /// Explicitly paused (`timer_ms` preserved; tick anchor impossible).
+    paused,
+};
+
 /// Automatic slideshow playback mode, advance interval, accumulated frame
-/// timer, and pause state.
+/// timer, and tagged playback/clock state.
 pub const SlideshowMode = union(enum) {
     inactive,
     active: struct {
         interval_s: f32,
         timer_ms: f64 = 0.0,
-        is_paused: bool = false,
+        clock: SlideshowClock = .unarmed,
     },
 
     pub const MIN_INTERVAL_S: f32 = 0.1;
     pub const MAX_INTERVAL_S: f32 = 3600.0;
 
-    /// Advances the internal slideshow timer by `delta_ms`; returns `true`
-    /// if the interval has elapsed. Does NOT advance when paused or inactive.
-    pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
+    /// Advances the internal slideshow timer using monotonic `now_ms` when
+    /// `now_ms > 0` (arming `.running` with `0.0` elapsed on the first
+    /// unpaused frame, or falling back to `fallback_delta_ms` when
+    /// `now_ms == 0` in clockless tests); returns `true` if the interval has
+    /// elapsed. Does NOT advance when paused or inactive.
+    pub fn tick(
+        self: *SlideshowMode,
+        now_ms: u64,
+        fallback_delta_ms: f64,
+    ) bool {
         switch (self.*) {
             .inactive => return false,
             .active => |*data| {
-                if (data.is_paused or data.interval_s <= 0.0) return false;
-                data.timer_ms += delta_ms;
-                if (data.timer_ms >= data.interval_s * 1000.0) {
+                if (data.interval_s <= 0.0) return false;
+                const step_ms: f64 = switch (data.clock) {
+                    .paused => return false,
+                    .unarmed => blk: {
+                        if (now_ms > 0) {
+                            data.clock = .{ .running = now_ms };
+                            break :blk 0.0;
+                        }
+                        break :blk @max(0.0, fallback_delta_ms);
+                    },
+                    .running => |prev| blk: {
+                        if (now_ms > 0) {
+                            data.clock = .{ .running = now_ms };
+                            break :blk @floatFromInt(now_ms -| prev);
+                        }
+                        break :blk @max(0.0, fallback_delta_ms);
+                    },
+                };
+
+                data.timer_ms += step_ms;
+                if (data.timer_ms >= @as(f64, data.interval_s) * 1000.0) {
                     data.timer_ms = 0.0;
                     return true;
                 }
@@ -242,20 +277,82 @@ pub const SlideshowMode = union(enum) {
         }
     }
 
-    /// Resets the slideshow timer accumulator to zero without changing the
-    /// interval or pause state.
+    /// Resets the slideshow timer accumulator and disarms `.running` back to
+    /// `.unarmed` without changing the interval or `.paused` state.
     pub fn resetTimer(self: *SlideshowMode) void {
         switch (self.*) {
             .inactive => {},
-            .active => |*a| a.timer_ms = 0.0,
+            .active => |*a| {
+                a.timer_ms = 0.0;
+                switch (a.clock) {
+                    .running => a.clock = .unarmed,
+                    .unarmed, .paused => {},
+                }
+            },
         }
     }
 
-    /// Returns `true` if slideshow is active and currently paused.
+    /// Arms `.unarmed` to `.{ .running = now_ms }` when `can_advance` and
+    /// `now_ms > 0`, and disarms `.running` to `.unarmed` whenever
+    /// `!can_advance` so occluded/dragging/loading sleep never counts toward
+    /// the slide interval. Preserves `.paused`.
+    pub fn syncClock(
+        self: *SlideshowMode,
+        now_ms: u64,
+        can_advance: bool,
+    ) void {
+        switch (self.*) {
+            .inactive => {},
+            .active => |*a| switch (a.clock) {
+                .paused => {},
+                .unarmed => {
+                    if (can_advance and now_ms > 0) {
+                        a.clock = .{ .running = now_ms };
+                    }
+                },
+                .running => {
+                    if (!can_advance) {
+                        a.clock = .unarmed;
+                    }
+                },
+            },
+        }
+    }
+
+    /// Returns the remaining milliseconds until the next slide advance,
+    /// incorporating wall-clock time elapsed since `.running` when armed.
+    /// Returns `null` when inactive or `.paused`.
+    pub fn remainingTimeoutMs(self: SlideshowMode, now_ms: u64) ?u64 {
+        switch (self) {
+            .inactive => return null,
+            .active => |data| {
+                if (data.interval_s <= 0.0) return null;
+                const since_last: f64 = switch (data.clock) {
+                    .paused => return null,
+                    .unarmed => 0.0,
+                    .running => |prev| if (now_ms > 0)
+                        @floatFromInt(now_ms -| prev)
+                    else
+                        0.0,
+                };
+                const target_ms = @as(f64, data.interval_s) * 1000.0;
+                const rem_f = @max(
+                    0.0,
+                    @ceil(target_ms - (data.timer_ms + since_last)),
+                );
+                return @intFromFloat(@min(rem_f, 3_600_000.0));
+            },
+        }
+    }
+
+    /// Returns `true` if slideshow is active and explicitly `.paused`.
     pub inline fn isPaused(self: *const SlideshowMode) bool {
         return switch (self.*) {
             .inactive => false,
-            .active => |a| a.is_paused,
+            .active => |a| switch (a.clock) {
+                .paused => true,
+                .unarmed, .running => false,
+            },
         };
     }
 
@@ -264,7 +361,7 @@ pub const SlideshowMode = union(enum) {
     pub fn pause(self: *SlideshowMode) void {
         switch (self.*) {
             .inactive => {},
-            .active => |*a| a.is_paused = true,
+            .active => |*a| a.clock = .paused,
         }
     }
 
@@ -272,16 +369,10 @@ pub const SlideshowMode = union(enum) {
     pub fn unpause(self: *SlideshowMode) void {
         switch (self.*) {
             .inactive => {},
-            .active => |*a| a.is_paused = false,
-        }
-    }
-
-    /// Toggles the pause state of an active slideshow. Has no effect when
-    /// inactive.
-    pub fn togglePause(self: *SlideshowMode) void {
-        switch (self.*) {
-            .inactive => {},
-            .active => |*a| a.is_paused = !a.is_paused,
+            .active => |*a| switch (a.clock) {
+                .paused => a.clock = .unarmed,
+                .unarmed, .running => {},
+            },
         }
     }
 
@@ -628,26 +719,40 @@ test "SlideshowMode lifecycle, pause, and unpause" {
     // Inactive mode does not tick
     var mode: SlideshowMode = .inactive;
     try std.testing.expect(!mode.isPaused());
-    try std.testing.expect(!mode.tick(1000.0));
+    try std.testing.expect(!mode.tick(0, 1000.0));
+    try std.testing.expectEqual(@as(?u64, null), mode.remainingTimeoutMs(1000));
 
-    // Active mode ticking
+    // Active mode ticking with monotonic timestamps across clamped sleep
     mode = .{ .active = .{ .interval_s = 2.0 } };
+    mode.syncClock(1000, true);
     try std.testing.expect(!mode.isPaused());
+    try std.testing.expectEqual(
+        @as(?u64, 2000),
+        mode.remainingTimeoutMs(1000),
+    );
 
-    // Advance 1s (halfway) -> returns false
-    try std.testing.expect(!mode.tick(1000.0));
+    // Advance 1s via monotonic clock (even with clamped 33.3ms fallback)
+    try std.testing.expect(!mode.tick(2000, 33.333));
     try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
+    try std.testing.expectEqual(
+        @as(?u64, 1000),
+        mode.remainingTimeoutMs(2000),
+    );
 
-    // Pause slideshow -> tick returns false and timer DOES NOT advance
+    // Pause slideshow -> tick returns false and sleep while paused is ignored
     mode.pause();
     try std.testing.expect(mode.isPaused());
-    try std.testing.expect(!mode.tick(1000.0));
+    try std.testing.expectEqual(@as(?u64, null), mode.remainingTimeoutMs(5000));
+    try std.testing.expect(!mode.tick(5000, 1000.0));
     try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
 
-    // Resume -> timer continues from 1000ms
+    // Resume on wake frame (t=5000ms) arms anchor without counting occluded
+    // sleep, then remaining 1000ms advances at t=6000ms
     mode.unpause();
     try std.testing.expect(!mode.isPaused());
-    try std.testing.expect(mode.tick(1000.0));
+    try std.testing.expect(!mode.tick(5000, 33.333));
+    try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
+    try std.testing.expect(mode.tick(6000, 33.333));
     try std.testing.expectEqual(@as(f64, 0.0), mode.active.timer_ms);
 }
 

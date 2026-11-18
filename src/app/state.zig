@@ -262,12 +262,11 @@ pub const AppState = struct {
     }
 
     /// Returns `true` if files are currently loading, background workers are
-    /// active, active unpaused slideshow is running, or animations are active.
+    /// active, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
         return self.viewer.hasActiveAnimation() or
             self.viewer.navigation.isLoadingFiles() or
-            self.workers.isBusy() or
-            (self.viewer.isSlideshowActive() and !self.isSlideshowPaused());
+            self.workers.isBusy();
     }
 
     /// Returns `true` if the currently active slide is still decoding or awaiting
@@ -312,8 +311,9 @@ pub const AppState = struct {
     }
 
     /// Returns the remaining millisecond deadline for transient holding timers
-    /// (e.g. title auto-hide, snackbar, navigation settle, staging decay,
-    /// visible stats present settle), or null if none active.
+    /// (title auto-hide, snackbar, navigation settle, staging decay, visible
+    /// stats present settle, and active unpaused slideshow intervals), or null
+    /// if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
         var min_rem: ?u64 = null;
         switch (self.viewer.ui.overlays.title_display) {
@@ -345,21 +345,41 @@ pub const AppState = struct {
                 min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
             }
         }
+        if (!self.isSlideshowPaused()) {
+            if (self.viewer.navigation.slideshow.remainingTimeoutMs(
+                now,
+            )) |slide_rem| {
+                min_rem =
+                    if (min_rem) |cur| @min(cur, slide_rem) else slide_rem;
+            }
+        }
         if (min_rem) |rem| {
             return @intCast(@min(rem, 2000));
         }
         return null;
     }
 
-    /// Returns `true` when active visual animations, drags, controllers,
-    /// resize events, or pending worker/prefetch work require frame-paced
-    /// polling rather than passive idle waiting.
-    pub fn isFramePaced(
+    /// Returns `true` when active visual animations, interactive viewport drags
+    /// or motion controllers, or window resizes require continuous visual frame
+    /// updates.
+    pub fn hasVisualMotion(
         self: *const AppState,
         cur_win_w: f32,
         cur_win_h: f32,
     ) bool {
-        const is_current_loading = self.isCurrentSlideLoading();
+        const last_w = self.viewer.last_win_dims.w;
+        const last_h = self.viewer.last_win_dims.h;
+        const window_resized = last_w != 0 and
+            (last_w != cur_win_w or last_h != cur_win_h);
+        return self.viewer.hasActiveAnimation() or
+            (self.viewer.drag_state != .none) or
+            (self.viewer.viewport.isZoomed() and
+                self.viewer.pan_controller.isBusy()) or
+            self.viewer.zoom_controller.isBusy() or
+            window_resized;
+    }
+
+    fn hasPendingAsyncWork(self: *const AppState) bool {
         const has_gpu = self.gpu_device != null;
         const has_unpopulated_cache = blk: {
             if (self.viewer.navigation.getVisibleCount() <= 1) {
@@ -374,25 +394,18 @@ pub const AppState = struct {
                 has_gpu,
             );
         };
-        const last_w = self.viewer.last_win_dims.w;
-        const last_h = self.viewer.last_win_dims.h;
-        const window_resized = last_w != 0 and
-            (last_w != cur_win_w or last_h != cur_win_h);
-        return self.isBusy() or
-            is_current_loading or
+        return self.viewer.navigation.isLoadingFiles() or
+            self.workers.isBusy() or
+            self.isCurrentSlideLoading() or
+            self.cache.hasPendingCpuUploads(has_gpu) or
             (self.pending_wait_load_streams.items.len > 0) or
-            (self.viewer.drag_state != .none) or
-            (self.viewer.viewport.isZoomed() and
-                self.viewer.pan_controller.isBusy()) or
-            self.viewer.zoom_controller.isBusy() or
-            has_unpopulated_cache or
-            window_resized;
+            has_unpopulated_cache;
     }
 
     /// Computes the event-loop wait strategy for `pollFrameInput`.
-    /// When `bg_events_processed` is true, returns `.poll` so events drained
-    /// before `pollFrameInput` are rendered immediately without an 8ms
-    /// `waitEventTimeout` delay.
+    /// Active visual motion on a visible GPU window returns `.poll` so
+    /// swapchain VSync paces high-refresh displays natively; background worker
+    /// waiting uses an 8ms timeout woken immediately via `sdl.pushWakeEvent()`.
     pub fn computeFrameWaitStrategy(
         self: *const AppState,
         cur_win_w: f32,
@@ -424,7 +437,13 @@ pub const AppState = struct {
             else
                 .wait_indefinite;
         }
-        const is_busy = self.isFramePaced(cur_win_w, cur_win_h);
+        const visual_motion = self.hasVisualMotion(cur_win_w, cur_win_h);
+        const swapchain_paced = self.gpu_device != null and
+            self.display.visibleWindow() != null;
+        if (visual_motion and swapchain_paced) {
+            return .poll;
+        }
+        const is_busy = visual_motion or self.hasPendingAsyncWork();
         const wait_timeout_ms = if (!is_busy)
             self.getWaitTimeoutMs(now_ticks)
         else
@@ -2080,4 +2099,98 @@ test "AppState.getWaitTimeoutMs gates present settle on stats_panel.visible" {
         @as(?i32, null),
         state.getWaitTimeoutMs(settle_ms + 16),
     );
+}
+
+test "AppState.computeFrameWaitStrategy paces motion and sleeps slideshow" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // 1. Headless (no swapchain) with active animation uses 8ms timeout cap
+    state.viewer.animations.startFrom(
+        .snackbar,
+        0.0,
+        1.0,
+        120.0,
+        .ease_out_quad,
+    );
+    try std.testing.expect(state.hasVisualMotion(1024.0, 768.0));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 8 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+
+    // 2. Settled animation + background worker busy uses 8ms timeout (woken
+    // immediately via sdl.pushWakeEvent), NOT unthrottled .poll
+    state.viewer.animations.settleAll();
+    try std.testing.expect(!state.hasVisualMotion(1024.0, 768.0));
+    state.workers.active_threads.store(1, .release);
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 8 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+    state.workers.active_threads.store(0, .release);
+
+    // 3. Unpaused static slideshow is not isBusy() and sleeps until its
+    // remaining interval deadline (clamped to <= 2000ms per step)
+    state.viewer.navigation.slideshow = .{
+        .active = .{
+            .interval_s = 1.5,
+            .clock = .{ .running = 1000 },
+        },
+    };
+    try std.testing.expect(!state.isBusy());
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 1200 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1300),
+    );
+    state.viewer.navigation.slideshow = .inactive;
+
+    // 4. Visible GPU window with active animation uses .poll so swapchain VSync
+    // paces native 120Hz/144Hz/240Hz displays without an 8ms CPU sleep
+    gpu.graphics.initSdlCore(true) catch return;
+    defer gpu.graphics.quitSdlCore();
+    const setup = gpu.graphics.initGraphicsAndWindow(
+        "wait-strategy-test",
+        .{ .headless = true, .debug_mode = false },
+    ) catch return;
+    defer {
+        setup.gpu_device.destroy();
+        setup.window.destroy();
+    }
+
+    state.gpu_device = setup.gpu_device;
+    state.display = .{
+        .visible = .{
+            .windowed = .{
+                .handle = setup.window,
+            },
+        },
+    };
+    defer {
+        state.gpu_device = null;
+        state.display = .default_headless;
+    }
+
+    state.viewer.animations.startFrom(
+        .snackbar,
+        0.0,
+        1.0,
+        120.0,
+        .ease_out_quad,
+    );
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.poll,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+
+    state.viewer.animations.settleAll();
+    state.workers.active_threads.store(1, .release);
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 8 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+    state.workers.active_threads.store(0, .release);
 }

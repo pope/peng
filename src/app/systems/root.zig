@@ -140,6 +140,10 @@ pub fn runUpdatePhase(
             .none => {},
         }
     }
+    app_state.viewer.navigation.slideshow.syncClock(
+        ctx.now_ms,
+        !app_state.isSlideshowPaused(),
+    );
 
     const sync_end = std.Io.Clock.awake.now(app_state.io);
     return .{
