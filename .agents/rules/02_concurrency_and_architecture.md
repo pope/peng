@@ -15,7 +15,9 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
 - **`ViewerState` (`src/state/viewer_state.zig`)**: 100% main-thread visual/UI
   model. **Purity Invariant**: MUST hold **ZERO** GPU handles, worker pools,
   `std.Io`, mutexes/queues, or stored `std.mem.Allocator` fields (`rotation_map`
-  and `PaletteState` are unmanaged; only `navigation` owns bounded CPU arenas).
+  is unmanaged and `PaletteState` uses explicit `allocator` params for its
+  non-arena lists/searcher, while `navigation` and `palette` (`dir_items`
+  backing buffer + strings in `dir_arena`) own bounded CPU arenas).
 - **`UiViewModel` (`src/ui/view_model.zig`)**: Immutable snapshot built in
   `src/viewer.zig` (`buildUiViewModel(*const AppState, now_ms)`) at the Phase 2
   -> Phase 3 boundary. Phase 3 (`renderFrame` -> `buildRenderPacket` ->

@@ -21,6 +21,9 @@ const palette_action_items = intents.actions.palette_action_items;
 const scanDirectoryEntries = vfs.scanDirectoryEntries;
 const trimTrailingSeparators = vfs.trimTrailingSeparators;
 
+/// Maximum memory bytes retained across directory arena resets (64 KiB).
+const MAX_RETAINED_DIR_ARENA_BYTES: usize = 64 * 1024;
+
 /// Lifecycle state of the command palette modal, coupling visibility and
 /// active mode so closed palettes cannot be closing and vice versa.
 pub const PaletteLifecycle = union(enum) {
@@ -47,7 +50,10 @@ pub const PaletteState = struct {
     current_nav_dir: std.ArrayList(u8) = .empty,
     last_nav_dir: std.ArrayList(u8) = .empty,
     last_child_dir: std.ArrayList(u8) = .empty,
+    /// Directory navigator items; both the backing buffer and entry strings are
+    /// allocated from `dir_arena`.
     dir_items: std.ArrayList(DirectoryEntry) = .empty,
+    dir_arena: std.heap.ArenaAllocator,
     current_dir_image_count: usize = 0,
     dir_scan_generation: std.atomic.Value(usize) = .init(0),
     searcher: ?fuzzig.Ascii = null,
@@ -56,7 +62,9 @@ pub const PaletteState = struct {
     /// Initializes a new `PaletteState` instance, reserving initial
     /// capacities for queries, matches, and paths.
     pub fn init(allocator: std.mem.Allocator) !PaletteState {
-        var self = PaletteState{};
+        var self = PaletteState{
+            .dir_arena = std.heap.ArenaAllocator.init(allocator),
+        };
         errdefer self.deinit(allocator);
         // 64 bytes: accommodates user search query input strings
         // (typical search queries are < 64 chars)
@@ -73,8 +81,6 @@ pub const PaletteState = struct {
         try self.last_nav_dir.ensureTotalCapacity(allocator, 128);
         // 64 bytes: accommodates directory basename strings
         try self.last_child_dir.ensureTotalCapacity(allocator, 64);
-        // 64 items: initial directory item entry capacity before directory scan
-        try self.dir_items.ensureTotalCapacity(allocator, 64);
         return self;
     }
 
@@ -124,34 +130,28 @@ pub const PaletteState = struct {
         self.current_nav_dir.deinit(allocator);
         self.last_nav_dir.deinit(allocator);
         self.last_child_dir.deinit(allocator);
-        self.clearDirItems(allocator);
-        self.dir_items.deinit(allocator);
+        self.dir_items = .empty;
+        self.dir_arena.deinit();
     }
 
-    /// Releases heap strings owned by directory items and clears the list while
-    /// retaining capacity.
-    pub fn clearDirItems(
-        self: *PaletteState,
-        allocator: std.mem.Allocator,
-    ) void {
-        for (self.dir_items.items) |entry| {
-            allocator.free(entry.getName());
-            if (entry.getFullPath().len > 0) {
-                allocator.free(entry.getFullPath());
-            }
-        }
-        self.dir_items.clearRetainingCapacity();
+    /// Clears directory items and resets the directory arena up to
+    /// `MAX_RETAINED_DIR_ARENA_BYTES`.
+    pub fn clearDirItems(self: *PaletteState) void {
+        self.dir_items = .empty;
+        _ = self.dir_arena.reset(.{
+            .retain_with_limit = MAX_RETAINED_DIR_ARENA_BYTES,
+        });
     }
 
     /// Clears search query, matched indexes, navigation directory, and
     /// restores palette to closed lifecycle state.
-    pub fn reset(self: *PaletteState, allocator: std.mem.Allocator) void {
+    pub fn reset(self: *PaletteState) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
         self.current_nav_dir.clearRetainingCapacity();
         self.last_child_dir.clearRetainingCapacity();
-        self.clearDirItems(allocator);
+        self.clearDirItems();
         _ = self.dir_scan_generation.fetchAdd(1, .release);
         self.lifecycle = .closed;
         self.selected_idx = 0;
@@ -170,10 +170,8 @@ pub const PaletteState = struct {
         if (self.scored_matches.capacity > 64) {
             self.scored_matches.clearAndFree(allocator);
         }
-        if (self.dir_items.capacity > 64) {
-            self.clearDirItems(allocator);
-            self.dir_items.clearAndFree(allocator);
-        }
+        self.dir_items = .empty;
+        _ = self.dir_arena.reset(.free_all);
         if (self.searcher) |*s| {
             if (s.alg.max_haystack > 64) {
                 s.deinit();
@@ -338,15 +336,11 @@ pub const PaletteState = struct {
             return;
         }
 
-        var max_h: usize = self.max_haystack_len;
-        for (self.dir_items.items) |entry| {
-            max_h = @max(max_h, entry.getName().len);
-        }
-        self.max_haystack_len = max_h;
+        if (self.dir_items.items.len == 0) return;
 
-        const searcher_ptr = try self.getSearcher(
+        var searcher_ptr = try self.getSearcher(
             allocator,
-            max_h,
+            self.max_haystack_len,
             query_str.len,
         );
 
@@ -356,7 +350,16 @@ pub const PaletteState = struct {
         );
 
         for (self.dir_items.items, 0..) |entry, idx| {
-            if (searcher_ptr.score(entry.getName(), query_str)) |score| {
+            const name = entry.getName();
+            if (name.len > self.max_haystack_len) {
+                searcher_ptr = try self.getSearcher(
+                    allocator,
+                    name.len,
+                    query_str.len,
+                );
+                self.max_haystack_len = name.len;
+            }
+            if (searcher_ptr.score(name, query_str)) |score| {
                 self.scored_matches.appendAssumeCapacity(
                     .{ .index = idx, .score = score },
                 );
@@ -392,23 +395,15 @@ pub const PaletteState = struct {
             return;
         }
 
-        var max_h: usize = self.max_haystack_len;
-        for (image_list) |item| {
-            const basename = item.getBasename();
-            max_h = @max(max_h, basename.len);
-            if (item.getJpegPath()) |jpeg_p| {
-                const jpeg_base = std.Io.Dir.path.basename(jpeg_p);
-                max_h = @max(max_h, jpeg_base.len);
-            }
-        }
-        max_h = @max(max_h, "RAW+JPG".len);
-        self.max_haystack_len = max_h;
+        if (image_list.len == 0) return;
 
-        const searcher_ptr = try self.getSearcher(
+        self.max_haystack_len = @max(self.max_haystack_len, "RAW+JPG".len);
+        var searcher_ptr = try self.getSearcher(
             allocator,
-            max_h,
+            self.max_haystack_len,
             query_str.len,
         );
+        const pair_tag_score = searcher_ptr.score("RAW+JPG", query_str);
 
         try self.scored_matches.ensureTotalCapacity(
             allocator,
@@ -417,24 +412,38 @@ pub const PaletteState = struct {
 
         for (image_list, 0..) |item, real_idx| {
             const basename = item.getBasename();
+            if (basename.len > self.max_haystack_len) {
+                searcher_ptr = try self.getSearcher(
+                    allocator,
+                    basename.len,
+                    query_str.len,
+                );
+                self.max_haystack_len = basename.len;
+            }
             var best_score = searcher_ptr.score(basename, query_str);
             if (item.getJpegPath()) |jpeg_p| {
                 const jpeg_base = std.Io.Dir.path.basename(jpeg_p);
+                if (jpeg_base.len > self.max_haystack_len) {
+                    searcher_ptr = try self.getSearcher(
+                        allocator,
+                        jpeg_base.len,
+                        query_str.len,
+                    );
+                    self.max_haystack_len = jpeg_base.len;
+                }
                 if (searcher_ptr.score(jpeg_base, query_str)) |jpeg_score| {
-                    if (best_score) |s| {
-                        best_score = @max(s, jpeg_score);
-                    } else {
-                        best_score = jpeg_score;
-                    }
+                    best_score = if (best_score) |s|
+                        @max(s, jpeg_score)
+                    else
+                        jpeg_score;
                 }
             }
             if (item.isPair()) {
-                if (searcher_ptr.score("RAW+JPG", query_str)) |tag_score| {
-                    if (best_score) |s| {
-                        best_score = @max(s, tag_score);
-                    } else {
-                        best_score = tag_score;
-                    }
+                if (pair_tag_score) |tag_score| {
+                    best_score = if (best_score) |s|
+                        @max(s, tag_score)
+                    else
+                        tag_score;
                 }
             }
             if (best_score) |score| {
@@ -507,9 +516,9 @@ pub const PaletteState = struct {
 
         _ = self.dir_scan_generation.fetchAdd(1, .release);
 
-        self.clearDirItems(allocator);
+        self.clearDirItems();
         self.current_dir_image_count = scanDirectoryEntries(
-            allocator,
+            self.dir_arena.allocator(),
             io,
             dir_path_copy,
             &self.dir_items,
@@ -518,6 +527,7 @@ pub const PaletteState = struct {
                 "Failed to scan directory '{s}': {}",
                 .{ dir_path_copy, err },
             );
+            self.clearDirItems();
             break :blk 0;
         };
         try self.rebuildDirectoryMatches(allocator);
@@ -1236,7 +1246,7 @@ test "PaletteState - lifecycle, action matching, and reset" {
     try std.testing.expect(state.matches.items.len < all_count);
 
     // Reset clears state
-    state.reset(allocator);
+    state.reset();
     try std.testing.expectEqual(PaletteLifecycle.closed, state.lifecycle);
     try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
@@ -1375,16 +1385,20 @@ test "PaletteState directory_navigator mode configuration and item matching" {
     palette.lifecycle = .{ .open = .directory_navigator };
     try palette.current_nav_dir.appendSlice(alloc, "/home/user/Pictures");
 
-    try palette.dir_items.append(alloc, .{
+    const dir_alloc = palette.dir_arena.allocator();
+    try palette.dir_items.append(dir_alloc, .{
         .parent = .{
-            .name = try alloc.dupe(u8, ".."),
-            .full_path = try alloc.dupe(u8, "/home/user"),
+            .name = try dir_alloc.dupe(u8, ".."),
+            .full_path = try dir_alloc.dupe(u8, "/home/user"),
         },
     });
-    try palette.dir_items.append(alloc, .{
+    try palette.dir_items.append(dir_alloc, .{
         .directory = .{
-            .name = try alloc.dupe(u8, "Vacation"),
-            .full_path = try alloc.dupe(u8, "/home/user/Pictures/Vacation"),
+            .name = try dir_alloc.dupe(u8, "Vacation"),
+            .full_path = try dir_alloc.dupe(
+                u8,
+                "/home/user/Pictures/Vacation",
+            ),
             .scan = .{ .scanned = .{ .image_count = 12 } },
         },
     });
@@ -1484,18 +1498,19 @@ test "PaletteState.computeWindowMaxHaystack across visible rows" {
     defer pal_state.deinit(alloc);
     pal_state.lifecycle = .{ .open = .directory_navigator };
 
+    const dir_alloc = pal_state.dir_arena.allocator();
     const long_name: [96]u8 = @splat('a');
-    try pal_state.dir_items.append(alloc, .{
+    try pal_state.dir_items.append(dir_alloc, .{
         .directory = .{
-            .name = try alloc.dupe(u8, "short"),
-            .full_path = try alloc.dupe(u8, "/tmp/short"),
+            .name = try dir_alloc.dupe(u8, "short"),
+            .full_path = try dir_alloc.dupe(u8, "/tmp/short"),
             .scan = .unscanned,
         },
     });
-    try pal_state.dir_items.append(alloc, .{
+    try pal_state.dir_items.append(dir_alloc, .{
         .directory = .{
-            .name = try alloc.dupe(u8, &long_name),
-            .full_path = try alloc.dupe(u8, "/tmp/" ++ long_name),
+            .name = try dir_alloc.dupe(u8, &long_name),
+            .full_path = try dir_alloc.dupe(u8, "/tmp/" ++ long_name),
             .scan = .unscanned,
         },
     });
@@ -1933,17 +1948,18 @@ test "PaletteState - applyFolderScan updates matching directory entry" {
     var state = try PaletteState.init(alloc);
     defer state.deinit(alloc);
 
-    try state.dir_items.append(alloc, .{
+    const dir_alloc = state.dir_arena.allocator();
+    try state.dir_items.append(dir_alloc, .{
         .directory = .{
-            .name = try alloc.dupe(u8, "photos"),
-            .full_path = try alloc.dupe(u8, "/media/photos"),
+            .name = try dir_alloc.dupe(u8, "photos"),
+            .full_path = try dir_alloc.dupe(u8, "/media/photos"),
             .scan = .unscanned,
         },
     });
-    try state.dir_items.append(alloc, .{
+    try state.dir_items.append(dir_alloc, .{
         .archive_file = .{
-            .name = try alloc.dupe(u8, "archive.cbz"),
-            .full_path = try alloc.dupe(u8, "/media/archive.cbz"),
+            .name = try dir_alloc.dupe(u8, "archive.cbz"),
+            .full_path = try dir_alloc.dupe(u8, "/media/archive.cbz"),
             .scan = .unscanned,
         },
     });
@@ -1977,4 +1993,292 @@ test "PaletteState - applyFolderScan updates matching directory entry" {
         .failed,
     );
     try std.testing.expect(!non_existent);
+}
+
+fn referenceBestScore(
+    searcher: *fuzzig.Ascii,
+    item: MediaEntry,
+    query: []const u8,
+) ?i32 {
+    var best = searcher.score(item.getBasename(), query);
+    if (item.getJpegPath()) |jpeg_p| {
+        const jpeg_base = std.Io.Dir.path.basename(jpeg_p);
+        if (searcher.score(jpeg_base, query)) |js| {
+            best = if (best) |s| @max(s, js) else js;
+        }
+    }
+    if (item.isPair()) {
+        if (searcher.score("RAW+JPG", query)) |ts| {
+            best = if (best) |s| @max(s, ts) else ts;
+        }
+    }
+    return best;
+}
+
+test "PaletteState.rebuildFileMatches single-pass score parity and growth" {
+    const alloc = std.testing.allocator;
+    var state = try PaletteState.init(alloc);
+    defer state.deinit(alloc);
+
+    const s_a: [90]u8 = @splat('a');
+    const s_b: [250]u8 = @splat('b');
+    const s_c: [310]u8 = @splat('c');
+    const long_single = "/d/" ++ s_a ++ "_alpha.png";
+    const long_raw = "/d/" ++ s_b ++ "_alpha.ARW";
+    const long_jpg = "/d/" ++ s_c ++ "_beta.JPG";
+    const entries = [_]MediaEntry{
+        .{ .filesystem = .{ .path = "/d/short_alpha.png" } },
+        .{ .filesystem = .{ .path = long_single } },
+        .{
+            .pair = .{
+                .raw_path = long_raw,
+                .jpeg_path = long_jpg,
+            },
+        },
+        .{
+            .pair = .{
+                .raw_path = "/d/other.ARW",
+                .jpeg_path = "/d/other.JPG",
+            },
+        },
+    };
+
+    // Empty query and empty entry list must not allocate searcher
+    try state.rebuildFileMatches(alloc, &entries);
+    try std.testing.expect(state.searcher == null);
+    try std.testing.expectEqual(@as(usize, 4), state.matches.items.len);
+
+    try state.query.appendSlice(alloc, "alpha");
+    try state.rebuildFileMatches(alloc, &.{});
+    try std.testing.expect(state.searcher == null);
+    try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
+
+    var ref = try fuzzig.Ascii.init(
+        alloc,
+        320,
+        16,
+        .{ .case_sensitive = false },
+    );
+    defer ref.deinit();
+
+    const queries = [_][]const u8{ "alpha", "beta", "RAW+JPG" };
+    for (queries) |q| {
+        state.query.clearRetainingCapacity();
+        try state.query.appendSlice(alloc, q);
+        try state.rebuildFileMatches(alloc, &entries);
+
+        var expected: std.ArrayList(ScoredMatch) = .empty;
+        defer expected.deinit(alloc);
+        for (entries, 0..) |item, idx| {
+            if (referenceBestScore(&ref, item, q)) |sc| {
+                try expected.append(alloc, .{ .index = idx, .score = sc });
+            }
+        }
+        std.mem.sort(ScoredMatch, expected.items, {}, struct {
+            fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
+                return a.score > b.score;
+            }
+        }.lessThan);
+
+        try std.testing.expectEqual(
+            expected.items.len,
+            state.scored_matches.items.len,
+        );
+        for (expected.items, state.scored_matches.items) |exp, got| {
+            try std.testing.expectEqual(exp.index, got.index);
+            try std.testing.expectEqual(exp.score, got.score);
+        }
+    }
+    const expected_max = std.Io.Dir.path.basename(long_jpg).len;
+    try std.testing.expectEqual(expected_max, state.max_haystack_len);
+    try std.testing.expect(
+        state.searcher.?.alg.max_haystack >= expected_max,
+    );
+}
+
+test "PaletteState.rebuildDirectoryMatches single-pass parity and growth" {
+    const alloc = std.testing.allocator;
+    var state = try PaletteState.init(alloc);
+    defer state.deinit(alloc);
+
+    // Empty dir_items with non-empty query must not allocate searcher
+    try state.query.appendSlice(alloc, "alpha");
+    try state.rebuildDirectoryMatches(alloc);
+    try std.testing.expect(state.searcher == null);
+    try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
+
+    const dir_alloc = state.dir_arena.allocator();
+    const s_x: [90]u8 = @splat('x');
+    const s_y: [260]u8 = @splat('y');
+    const names = [_][]const u8{
+        "dir_alpha",
+        s_x ++ "_alpha",
+        s_y ++ "_alpha",
+        "unrelated",
+    };
+    for (names) |name| {
+        try state.dir_items.append(dir_alloc, .{
+            .directory = .{
+                .name = try dir_alloc.dupe(u8, name),
+                .full_path = try dir_alloc.dupe(u8, name),
+                .scan = .unscanned,
+            },
+        });
+    }
+
+    try state.rebuildDirectoryMatches(alloc);
+    try std.testing.expectEqual(@as(usize, 266), state.max_haystack_len);
+
+    var ref = try fuzzig.Ascii.init(
+        alloc,
+        266,
+        16,
+        .{ .case_sensitive = false },
+    );
+    defer ref.deinit();
+
+    var expected: std.ArrayList(ScoredMatch) = .empty;
+    defer expected.deinit(alloc);
+    for (names, 0..) |name, idx| {
+        if (ref.score(name, "alpha")) |sc| {
+            try expected.append(alloc, .{ .index = idx, .score = sc });
+        }
+    }
+    std.mem.sort(ScoredMatch, expected.items, {}, struct {
+        fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
+            return a.score > b.score;
+        }
+    }.lessThan);
+
+    try std.testing.expectEqual(
+        expected.items.len,
+        state.scored_matches.items.len,
+    );
+    for (expected.items, state.scored_matches.items) |exp, got| {
+        try std.testing.expectEqual(exp.index, got.index);
+        try std.testing.expectEqual(exp.score, got.score);
+    }
+}
+
+test "PaletteState.clearDirItems bounds arena and shrink frees all" {
+    const alloc = std.testing.allocator;
+    var state = try PaletteState.init(alloc);
+    defer state.deinit(alloc);
+
+    // PaletteState.init does not allocate dir_items on gpa.
+    try std.testing.expectEqual(@as(usize, 0), state.dir_items.capacity);
+    try std.testing.expectEqual(@as(usize, 0), state.dir_arena.queryCapacity());
+
+    const dir_alloc = state.dir_arena.allocator();
+    for (0..16) |_| {
+        _ = try dir_alloc.alloc(u8, 16 * 1024);
+    }
+    try state.dir_items.append(dir_alloc, .{
+        .directory = .{
+            .name = try dir_alloc.dupe(u8, "folder"),
+            .full_path = try dir_alloc.dupe(u8, "/tmp/folder"),
+            .scan = .unscanned,
+        },
+    });
+    try std.testing.expect(
+        state.dir_arena.queryCapacity() > MAX_RETAINED_DIR_ARENA_BYTES,
+    );
+
+    state.clearDirItems();
+    try std.testing.expectEqual(@as(usize, 0), state.dir_items.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.dir_items.capacity);
+    try std.testing.expect(
+        state.dir_arena.queryCapacity() <= MAX_RETAINED_DIR_ARENA_BYTES,
+    );
+
+    state.shrinkToWarmCapacity(alloc);
+    try std.testing.expectEqual(@as(usize, 0), state.dir_items.capacity);
+    try std.testing.expectEqual(@as(usize, 0), state.dir_arena.queryCapacity());
+}
+
+fn testPaletteInitOom(allocator: std.mem.Allocator) !void {
+    var state = try PaletteState.init(allocator);
+    state.deinit(allocator);
+}
+
+test "PaletteState OOM safety on init, rebuildFileMatches, and loadDir" {
+    const base_alloc = std.testing.allocator;
+    try std.testing.checkAllAllocationFailures(
+        base_alloc,
+        testPaletteInitOom,
+        .{},
+    );
+
+    // Mid-loop searcher growth OOM preserves max_haystack_len invariant
+    const s_z: [300]u8 = @splat('z');
+    const long_name = "/d/" ++ s_z ++ ".png";
+    const entries = [_]MediaEntry{
+        .{ .filesystem = .{ .path = "/d/short.png" } },
+        .{ .filesystem = .{ .path = long_name } },
+    };
+
+    var fail_idx: usize = 0;
+    while (fail_idx < 32) : (fail_idx += 1) {
+        var fa = std.testing.FailingAllocator.init(base_alloc, .{
+            .fail_index = fail_idx,
+        });
+        const falloc = fa.allocator();
+        var state = PaletteState.init(falloc) catch continue;
+        defer state.deinit(falloc);
+        state.query.appendSlice(falloc, "zzz") catch continue;
+        _ = state.getSearcher(falloc, 64, 3) catch continue;
+
+        if (state.rebuildFileMatches(falloc, &entries)) |_| {
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(@as(usize, 64), state.max_haystack_len);
+        }
+    }
+
+    // loadDirectoryEntries rollback under FailingAllocator
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "dir_one");
+    try tmp.dir.createDirPath(io, "dir_two");
+
+    var path_buf: [128]u8 = undefined;
+    const tmp_dir_path = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+
+    const prev_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_level;
+
+    var dir_fail_idx: usize = 0;
+    while (dir_fail_idx < 48) : (dir_fail_idx += 1) {
+        var fa = std.testing.FailingAllocator.init(base_alloc, .{
+            .fail_index = dir_fail_idx,
+        });
+        const falloc = fa.allocator();
+        var state = PaletteState.init(falloc) catch continue;
+        defer state.deinit(falloc);
+        state.query.appendSlice(falloc, "dir") catch continue;
+
+        if (state.loadDirectoryEntries(falloc, io, tmp_dir_path)) |_| {
+            if (state.dir_items.items.len == 0) {
+                try std.testing.expectEqual(
+                    @as(usize, 0),
+                    state.dir_items.capacity,
+                );
+                try std.testing.expect(
+                    state.dir_arena.queryCapacity() <=
+                        MAX_RETAINED_DIR_ARENA_BYTES,
+                );
+            } else if (state.dir_items.items.len == 2) {
+                break;
+            }
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+        }
+    }
 }

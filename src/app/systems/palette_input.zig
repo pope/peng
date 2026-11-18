@@ -855,16 +855,17 @@ test "directory_navigator archive_file drill-down and click behavior" {
     const palette = &state.viewer.ui.palette;
     palette.lifecycle = .{ .open = .directory_navigator };
     try palette.current_nav_dir.appendSlice(allocator, "/tmp/comics");
-    try palette.dir_items.append(allocator, .{
+    const dir_alloc = palette.dir_arena.allocator();
+    try palette.dir_items.append(dir_alloc, .{
         .directory = .{
-            .name = try allocator.dupe(u8, "subfolder"),
-            .full_path = try allocator.dupe(u8, "/tmp/comics/subfolder"),
+            .name = try dir_alloc.dupe(u8, "subfolder"),
+            .full_path = try dir_alloc.dupe(u8, "/tmp/comics/subfolder"),
         },
     });
-    try palette.dir_items.append(allocator, .{
+    try palette.dir_items.append(dir_alloc, .{
         .archive_file = .{
-            .name = try allocator.dupe(u8, "issue1.cbz"),
-            .full_path = try allocator.dupe(u8, "/tmp/comics/issue1.cbz"),
+            .name = try dir_alloc.dupe(u8, "issue1.cbz"),
+            .full_path = try dir_alloc.dupe(u8, "/tmp/comics/issue1.cbz"),
         },
     });
     try palette.rebuildDirectoryMatches(allocator);

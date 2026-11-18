@@ -26,13 +26,30 @@ ______________________________________________________________________
     `state: *AppState`, `frame_allocator: Allocator`, `input: ?FrameInput`,
     `delta_time_ms: f64`, and `now_ms: u64`.
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
-  - **Dynamic Array Pre-allocation**: State constructors (`NavigationState.init`, `PaletteState.init`, `AppState.ensureInitialCapacities`) and filesystem directory scanners (`scanDirectoryEntries`) use `try entries.ensureTotalCapacity(allocator, N)` to reserve capacity upfront with explicit rationale comments explaining chosen capacities.
+  - **Dynamic Array Pre-allocation**: State constructors
+    (`NavigationState.init`, `PaletteState.init`,
+    `AppState.ensureInitialCapacities`) reserve capacities via
+    `ensureTotalCapacity(allocator, N)` with rationale comments (while
+    `PaletteState.dir_items` starts `.empty` and allocates both its backing
+    buffer and entry strings inside `dir_arena` via single-allocator
+    `scanDirectoryEntries` with `ensureUnusedCapacity(allocator, 32)`).
   - **Capacity Retention**: Interactive reset methods (`clearIntents()`,
-    `PaletteState.reset(allocator)`, `clearDirItems(allocator)`) must use
-    `clearRetainingCapacity()` to prevent runtime heap reallocation churn
-    during UI update passes (matching Zig 0.17 unmanaged container idioms where
-    `PaletteState` stores zero raw allocators).
-  - **Fuzzy Match Filtering & Buffer Pre-allocation**: Rebuild methods (`rebuildActionMatches`, `rebuildDirectoryMatches`, `rebuildFileMatches`) short-circuit on empty queries (`query.items.len == 0`) by populating `matches` 1-to-1 without searcher allocation or fuzzy scoring, and call `ensureTotalCapacity` on match buffers before scoring loops to allow zero-reallocation `appendAssumeCapacity` insertions during search.
+    `PaletteState.reset()`) retain unmanaged list capacities via
+    `clearRetainingCapacity()`, while `clearDirItems()` sets
+    `dir_items = .empty` and resets `dir_arena` in O(1) with a `64 KiB` cap
+    (`shrinkToWarmCapacity(allocator)` and `deinit(allocator)` set
+    `dir_items = .empty` and reset `.free_all` / `deinit` `dir_arena`).
+    `PaletteState` uses explicit `allocator` params for non-arena lists
+    and `searcher`.
+  - **Fuzzy Match Filtering & Buffer Pre-allocation**: Rebuild methods
+    (`rebuildActionMatches`, `rebuildDirectoryMatches`, `rebuildFileMatches`)
+    short-circuit on empty queries (`query.items.len == 0`) by populating
+    `matches` 1-to-1 without searcher allocation or fuzzy scoring.
+    `rebuildDirectoryMatches` and `rebuildFileMatches` score in a single pass
+    with on-demand `max_haystack_len`/`getSearcher` growth (updating
+    `max_haystack_len` after `try getSearcher(...)`), hoisting `"RAW+JPG"`
+    pair-tag scoring outside the loop in `rebuildFileMatches`, and pre-size
+    `scored_matches`/`matches` for `appendAssumeCapacity`.
   - **LIFO Deallocation for Intra-Frame Rewinding**: In addition to resetting
     `frame_arena` at frame boundaries, systems should release transient scratch
     allocations via `defer ctx.frame_allocator.free(slice)` or
@@ -164,7 +181,18 @@ ______________________________________________________________________
   - **Display State & Resident Server Mode (`DisplayState` / `DisplayBackend`)**:
     - Visibility and backend are modeled as nested tagged unions: `DisplayState = union(enum) { visible: DisplayBackend, hidden: DisplayBackend }` and `DisplayBackend = union(enum) { headless, windowed: ActiveWindow }`. `ActiveWindow` is only constructed once a valid, GPU-claimed `sdl.Window` exists, eliminating boolean sentinels (`is_hidden`, `claimed`) and undefined handle fields.
     - Runtime window operations (`setFullscreen`, `setBordered`, `startTextInput`, `stopTextInput`) pattern-match on `DisplayBackend` or `display.visibleWindow()`, keeping the headless harness (`.headless`) a deterministic no-op.
-    - In resident `--server` mode, closing the window (`hideWindow()`) transitions `display` to `.hidden`, unloads the active image cache (`clearCache`), resets `directory_arena`, cancels any pending `screenshot_mode`, and sleeps via `.wait_indefinite` in `computeFrameWaitStrategy` while keeping the warm GPU device, compiled pipelines, and `path_classifications` resident in memory. While `.hidden`, `sysExecuteIpcCommands` rejects view/navigation commands with `{"ok":false,"error":"WindowHidden"}` and only permits `IpcCommand.isAllowedWhenHidden()` (`open`, `preview`, `selections`, `clear_selections`, `close`, `quit`). Bare `open` (`AppIntent.open_window`) reveals the window and opens the File Picker palette when no media playlist is loaded.
+    - In resident `--server` mode, closing the window (`hideWindow()`)
+      transitions `display` to `.hidden`, unloads the active image cache
+      (`clearCache`), resets `directory_arena` and `PaletteState.dir_arena` (via
+      `shrinkToWarmCapacity`), cancels any pending `screenshot_mode`, and
+      sleeps via `.wait_indefinite` in `computeFrameWaitStrategy` while keeping
+      the warm GPU device, compiled pipelines, and `path_classifications`
+      resident in memory. While `.hidden`, `sysExecuteIpcCommands` rejects
+      view/navigation commands with `{"ok":false,"error":"WindowHidden"}` and
+      only permits `IpcCommand.isAllowedWhenHidden()` (`open`, `preview`,
+      `selections`, `clear_selections`, `close`, `quit`). Bare `open`
+      (`AppIntent.open_window`) reveals the window and opens the File Picker
+      palette when no media playlist is loaded.
 
 ______________________________________________________________________
 

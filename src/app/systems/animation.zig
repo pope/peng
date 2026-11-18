@@ -77,7 +77,7 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
             if (!anim.isActive(.palette_reveal) or
                 anim.get(.palette_reveal) <= 0.001)
             {
-                state.viewer.ui.palette.reset(state.allocator);
+                state.viewer.ui.palette.reset();
             }
         },
         .closed, .open => {},

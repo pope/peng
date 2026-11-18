@@ -16,9 +16,11 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
     cursor (`end_index`) between sequential systems within the same frame.
 - **Bounded Session Arenas & Collection Trimming**:
   - Never call unbounded `.reset(.retain_capacity)` on session arenas: use
-    `resetDirectoryArena()` (`<= 256 KiB`) and `TriageMap.resetArena()`
-    (`<= 64 KiB`), and call `NavigationState.trimExcessCapacity` after playlist
-    replacements when `capacity > 2 * len` and `> 64`.
+    `resetDirectoryArena()` (`<= 256 KiB`), `TriageMap.resetArena()`
+    (`<= 64 KiB`), and `PaletteState.clearDirItems()` (sets `dir_items = .empty`
+    and caps `dir_arena` `<= 64 KiB`, freed via `.free_all` in
+    `shrinkToWarmCapacity()`), and call `NavigationState.trimExcessCapacity`
+    after playlist replacements when `capacity > 2 * len` and `> 64`.
 - **Autonomous Worker Arenas**:
   - Allocate `DirectoryScanResultPayload` strings/slices from its embedded
     `ArenaAllocator` so `BackgroundEvent.deinit` and cancellation unwinds free

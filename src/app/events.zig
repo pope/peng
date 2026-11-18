@@ -759,9 +759,10 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
 
     state.viewer.ui.palette.dir_scan_generation.store(1, .release);
 
-    const dir_name = try allocator.dupe(u8, "folder_a");
-    const dir_path = try allocator.dupe(u8, "/path/to/folder_a");
-    try state.viewer.ui.palette.dir_items.append(allocator, .{
+    const dir_alloc = state.viewer.ui.palette.dir_arena.allocator();
+    const dir_name = try dir_alloc.dupe(u8, "folder_a");
+    const dir_path = try dir_alloc.dupe(u8, "/path/to/folder_a");
+    try state.viewer.ui.palette.dir_items.append(dir_alloc, .{
         .directory = .{
             .name = dir_name,
             .full_path = dir_path,
@@ -769,9 +770,9 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
         },
     });
 
-    const cbz_name = try allocator.dupe(u8, "comic.cbz");
-    const cbz_path = try allocator.dupe(u8, "/path/to/comic.cbz");
-    try state.viewer.ui.palette.dir_items.append(allocator, .{
+    const cbz_name = try dir_alloc.dupe(u8, "comic.cbz");
+    const cbz_path = try dir_alloc.dupe(u8, "/path/to/comic.cbz");
+    try state.viewer.ui.palette.dir_items.append(dir_alloc, .{
         .archive_file = .{
             .name = cbz_name,
             .full_path = cbz_path,

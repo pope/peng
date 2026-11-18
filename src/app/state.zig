@@ -566,7 +566,7 @@ pub const AppState = struct {
     /// Immediately closes and resets the command palette without animation.
     pub fn closePaletteImmediately(self: *AppState) void {
         stopTextInput(self.display);
-        self.viewer.ui.palette.reset(self.allocator);
+        self.viewer.ui.palette.reset();
         self.viewer.animations.setImmediate(.palette_reveal, 0.0);
     }
 
@@ -769,7 +769,7 @@ pub const AppState = struct {
         self: *AppState,
         active_type: ActivePaletteMode,
     ) void {
-        self.viewer.ui.palette.reset(self.allocator);
+        self.viewer.ui.palette.reset();
         self.viewer.ui.palette.lifecycle = .{ .open = active_type };
         self.viewer.animations.start(
             .palette_reveal,

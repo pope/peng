@@ -1097,7 +1097,7 @@ pub fn collectUnscannedDirectoryPaths(
 /// DirectoryEntry records, and returns the count of image files directly
 /// present in `dir_path`.
 pub fn scanDirectoryEntries(
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     io: std.Io,
     dir_path: []const u8,
     entries: *std.ArrayList(DirectoryEntry),
@@ -1105,15 +1105,17 @@ pub fn scanDirectoryEntries(
     const start_len = entries.items.len;
     errdefer {
         for (entries.items[start_len..]) |entry| {
-            gpa.free(entry.getName());
-            if (entry.getFullPath().len > 0) gpa.free(entry.getFullPath());
+            if (entry.getName().len > 0) allocator.free(entry.getName());
+            if (entry.getFullPath().len > 0) {
+                allocator.free(entry.getFullPath());
+            }
         }
         entries.shrinkRetainingCapacity(start_len);
     }
 
     // Reserve initial unused capacity for up to 32 subfolder entries to avoid
     // heap reallocation churn during directory scanning.
-    try entries.ensureUnusedCapacity(gpa, 32);
+    try entries.ensureUnusedCapacity(allocator, 32);
 
     var dir = try std.Io.Dir.openDir(
         std.Io.Dir.cwd(),
@@ -1138,15 +1140,15 @@ pub fn scanDirectoryEntries(
             if (std.mem.startsWith(u8, entry.name, ".")) continue;
 
             const full_path = try std.Io.Dir.path.join(
-                gpa,
+                allocator,
                 &.{ dir_path, entry.name },
             );
-            errdefer gpa.free(full_path);
-            const name = try gpa.dupe(u8, entry.name);
-            errdefer gpa.free(name);
+            errdefer if (full_path.len > 0) allocator.free(full_path);
+            const name = try allocator.dupe(u8, entry.name);
+            errdefer if (name.len > 0) allocator.free(name);
 
             if (is_cbz_entry) {
-                try entries.append(gpa, .{
+                try entries.append(allocator, .{
                     .archive_file = .{
                         .name = name,
                         .full_path = full_path,
@@ -1155,7 +1157,7 @@ pub fn scanDirectoryEntries(
                     },
                 });
             } else {
-                try entries.append(gpa, .{
+                try entries.append(allocator, .{
                     .directory = .{
                         .name = name,
                         .full_path = full_path,
@@ -2284,4 +2286,76 @@ test "MediaId - type layout and representation" {
 
     const formatted_none = try std.mem.print(&buf, "{f}", .{MediaId.none});
     try std.testing.expectEqualStrings("MediaId(none)", formatted_none);
+}
+
+fn testScanDirectoryEntriesOom(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+) !void {
+    var entries: std.ArrayList(DirectoryEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            if (e.getName().len > 0) allocator.free(e.getName());
+            if (e.getFullPath().len > 0) allocator.free(e.getFullPath());
+        }
+        entries.deinit(allocator);
+    }
+
+    const pre_name = try allocator.dupe(u8, "..");
+    errdefer if (entries.items.len == 0) allocator.free(pre_name);
+    const pre_path = try allocator.dupe(u8, "/parent");
+    errdefer if (entries.items.len == 0) allocator.free(pre_path);
+    try entries.append(allocator, .{
+        .parent = .{
+            .name = pre_name,
+            .full_path = pre_path,
+        },
+    });
+
+    const count = scanDirectoryEntries(
+        allocator,
+        io,
+        dir_path,
+        &entries,
+    ) catch |err| {
+        try std.testing.expectEqual(@as(usize, 1), entries.items.len);
+        try std.testing.expectEqualStrings("..", entries.items[0].getName());
+        try std.testing.expectEqualStrings(
+            "/parent",
+            entries.items[0].getFullPath(),
+        );
+        return err;
+    };
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 4), entries.items.len);
+}
+
+test "scanDirectoryEntries - OOM checkAllAllocationFailures preserves start" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    const tmp_dir_path = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+
+    try tmp.dir.createDirPath(io, "sub_a");
+    try tmp.dir.createDirPath(io, "sub_b");
+    {
+        var f1 = try tmp.dir.createFile(io, "photo.png", .{});
+        f1.close(io);
+        var f2 = try tmp.dir.createFile(io, "archive.cbz", .{});
+        f2.close(io);
+    }
+
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testScanDirectoryEntriesOom,
+        .{ io, tmp_dir_path },
+    );
 }
