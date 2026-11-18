@@ -217,27 +217,6 @@ fn handlePreviewCommand(
     stream: std.Io.net.Stream,
     req: ipc.PreviewRequest,
 ) void {
-    const stat = std.Io.Dir.statFile(
-        std.Io.Dir.cwd(),
-        state.io,
-        req.path,
-        .{},
-    ) catch |err| {
-        replyIpcParseError(state.io, stream, err);
-        return;
-    };
-    if (stat.kind == .directory) {
-        ipc.respondErrorName(state.io, stream, "IsDir");
-        return;
-    }
-    if (stat.kind != .file) {
-        ipc.respondErrorName(state.io, stream, "UnsupportedFileType");
-        return;
-    }
-    if (stat.size == 0) {
-        ipc.respondErrorName(state.io, stream, "EmptyFile");
-        return;
-    }
     const dup_path = state.allocator.dupe(u8, req.path) catch {
         ipc.respondErrorName(state.io, stream, "OutOfMemory");
         return;
@@ -274,17 +253,20 @@ fn handleIntentCommand(
 
     var final_intent = intent;
     switch (intent) {
-        .open_path => |p| {
-            _ = std.Io.Dir.statFile(
+        .open_path => |target| {
+            const stat = std.Io.Dir.statFile(
                 std.Io.Dir.cwd(),
                 state.io,
-                p,
+                target.path,
                 .{},
             ) catch |err| {
                 replyIpcParseError(state.io, cmd_data.client_stream, err);
                 return;
             };
-            const dup_p = ctx.frame_allocator.dupe(u8, p) catch |err| {
+            const dup_p = ctx.frame_allocator.dupe(
+                u8,
+                target.path,
+            ) catch |err| {
                 std.log.warn(
                     "Failed to dupe path for open_path intent: {}",
                     .{err},
@@ -296,7 +278,12 @@ fn handleIntentCommand(
                 );
                 return;
             };
-            final_intent = .{ .open_path = dup_p };
+            final_intent = .{
+                .open_path = .{
+                    .path = dup_p,
+                    .known_kind = stat.kind,
+                },
+            };
         },
         .set_palette => |p| {
             if (p.query) |q| {
@@ -806,6 +793,10 @@ test "sysExecuteIpcCommands - open command dupes into arena and rejects error" {
             @as(usize, 1),
             state.pending_intents.items.len,
         );
+        try std.testing.expectEqual(
+            @as(?std.Io.File.Kind, .file),
+            state.pending_intents.items[0].open_path.known_kind,
+        );
         try intents_system.sysExecuteIntents(ctx);
         try std.testing.expectEqual(
             @as(?usize, 0),
@@ -1055,7 +1046,68 @@ test "sysExecuteIpcCommands - preview while hidden and bare open window" {
     const st = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, temp_path, .{});
     try std.testing.expectEqual(@as(u64, 160 * 107 * 4), st.size);
 
-    // 2. Bare 'open' unhides the window and opens directory navigator
+    // 2. Preview off-thread stat validation returns exact error names
+    var empty_buf: [128]u8 = undefined;
+    const empty_path = try std.mem.print(
+        &empty_buf,
+        ".zig-cache/tmp/{s}/empty.jpg",
+        .{tmp.sub_path},
+    );
+    var empty_f = try std.Io.Dir.createFile(
+        std.Io.Dir.cwd(),
+        io,
+        empty_path,
+        .{},
+    );
+    empty_f.close(io);
+
+    var empty_cmd_buf: [192]u8 = undefined;
+    const empty_cmd = try std.mem.print(
+        &empty_cmd_buf,
+        "preview 160 120 {s}",
+        .{empty_path},
+    );
+    const err_cases = [_]struct { cmd: []const u8, expected: []const u8 }{
+        .{
+            .cmd = "preview 160 120 testfiles/images",
+            .expected = "IsDir",
+        },
+        .{
+            .cmd = "preview 160 120 testfiles/images/does_not_exist.jpg",
+            .expected = "FileNotFound",
+        },
+        .{
+            .cmd = empty_cmd,
+            .expected = "EmptyFile",
+        },
+    };
+    for (err_cases) |tc| {
+        const c_err = try addr.connect(io);
+        defer c_err.close(io);
+        const s_err = try server.accept(io);
+
+        const d_err = try allocator.create(ipc.IpcCommandData);
+        d_err.* = .{
+            .command = try allocator.dupe(u8, tc.cmd),
+            .client_stream = s_err,
+        };
+        try state.pending_ipc_commands.append(allocator, d_err);
+
+        sysExecuteIpcCommands(ctx);
+        try std.testing.expect(state.display.isHidden());
+
+        var err_r = c_err.reader(io, &rbuf);
+        const err_line = try err_r.interface.takeDelimiterInclusive('\n');
+        var parsed_err = try ipc.parseResponse(allocator, err_line);
+        defer parsed_err.deinit();
+        try std.testing.expect(!parsed_err.value.ok);
+        try std.testing.expectEqualStrings(
+            tc.expected,
+            parsed_err.value.@"error".?,
+        );
+    }
+
+    // 3. Bare 'open' unhides the window and opens directory navigator
     const c_open = try addr.connect(io);
     defer c_open.close(io);
     const s_open = try server.accept(io);

@@ -55,7 +55,11 @@ fn handlePaletteReturnDirectory(ctx: FrameContext, mod: KeyModifiers) !void {
     const palette = &ctx.state.viewer.ui.palette;
     if (mod.shift) {
         const p = try ctx.frame_allocator.dupe(u8, palette.current_nav_dir.items);
-        try ctx.state.pushIntent(.{ .open_path = p });
+        try ctx.state.pushIntent(.{
+            .open_path = .{
+                .path = p,
+            },
+        });
         ctx.state.closePalette();
         return;
     }
@@ -67,7 +71,11 @@ fn handlePaletteReturnDirectory(ctx: FrameContext, mod: KeyModifiers) !void {
     if (full_path.len == 0) return;
 
     const p = try ctx.frame_allocator.dupe(u8, full_path);
-    try ctx.state.pushIntent(.{ .open_path = p });
+    try ctx.state.pushIntent(.{
+        .open_path = .{
+            .path = p,
+        },
+    });
     ctx.state.closePalette();
 }
 
@@ -324,7 +332,11 @@ fn processPaletteItemClick(
                     full_path,
                 );
                 if (entry.isArchive()) {
-                    try self.pushIntent(.{ .open_path = path_copy });
+                    try self.pushIntent(.{
+                        .open_path = .{
+                            .path = path_copy,
+                        },
+                    });
                     self.closePalette();
                     return true;
                 }
@@ -920,7 +932,7 @@ test "directory_navigator archive_file drill-down and click behavior" {
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
     try std.testing.expectEqualStrings(
         "/tmp/comics/issue1.cbz",
-        state.pending_intents.items[0].open_path,
+        state.pending_intents.items[0].open_path.path,
     );
 }
 

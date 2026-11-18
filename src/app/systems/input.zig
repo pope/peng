@@ -96,7 +96,12 @@ pub fn sysProcessInput(
     }
 
     if (input.dropped_path) |path| {
-        state.pushIntent(.{ .open_path = try ctx.frame_allocator.dupe(u8, path) }) catch |err| {
+        const dup_path = try ctx.frame_allocator.dupe(u8, path);
+        state.pushIntent(.{
+            .open_path = .{
+                .path = dup_path,
+            },
+        }) catch |err| {
             std.log.err(
                 "Failed to push open_path intent for dropped path '{s}': {}",
                 .{ path, err },

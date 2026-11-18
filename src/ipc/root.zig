@@ -397,7 +397,11 @@ pub const IpcCommand = union(enum) {
             .close => return .quit,
             .quit => return .quit_server,
             .open => |p_opt| return if (p_opt) |p|
-                .{ .open_path = p }
+                .{
+                    .open_path = .{
+                        .path = p,
+                    },
+                }
             else
                 .open_window,
             .wait_load, .screenshot, .selections, .preview => return null,
@@ -1508,7 +1512,7 @@ test "IpcCommand parsing" {
     );
     try std.testing.expectEqualStrings(
         "/tmp/my photos/IMG 0001.JPG",
-        cmd_open_spaces.toIntent().?.open_path,
+        cmd_open_spaces.toIntent().?.open_path.path,
     );
     const cmd_open_bare = try IpcCommand.parse("open   \n");
     try std.testing.expectEqual(@as(?[]const u8, null), cmd_open_bare.open);

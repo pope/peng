@@ -24,6 +24,7 @@ pub const IpcCommandDesc = actions.IpcCommandDesc;
 pub const Key = keys.Key;
 pub const KeyboardShortcut = keys.KeyboardShortcut;
 pub const KeyModifiers = keys.KeyModifiers;
+pub const OpenPathTarget = types.OpenPathTarget;
 pub const OptionId = actions.OptionId;
 pub const PaletteMode = types.PaletteMode;
 pub const ParamSpec = types.ParamSpec;

@@ -194,7 +194,7 @@ fn executeIntent(
     const ui = &self.viewer.ui;
 
     switch (intent) {
-        .open_path => |p| try self.openPath(p, now_ms),
+        .open_path => |target| try self.openPathTarget(target, now_ms),
         .open_window => {
             self.showAndRaiseWindow();
             if (nav.count() == 0 and !ui.palette.isOpen()) {

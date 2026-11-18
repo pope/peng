@@ -26,6 +26,7 @@ const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const MipmapTelemetry = state_pkg.MipmapTelemetry;
+const OpenPathTarget = intents.OpenPathTarget;
 const PairStreamTarget = vfs.PairStreamTarget;
 const PhysicalDims = geom.PhysicalDims;
 const ScrollCadence = state_pkg.ScrollCadence;
@@ -1068,19 +1069,36 @@ pub const AppState = struct {
     /// directory playlist, jumps directly to that entry while preserving the
     /// warm VRAM cache and classifications; otherwise performs a full reload.
     pub fn openPath(self: *AppState, path: []const u8, now_ms: u64) !void {
-        return self.openPathInternal(path, true, now_ms);
+        return self.openPathInternal(path, null, true, now_ms);
+    }
+
+    /// Initiates loading an `OpenPathTarget`, reusing `target.known_kind` when
+    /// already verified during same-frame IPC validation instead of issuing a
+    /// second `statFile` syscall on the render thread.
+    pub fn openPathTarget(
+        self: *AppState,
+        target: OpenPathTarget,
+        now_ms: u64,
+    ) !void {
+        return self.openPathInternal(
+            target.path,
+            target.known_kind,
+            true,
+            now_ms,
+        );
     }
 
     /// Forces a full directory re-scan and cache reload for `path` (used by
     /// directory refresh and RAW+JPEG stacking toggles), stamping immediate
     /// startup decode timestamps with `now_ms`.
     pub fn reloadPath(self: *AppState, path: []const u8, now_ms: u64) !void {
-        return self.openPathInternal(path, false, now_ms);
+        return self.openPathInternal(path, null, false, now_ms);
     }
 
     fn openPathInternal(
         self: *AppState,
         path: []const u8,
+        known_kind: ?std.Io.File.Kind,
         reuse_loaded_dir: bool,
         now_ms: u64,
     ) !void {
@@ -1096,35 +1114,35 @@ pub const AppState = struct {
         const owned_path = try path_alloc.dupe(u8, path);
         defer path_alloc.free(owned_path);
 
-        var stat: std.Io.File.Stat = undefined;
-        var has_stat = true;
-        if (std.Io.Dir.statFile(
-            std.Io.Dir.cwd(),
-            self.io,
-            owned_path,
-            .{},
-        )) |s| {
-            stat = s;
-        } else |err| {
-            std.log.err(
-                "Failed to access path '{s}': {}",
-                .{ owned_path, err },
-            );
-            has_stat = false;
-        }
+        const resolved_kind: ?std.Io.File.Kind = if (known_kind) |kind|
+            kind
+        else blk: {
+            const s = std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                self.io,
+                owned_path,
+                .{},
+            ) catch |err| {
+                std.log.err(
+                    "Failed to access path '{s}': {}",
+                    .{ owned_path, err },
+                );
+                break :blk null;
+            };
+            break :blk s.kind;
+        };
 
-        if (has_stat) {
+        if (resolved_kind != null) {
             self.showAndRaiseWindow();
         }
 
-        const dir_target = if (has_stat and stat.kind == .directory)
+        const dir_target = if (resolved_kind == .directory)
             owned_path
         else
             std.Io.Dir.path.dirname(owned_path) orelse ".";
 
         if (reuse_loaded_dir and
-            has_stat and
-            stat.kind == .file and
+            resolved_kind == .file and
             !isCbzFile(owned_path) and
             !self.viewer.navigation.isLoadingFiles() and
             MediaEntry.pathsMatch(
@@ -1169,9 +1187,9 @@ pub const AppState = struct {
         self.viewer.navigation.resetDirectoryArena();
         self.viewer.navigation.trimExcessCapacity(self.allocator);
 
-        if (has_stat) {
+        if (resolved_kind) |kind| {
             const stack_raw = self.viewer.navigation.stack_raw_jpeg;
-            if (stat.kind == .directory) {
+            if (kind == .directory) {
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
                     &self.viewer.navigation.active_file_scans,

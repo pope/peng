@@ -467,6 +467,14 @@ pub const PaletteMode = union(enum) {
     }
 };
 
+/// Target path payload for `.open_path`, optionally carrying a file kind
+/// already verified during same-frame IPC validation to avoid a duplicate
+/// `statx` syscall on the render thread.
+pub const OpenPathTarget = struct {
+    path: []const u8,
+    known_kind: ?std.Io.File.Kind = null,
+};
+
 /// Serialized intent union representing discrete user commands dispatched
 /// by keybindings, mouse clicks, command palettes, or remote IPC sockets.
 pub const AppIntent = union(enum) {
@@ -495,7 +503,7 @@ pub const AppIntent = union(enum) {
     reset_rotation,
 
     // Image navigation
-    open_path: []const u8,
+    open_path: OpenPathTarget,
     open_window,
     next_image,
     prev_image,
