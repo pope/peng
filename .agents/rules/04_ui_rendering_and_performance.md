@@ -55,9 +55,10 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
     `ScrollCadence.settleTimeoutMs` (`35ms` `.single_step`, `200ms`
     `.brisk_scroll`, `251ms` promotion), and `upload_staging.decayTimeoutMs`.
 - **Modal Input Decoupling & Scroll Containers**:
-  - Gate modal input on `isAcceptingInput()` (`mode != .inactive and !is_closing`),
-    pass `captures_pointer = false` while closing, and call `suppress` on
-    `pan_controller`/`zoom_controller` when opening modals or clicking UI chrome.
+  - Gate modal input on `isAcceptingInput()` (`PaletteLifecycle.open`), render
+    `visibleMode()` and pass `captures_pointer = false` while `.closing`, and
+    call `suppress` on `pan_controller`/`zoom_controller` when opening modals or
+    clicking UI chrome.
   - Drive scroll containers strictly from wheel deltas (never pointer drag), and
     zero `scroll_delta` during active slider drags.
 - **Image Crossfade Invariants**:

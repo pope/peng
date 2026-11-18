@@ -1071,7 +1071,7 @@ test "sysExecuteIpcCommands - preview while hidden and bare open window" {
     try intents_system.sysExecuteIntents(ctx);
     try std.testing.expect(!state.display.isHidden());
     try std.testing.expectEqual(
-        intents.PaletteMode.directory_navigator,
-        state.viewer.ui.palette.mode,
+        @as(?intents.ActivePaletteMode, .directory_navigator),
+        state.viewer.ui.palette.openMode(),
     );
 }

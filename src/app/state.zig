@@ -12,6 +12,7 @@ const thumbcache = @import("thumbcache");
 const vfs = @import("vfs");
 const workers_mod = @import("workers/root.zig");
 
+const ActivePaletteMode = intents.ActivePaletteMode;
 const AppIntent = intents.AppIntent;
 const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = cache.CacheEntry;
@@ -24,7 +25,6 @@ const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
-const PaletteMode = intents.PaletteMode;
 const PhysicalDims = geom.PhysicalDims;
 const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
@@ -557,7 +557,7 @@ pub const AppState = struct {
     /// Initiates animated closing of the command palette, stopping text input.
     pub fn closePalette(self: *AppState) void {
         stopTextInput(self.display);
-        self.viewer.ui.palette.is_closing = true;
+        self.viewer.ui.palette.beginClose();
         const progress = self.viewer.animations.get(.palette_reveal);
         const duration = @max(state_pkg.DURATION_PALETTE_CLOSE_MS * progress, 30.0);
         self.viewer.animations.start(.palette_reveal, 0.0, duration, .ease_out_quad);
@@ -767,11 +767,12 @@ pub const AppState = struct {
         };
     }
 
-    /// Activates the command palette in the specified PaletteMode, resetting
-    /// queries and starting text input.
-    pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
+    fn beginOpenPalette(
+        self: *AppState,
+        active_type: ActivePaletteMode,
+    ) void {
         self.viewer.ui.palette.reset(self.allocator);
-        self.viewer.ui.palette.mode = active_type;
+        self.viewer.ui.palette.lifecycle = .{ .open = active_type };
         self.viewer.animations.start(
             .palette_reveal,
             1.0,
@@ -780,9 +781,30 @@ pub const AppState = struct {
         );
         self.viewer.ui.palette.selected_idx = switch (active_type) {
             .files => self.viewer.navigation.current_index orelse 0,
-            .inactive, .actions, .directory_navigator, .prompt => 0,
+            .actions, .directory_navigator, .prompt => 0,
         };
         self.viewer.ui.palette.selection_dirty = true;
+    }
+
+    /// Activates the command palette in `.directory_navigator` mode at
+    /// `dir_path`, resetting stale state, starting the reveal animation,
+    /// loading directory entries, and enabling text input.
+    pub fn openDirectoryPalette(
+        self: *AppState,
+        dir_path: []const u8,
+    ) !void {
+        self.beginOpenPalette(.directory_navigator);
+        try self.loadPaletteDirectory(dir_path);
+        startTextInput(self.display);
+    }
+
+    /// Activates the command palette in the specified `ActivePaletteMode`,
+    /// resetting queries and starting text input.
+    pub fn openPalette(
+        self: *AppState,
+        active_type: ActivePaletteMode,
+    ) !void {
+        self.beginOpenPalette(active_type);
 
         switch (active_type) {
             .files => try self.viewer.ui.palette.rebuildFileMatches(
@@ -839,7 +861,6 @@ pub const AppState = struct {
                 },
                 .go_to_image, .edit_param => {},
             },
-            .inactive => {},
         }
         startTextInput(self.display);
     }
@@ -1017,14 +1038,13 @@ pub const AppState = struct {
                     sdl.timer.getTicks(),
                 );
                 self.resetViewportAndTransitions();
-                if (self.viewer.ui.palette.mode == .files and
-                    !self.viewer.ui.palette.is_closing)
-                {
-                    try self.viewer.ui.palette.rebuildFileMatches(
+                if (self.viewer.ui.palette.openMode()) |mode| switch (mode) {
+                    .files => try self.viewer.ui.palette.rebuildFileMatches(
                         self.allocator,
                         self.viewer.navigation.getEntries(),
-                    );
-                }
+                    ),
+                    .actions, .directory_navigator, .prompt => {},
+                };
                 return;
             }
         }
@@ -1103,14 +1123,13 @@ pub const AppState = struct {
             }
         }
         self.resetViewportAndTransitions();
-        if (self.viewer.ui.palette.mode == .files and
-            !self.viewer.ui.palette.is_closing)
-        {
-            try self.viewer.ui.palette.rebuildFileMatches(
+        if (self.viewer.ui.palette.openMode()) |mode| switch (mode) {
+            .files => try self.viewer.ui.palette.rebuildFileMatches(
                 self.allocator,
                 self.viewer.navigation.getEntries(),
-            );
-        }
+            ),
+            .actions, .directory_navigator, .prompt => {},
+        };
     }
 };
 

@@ -6,13 +6,13 @@ const palette_input = @import("palette_input.zig");
 const state_pkg = @import("state");
 const std = @import("std");
 
+const ActivePaletteMode = intents.ActivePaletteMode;
 const AppIntent = intents.AppIntent;
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
-const PaletteMode = intents.PaletteMode;
 const key_mapping = input_pkg.key_mapping;
 
 inline fn isViewportZoomed(self: *AppState) bool {
@@ -229,7 +229,7 @@ test "sysProcessInput ignores key shortcuts while palette mode is active" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.ui.palette.mode = .actions;
+    state.viewer.ui.palette.lifecycle = .{ .open = .actions };
 
     var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
@@ -275,7 +275,10 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
 
     // 1. Open the Actions command palette
     try state.openPalette(.actions);
-    try std.testing.expectEqual(PaletteMode.actions, state.viewer.ui.palette.mode);
+    try std.testing.expectEqual(
+        @as(?ActivePaletteMode, .actions),
+        state.viewer.ui.palette.openMode(),
+    );
 
     // 2. User presses Escape to dismiss the palette
     var keys: std.ArrayList(Key) = .empty;
@@ -311,7 +314,10 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
 
     const palette_closed = try palette_input.sysProcessPaletteInput(ctx);
     try std.testing.expect(palette_closed);
-    try std.testing.expect(state.viewer.ui.palette.is_closing);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => {},
+        .closed, .open => return error.TestUnexpectedResult,
+    }
 
     // sysProcessInput must NOT register a quit intent because palette was closed this frame
     try sysProcessInput(ctx, palette_closed);
@@ -326,15 +332,14 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
     try std.testing.expectEqual(AppIntent.quit, state.pending_intents.items[0]);
 }
 
-test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing == true)" {
+test "sysProcessInput accepts shortcuts when palette is dissolving (closing)" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.ui.palette.mode = .actions;
-    state.viewer.ui.palette.is_closing = true;
+    state.viewer.ui.palette.lifecycle = .{ .closing = .actions };
 
     var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
@@ -862,8 +867,7 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
 
     // 1. Frame with palette open while 'i' (zoom in) and 'right' are held:
     // active motion is cleared and controllers are not busy.
-    app_st.viewer.ui.palette.mode = .actions;
-    app_st.viewer.ui.palette.is_closing = false;
+    app_st.viewer.ui.palette.lifecycle = .{ .open = .actions };
     try sysProcessInput(.{
         .state = &app_st,
         .frame_allocator = allocator,
@@ -895,7 +899,7 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
 
     // 2. Palette closes, but keys remain held from the modal: must not bleed
     // into viewport pan or zoom until released.
-    app_st.viewer.ui.palette.mode = .inactive;
+    app_st.viewer.ui.palette.lifecycle = .closed;
     try sysProcessInput(.{
         .state = &app_st,
         .frame_allocator = allocator,

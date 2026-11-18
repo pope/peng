@@ -8,7 +8,9 @@ const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
+const ActivePaletteMode = intents.ActivePaletteMode;
 const Color = theme.Color;
+const EditParam = intents.EditParam;
 const FRect = geom.FRect;
 const FuzzyHighlighter = palette_pkg.FuzzyHighlighter;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
@@ -16,7 +18,6 @@ const LogicalDims = geom.LogicalDims;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteConfig = palette_pkg.PaletteConfig;
 const palette_action_items = intents.actions.palette_action_items;
-const PaletteMode = intents.PaletteMode;
 const PaletteState = palette_pkg.PaletteState;
 const partitionHighlightedText = palette_pkg.partitionHighlightedText;
 const remapMiddleTruncatedMatches = palette_pkg.remapMiddleTruncatedMatches;
@@ -88,7 +89,7 @@ fn renderFuzzyMatchText(
 fn renderHeader(
     list: *UiDrawList,
     rect: FRect,
-    mode: PaletteMode,
+    mode: ActivePaletteMode,
     title: []const u8,
     progress: f32,
 ) !void {
@@ -101,7 +102,6 @@ fn renderHeader(
             .go_to_image => theme.green,
             .slideshow_interval => theme.yellow,
         },
-        .inactive => theme.text,
     }, progress);
 
     try list.addText(rect, .{
@@ -446,7 +446,7 @@ fn renderFloatInputFeedback(
     list: *UiDrawList,
     rect: FRect,
     raw_str: []const u8,
-    mode: PaletteMode,
+    param: EditParam,
     frame_allocator: std.mem.Allocator,
     progress: f32,
 ) !void {
@@ -474,9 +474,8 @@ fn renderFloatInputFeedback(
         return;
     }
 
-    const default_bounds = intents.TextInputBounds{ .min = 0.0, .max = 1.0 };
-    const bounds = mode.getTextInputBounds() orelse default_bounds;
-    if (val >= bounds.min and val <= bounds.max) {
+    const spec = intents.getSpec(param);
+    if (val >= spec.min and val <= spec.max) {
         const success_str = try frame_allocator.print(
             "Press Enter to set value to: {d:.2}",
             .{val},
@@ -490,7 +489,7 @@ fn renderFloatInputFeedback(
     } else {
         const err_str = try frame_allocator.print(
             "Out of bounds: must be between {d:.1} and {d:.1}",
-            .{ bounds.min, bounds.max },
+            .{ spec.min, spec.max },
         );
         try list.addText(rect, .{
             .text = err_str,
@@ -505,6 +504,7 @@ fn renderTextInputDialog(
     list: *UiDrawList,
     rect: FRect,
     ui_model: UiViewModel,
+    mode: ActivePaletteMode,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
     progress: f32,
@@ -523,7 +523,7 @@ fn renderTextInputDialog(
     const line2_y = rect.y + 34.0;
     const center_y = rect.y + (rect.h - 16.0) * 0.5;
 
-    switch (palette.mode) {
+    switch (mode) {
         .prompt => |kind| switch (kind) {
             .go_to_image => {
                 if (total_count == 0) {
@@ -669,14 +669,14 @@ fn renderTextInputDialog(
                             .h = 16.0,
                         },
                         raw_str,
-                        palette.mode,
+                        param,
                         frame_allocator,
                         progress,
                     );
                 }
             },
         },
-        .files, .actions, .directory_navigator, .inactive => {},
+        .files, .actions, .directory_navigator => {},
     }
 }
 
@@ -1183,6 +1183,7 @@ fn renderSelectionList(
     list: *UiDrawList,
     list_rect: FRect,
     ui_model: UiViewModel,
+    mode: ActivePaletteMode,
     cfg: PaletteConfig,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -1191,7 +1192,10 @@ fn renderSelectionList(
     const palette = ui_model.palette;
     const matching_indices = &palette.matches;
     const item_stride = cfg.base_item_height;
-    const actual_item_h: f32 = if (palette.mode == .files) 54.0 else 46.0;
+    const actual_item_h: f32 = switch (mode) {
+        .files => 54.0,
+        .actions, .directory_navigator, .prompt => 46.0,
+    };
     const viewport_height = list_rect.h;
 
     const current_scroll_y = interaction.palette_scroll_y;
@@ -1207,14 +1211,14 @@ fn renderSelectionList(
     defer list.popScissor() catch {};
 
     if (matching_indices.items.len == 0) {
-        const no_match_msg = switch (palette.mode) {
+        const no_match_msg = switch (mode) {
             .files => "No matching files found",
             .actions => "No matching commands found",
             .directory_navigator => if (palette.query.items.len > 0)
                 "No matching subfolders found"
             else
                 "0 subfolders found",
-            .prompt, .inactive => "",
+            .prompt => "",
         };
         const msg_dims =
             text_utils.measureText(no_match_msg, 0, 13, measure_data);
@@ -1280,7 +1284,7 @@ fn renderSelectionList(
             });
         }
 
-        switch (palette.mode) {
+        switch (mode) {
             .files => try renderFileListItem(
                 list,
                 item_rect,
@@ -1315,7 +1319,7 @@ fn renderSelectionList(
                 measure_data,
                 progress,
             ),
-            .prompt, .inactive => {},
+            .prompt => {},
         }
 
         match_count += 1;
@@ -1425,27 +1429,28 @@ pub fn renderPalette(
     measure_data: *const MeasureTextUserData,
 ) !void {
     const palette = ui_model.palette;
-    if (palette.mode == .inactive and !palette.is_closing) return;
+    const mode = palette.visibleMode() orelse return;
     const progress = std.math.clamp(ui_model.anim(.palette_reveal), 0.0, 1.0);
     if (progress <= 0.001) return;
 
-    const cfg = getPaletteConfig(palette.mode);
+    const cfg = getPaletteConfig(mode);
+    const is_dir_nav = switch (mode) {
+        .directory_navigator => true,
+        .files, .actions, .prompt => false,
+    };
+    const is_text_dialog = mode.isTextInputDialog();
 
     const pad_y: f32 = 24.0;
     const header_h: f32 = 16.0;
-    const breadcrumb_h: f32 =
-        if (palette.mode == .directory_navigator) 26.0 else 0.0;
-    const breadcrumb_gap: f32 =
-        if (palette.mode == .directory_navigator) 10.0 else 0.0;
+    const breadcrumb_h: f32 = if (is_dir_nav) 26.0 else 0.0;
+    const breadcrumb_gap: f32 = if (is_dir_nav) 10.0 else 0.0;
     const search_h: f32 = 38.0;
-    const content_h: f32 = if (palette.mode.isTextInputDialog())
+    const content_h: f32 = if (is_text_dialog)
         64.0
     else
         cfg.viewport_height_logical;
-    const legend_h: f32 =
-        if (palette.mode == .directory_navigator) 26.0 else 0.0;
-    const legend_gap: f32 =
-        if (palette.mode == .directory_navigator) 10.0 else 0.0;
+    const legend_h: f32 = if (is_dir_nav) 26.0 else 0.0;
+    const legend_gap: f32 = if (is_dir_nav) 10.0 else 0.0;
     const gaps: f32 = 20.0 + breadcrumb_gap + legend_gap;
     const modal_h: f32 = pad_y + header_h + breadcrumb_h + search_h +
         content_h + legend_h + gaps;
@@ -1457,7 +1462,7 @@ pub fn renderPalette(
     const modal_rect =
         FRect{ .x = modal_x, .y = modal_y, .w = modal_w, .h = modal_h };
 
-    interaction.setPaletteModalRect(modal_rect, !palette.is_closing);
+    interaction.setPaletteModalRect(modal_rect, palette.isAcceptingInput());
 
     try list.addRect(modal_rect, .{
         .background_color = theme.withAlpha(theme.base_translucent, progress),
@@ -1477,13 +1482,13 @@ pub fn renderPalette(
     try renderHeader(
         list,
         .{ .x = content_x, .y = cur_y, .w = content_w, .h = header_h },
-        palette.mode,
+        mode,
         cfg.title,
         progress,
     );
     cur_y += header_h + 10.0;
 
-    if (palette.mode == .directory_navigator) {
+    if (is_dir_nav) {
         try renderDirectoryBreadcrumbs(
             list,
             .{ .x = content_x, .y = cur_y, .w = content_w, .h = breadcrumb_h },
@@ -1507,11 +1512,12 @@ pub fn renderPalette(
 
     const list_rect =
         FRect{ .x = content_x, .y = cur_y, .w = content_w, .h = content_h };
-    if (palette.mode.isTextInputDialog()) {
+    if (is_text_dialog) {
         try renderTextInputDialog(
             list,
             list_rect,
             ui_model,
+            mode,
             frame_allocator,
             measure_data,
             progress,
@@ -1522,6 +1528,7 @@ pub fn renderPalette(
             list,
             list_rect,
             ui_model,
+            mode,
             cfg,
             frame_allocator,
             measure_data,
@@ -1530,7 +1537,7 @@ pub fn renderPalette(
     }
     cur_y += content_h;
 
-    if (palette.mode == .directory_navigator) {
+    if (is_dir_nav) {
         cur_y += 10.0;
         try renderDirectoryLegend(
             list,
@@ -1550,8 +1557,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
     var data = MeasureTextUserData{};
     var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit(std.testing.allocator);
-    pal_state.mode = .actions;
-    pal_state.is_closing = false;
+    pal_state.lifecycle = .{ .open = .actions };
 
     const model = UiViewModel{
         .is_fullscreen = false,
@@ -1602,7 +1608,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
 
     // 2. Closing palette passes pointer through -> viewport is hit
     {
-        pal_state.is_closing = true;
+        pal_state.beginClose();
         interaction_inst.beginFrameLayout();
         interaction_inst.viewport =
             .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 };

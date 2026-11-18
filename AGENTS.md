@@ -102,13 +102,14 @@ ______________________________________________________________________
     `std.fmt.bufPrint`/`allocPrint`), `std.mem.find` / `findScalar` (never
     `std.mem.indexOf*`), and `std.Io.Clock.awake.now(io)` in workers.
 - **Exhaustive Pattern Matching & Minimal Visibility**:
-  - `switch` on domain enums and tagged unions (`PaletteMode`, `PromptKind`,
-    `EditParam`, `AppIntent`, `AdjustIntent`, `IpcCommand`, `ZoomPreset`,
-    `TextureScaleMode`, `DecodeMode`, `DecodePriority`, `ScrollCadence`,
-    `ResidentAsset`, `InFlightState`, `ThumbnailState`, `DisplayState`,
-    `DragState`, `MediaEntry`, `BackgroundEvent`) **MUST** list every variant
-    without `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec`
-    for `EditParam` metadata.
+  - `switch` on domain enums and tagged unions (`ActivePaletteMode`,
+    `PaletteLifecycle`, `PaletteMode`, `PromptKind`, `EditParam`, `AppIntent`,
+    `AdjustIntent`, `IpcCommand`, `ZoomPreset`, `TextureScaleMode`,
+    `DecodeMode`, `DecodePriority`, `ScrollCadence`, `ResidentAsset`,
+    `InFlightState`, `ThumbnailState`, `DisplayState`, `DragState`,
+    `MediaEntry`, `BackgroundEvent`) **MUST** list every variant without
+    `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec` for
+    `EditParam` metadata.
   - Default declarations to private; delete dead/write-only zombie symbols and
     trivial getter tests.
 - **Mandatory `///` Docs & Strict `<= 80`-Column Ceiling**:

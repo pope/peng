@@ -62,11 +62,11 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
   - Access `union(enum)` payloads strictly inside `switch` (direct `u.variant`
     bypasses safety checks in ReleaseFast).
   - Model mutually exclusive states (`SlideshowMode`, `ScrollCadence`,
-    `DisplayState`, `DisplayBackend`, `ResidentAsset`, `ThumbnailState`,
-    `InFlightState`, `RawMetadata`, `ArchiveTelemetry`, `UploadMode`,
-    `MipmapTelemetry`, `ImageTransition`, `BlurResources`,
-    `RetainedResource`) via `union(enum)` and
-    validation constructors (`PhysicalDims.initPositive`), never loose booleans,
+    `PaletteLifecycle`, `ActivePaletteMode`, `DisplayState`, `DisplayBackend`,
+    `ResidentAsset`, `ThumbnailState`, `InFlightState`, `RawMetadata`,
+    `ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`, `ImageTransition`,
+    `BlurResources`, `RetainedResource`) via `union(enum)` and validation
+    constructors (`PhysicalDims.initPositive`), never loose booleans,
     `0`/`0.0` dimension sentinels, interdependent optionals, or optional-surface
     event multiplexing (`dimensions_probed` vs `thumb_decoded`). Keep multi-role
     containers (e.g. TIFF IFD0) as structs, use top-level named payload structs

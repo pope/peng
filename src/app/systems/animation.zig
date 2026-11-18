@@ -71,11 +71,16 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
         }
     }
 
-    // Check if palette close animation has finished settling to 0.0 (even if already settled)
-    if (state.viewer.ui.palette.is_closing) {
-        if (!anim.isActive(.palette_reveal) or anim.get(.palette_reveal) <= 0.001) {
-            state.viewer.ui.palette.reset(state.allocator);
-        }
+    // Check if palette close animation has finished settling to 0.0
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => {
+            if (!anim.isActive(.palette_reveal) or
+                anim.get(.palette_reveal) <= 0.001)
+            {
+                state.viewer.ui.palette.reset(state.allocator);
+            }
+        },
+        .closed, .open => {},
     }
 
     // If image crossfade has settled to 1.0 (or is no longer active),
@@ -98,8 +103,15 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
 
     // 1. Open palette: starts animation to 1.0
     try state.openPalette(.actions);
-    try std.testing.expect(state.viewer.ui.palette.mode == .actions);
-    try std.testing.expect(!state.viewer.ui.palette.is_closing);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .open => |m| switch (m) {
+            .actions => {},
+            .files, .directory_navigator, .prompt => {
+                return error.TestUnexpectedResult;
+            },
+        },
+        .closed, .closing => return error.TestUnexpectedResult,
+    }
     try std.testing.expect(state.viewer.hasActiveAnimation());
     try std.testing.expect(state.isBusy());
 
@@ -127,8 +139,15 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
 
     // 4. Close palette: begins fade-out
     state.closePalette();
-    try std.testing.expect(state.viewer.ui.palette.is_closing);
-    try std.testing.expect(state.viewer.ui.palette.mode == .actions);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => |m| switch (m) {
+            .actions => {},
+            .files, .directory_navigator, .prompt => {
+                return error.TestUnexpectedResult;
+            },
+        },
+        .closed, .open => return error.TestUnexpectedResult,
+    }
     try std.testing.expect(state.viewer.hasActiveAnimation());
 
     // 5. Tick 50% through close duration
@@ -137,7 +156,10 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
         .frame_allocator = allocator,
         .delta_time_ms = close_half,
     });
-    try std.testing.expect(state.viewer.ui.palette.is_closing);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => {},
+        .closed, .open => return error.TestUnexpectedResult,
+    }
     try std.testing.expect(state.viewer.animations.get(.palette_reveal) < 0.6);
 
     // 6. Tick remaining 50%: finishes closing and resets palette
@@ -146,8 +168,10 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
         .frame_allocator = allocator,
         .delta_time_ms = close_half,
     });
-    try std.testing.expect(!state.viewer.ui.palette.is_closing);
-    try std.testing.expect(state.viewer.ui.palette.mode == .inactive);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closed => {},
+        .open, .closing => return error.TestUnexpectedResult,
+    }
     try std.testing.expectApproxEqAbs(
         @as(f32, 0.0),
         state.viewer.animations.get(.palette_reveal),
@@ -164,20 +188,26 @@ test "sysUpdateAnimations palette reset when settleAll is called mid-close" {
 
     try state.openPalette(.actions);
     state.closePalette();
-    try std.testing.expect(state.viewer.ui.palette.is_closing);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => {},
+        .closed, .open => return error.TestUnexpectedResult,
+    }
 
     // Simulate headless/test-mode settleAll
     state.viewer.animations.settleAll();
     try std.testing.expect(!state.viewer.animations.hasActiveAnimations());
 
-    // Even with hasActiveAnimations() == false, sysUpdateAnimations must reset the closing palette!
+    // Even with hasActiveAnimations() == false, sysUpdateAnimations must reset
+    // the closing palette.
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
     });
-    try std.testing.expect(!state.viewer.ui.palette.is_closing);
-    try std.testing.expect(state.viewer.ui.palette.mode == .inactive);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closed => {},
+        .open, .closing => return error.TestUnexpectedResult,
+    }
 }
 
 test "sysUpdateAnimations thumb_crossfade lifecycle" {

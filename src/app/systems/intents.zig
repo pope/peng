@@ -1,3 +1,4 @@
+const animation = @import("animation.zig");
 const app_state = @import("../state.zig");
 const cache = @import("cache");
 const context = @import("context.zig");
@@ -17,6 +18,7 @@ const FrameContext = context.FrameContext;
 const MediaEntry = vfs.MediaEntry;
 const PairStreamTarget = vfs.PairStreamTarget;
 const RawMetadata = probe.RawMetadata;
+const sysUpdateAnimations = animation.sysUpdateAnimations;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled or self.display.isHidden()) return;
@@ -134,27 +136,35 @@ fn precacheCurrentDirectory(self: *AppState, now_ms: u64) !void {
 }
 
 fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
+    const active_mode = p.mode.toActive() orelse {
+        self.closePaletteImmediately();
+        return;
+    };
     const ui = &self.viewer.ui;
-    switch (p.mode) {
-        .inactive => {
-            self.closePaletteImmediately();
-            return;
-        },
+    switch (active_mode) {
         .directory_navigator => if (p.query) |q| {
-            ui.palette.query.clearRetainingCapacity();
-            try self.loadPaletteDirectory(q);
-            ui.palette.mode = .directory_navigator;
+            if (ui.palette.openMode()) |cur_mode| {
+                switch (cur_mode) {
+                    .directory_navigator => {
+                        ui.palette.query.clearRetainingCapacity();
+                        try self.loadPaletteDirectory(q);
+                        return;
+                    },
+                    .files, .actions, .prompt => {},
+                }
+            }
+            try self.openDirectoryPalette(q);
             return;
         },
         .files, .actions, .prompt => {},
     }
-    try self.openPalette(p.mode);
+    try self.openPalette(active_mode);
     const q = p.query orelse return;
     ui.palette.query.clearRetainingCapacity();
     try ui.palette.query.appendSlice(self.allocator, q);
     ui.palette.selected_idx = 0;
     ui.palette.selection_dirty = true;
-    switch (ui.palette.mode) {
+    switch (active_mode) {
         .actions => try self.viewer.ui.palette.rebuildActionMatches(
             self.allocator,
         ),
@@ -162,7 +172,7 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
             self.allocator,
             self.viewer.navigation.getEntries(),
         ),
-        .inactive, .directory_navigator, .prompt => {},
+        .directory_navigator, .prompt => {},
     }
 }
 
@@ -186,7 +196,7 @@ fn executeIntent(
         .open_path => |p| try self.openPath(p),
         .open_window => {
             self.showAndRaiseWindow();
-            if (nav.count() == 0 and ui.palette.mode == .inactive) {
+            if (nav.count() == 0 and !ui.palette.isOpen()) {
                 try self.openPalette(.directory_navigator);
             }
         },
@@ -546,12 +556,13 @@ fn executeIntent(
             else
                 "No classifications to clear";
             showCustomSnackbar(self, msg, now_ms);
-            if (ui.palette.mode == .files and !ui.palette.is_closing) {
-                try self.viewer.ui.palette.rebuildFileMatches(
+            if (ui.palette.openMode()) |mode| switch (mode) {
+                .files => try self.viewer.ui.palette.rebuildFileMatches(
                     self.allocator,
                     self.viewer.navigation.getEntries(),
-                );
-            }
+                ),
+                .actions, .directory_navigator, .prompt => {},
+            };
         },
         .cycle_view_mode => {
             const old_idx = nav.current_index;
@@ -1808,9 +1819,6 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
 test "executeIntent - set_palette directory_navigator clears previous query" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var app_st = try AppState.initHeadless(allocator, io);
-    defer app_st.deinit();
-
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDir(io, "alpha_dir", .default_dir);
@@ -1820,7 +1828,11 @@ test "executeIntent - set_palette directory_navigator clears previous query" {
     const len = try tmp.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..len];
 
-    app_st.viewer.ui.palette.mode = .directory_navigator;
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    app_st.viewer.animations.setImmediate(.palette_reveal, 1.0);
     try app_st.viewer.ui.palette.query.appendSlice(allocator, "nonmatching");
 
     try executeIntent(&app_st, .{
@@ -1830,11 +1842,221 @@ test "executeIntent - set_palette directory_navigator clears previous query" {
         },
     }, 1000);
 
+    const open_mode = app_st.viewer.ui.palette.openMode() orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (open_mode) {
+        .directory_navigator => {},
+        .files, .actions, .prompt => return error.TestUnexpectedResult,
+    }
     try std.testing.expectEqual(
         @as(usize, 0),
         app_st.viewer.ui.palette.query.items.len,
     );
+    try std.testing.expectEqualStrings(
+        tmp_path,
+        app_st.viewer.ui.palette.current_nav_dir.items,
+    );
     try std.testing.expect(app_st.viewer.ui.palette.matches.items.len >= 2);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.palette_reveal),
+        0.001,
+    );
+}
+
+test "executeIntent - set_palette directory_navigator with query from closed" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "alpha_dir", .default_dir);
+    try tmp.dir.createDir(io, "beta_dir", .default_dir);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..len];
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try executeIntent(&app_st, .{
+        .set_palette = .{
+            .mode = .directory_navigator,
+            .query = tmp_path,
+        },
+    }, 1000);
+
+    const open_mode = app_st.viewer.ui.palette.openMode() orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (open_mode) {
+        .directory_navigator => {},
+        .files, .actions, .prompt => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(app_st.viewer.animations.isActive(.palette_reveal));
+    try std.testing.expectEqualStrings(
+        tmp_path,
+        app_st.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expect(app_st.viewer.ui.palette.matches.items.len >= 2);
+
+    sysUpdateAnimations(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+    });
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.palette_reveal),
+        0.001,
+    );
+}
+
+test "executeIntent - set_palette directory_navigator from closing" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "alpha_dir", .default_dir);
+    try tmp.dir.createDir(io, "beta_dir", .default_dir);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..len];
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try app_st.openPalette(.actions);
+    sysUpdateAnimations(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+    });
+    try app_st.viewer.ui.palette.query.appendSlice(allocator, "stale");
+    try app_st.viewer.ui.palette.last_child_dir.appendSlice(
+        allocator,
+        "stale_child",
+    );
+    app_st.closePalette();
+    sysUpdateAnimations(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = state.DURATION_PALETTE_CLOSE_MS * 0.5,
+    });
+    switch (app_st.viewer.ui.palette.lifecycle) {
+        .closing => |m| switch (m) {
+            .actions => {},
+            .files, .directory_navigator, .prompt => {
+                return error.TestUnexpectedResult;
+            },
+        },
+        .closed, .open => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(
+        app_st.viewer.animations.get(.palette_reveal) < 0.8,
+    );
+
+    try executeIntent(&app_st, .{
+        .set_palette = .{
+            .mode = .directory_navigator,
+            .query = tmp_path,
+        },
+    }, 1000);
+
+    const open_mode = app_st.viewer.ui.palette.openMode() orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (open_mode) {
+        .directory_navigator => {},
+        .files, .actions, .prompt => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.ui.palette.query.items.len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.ui.palette.last_child_dir.items.len,
+    );
+    try std.testing.expectEqualStrings(
+        tmp_path,
+        app_st.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expect(app_st.viewer.ui.palette.matches.items.len >= 2);
+    try std.testing.expect(app_st.viewer.animations.isActive(.palette_reveal));
+
+    sysUpdateAnimations(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+    });
+    const settled_mode = app_st.viewer.ui.palette.openMode() orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (settled_mode) {
+        .directory_navigator => {},
+        .files, .actions, .prompt => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.palette_reveal),
+        0.001,
+    );
+}
+
+test "executeIntent - set_palette directory_navigator from open actions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "alpha_dir", .default_dir);
+    try tmp.dir.createDir(io, "beta_dir", .default_dir);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..len];
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try app_st.openPalette(.actions);
+    sysUpdateAnimations(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+    });
+    try app_st.viewer.ui.palette.query.appendSlice(allocator, "zoom");
+
+    try executeIntent(&app_st, .{
+        .set_palette = .{
+            .mode = .directory_navigator,
+            .query = tmp_path,
+        },
+    }, 1000);
+
+    const open_mode = app_st.viewer.ui.palette.openMode() orelse {
+        return error.TestUnexpectedResult;
+    };
+    switch (open_mode) {
+        .directory_navigator => {},
+        .files, .actions, .prompt => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.ui.palette.query.items.len,
+    );
+    try std.testing.expectEqualStrings(
+        tmp_path,
+        app_st.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expect(app_st.viewer.ui.palette.matches.items.len >= 2);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.palette_reveal),
+        0.001,
+    );
 }
 
 test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
@@ -2230,8 +2452,8 @@ test "executeIntent - start_slideshow opens prompt and clamps interval" {
 
     try executeIntent(&app_st, .start_slideshow, 1000);
     try std.testing.expectEqual(
-        intents.PaletteMode{ .prompt = .slideshow_interval },
-        app_st.viewer.ui.palette.mode,
+        @as(?intents.ActivePaletteMode, .{ .prompt = .slideshow_interval }),
+        app_st.viewer.ui.palette.openMode(),
     );
     try std.testing.expectEqualStrings(
         "3.0",

@@ -111,8 +111,9 @@ pub fn runUpdatePhase(
         app_state.viewer.pan_controller.reset();
         app_state.viewer.drag_state = .none;
         app_state.viewer.ui.overlays.edit_panel.active_slider = null;
-        if (app_state.viewer.ui.palette.is_closing) {
-            app_state.viewer.ui.palette.reset(app_state.allocator);
+        switch (app_state.viewer.ui.palette.lifecycle) {
+            .closing => app_state.viewer.ui.palette.reset(app_state.allocator),
+            .closed, .open => {},
         }
         switch (app_state.viewer.ui.overlays.title_display) {
             .transient => {

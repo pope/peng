@@ -166,8 +166,7 @@ test "sysProcessUiInteractions cancels slider drag when palette opens" {
     };
 
     // Opening the palette while dragging a slider cancels the drag
-    app_st.viewer.ui.palette.mode = .actions;
-    app_st.viewer.ui.palette.is_closing = false;
+    app_st.viewer.ui.palette.lifecycle = .{ .open = .actions };
     try sysProcessUiInteractions(.{
         .state = &app_st,
         .frame_allocator = allocator,

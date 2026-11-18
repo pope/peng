@@ -5,13 +5,14 @@ const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
 
+const ActivePaletteMode = intents.ActivePaletteMode;
 const AppState = app_state.AppState;
+const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
 const getParentDirBuf = vfs.getParentDirBuf;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
-const PaletteMode = intents.PaletteMode;
 const palette_action_items = intents.actions.palette_action_items;
 
 /// Processes Return key confirmation for 1-based image index input palette mode
@@ -69,10 +70,12 @@ fn handlePaletteReturnDirectory(ctx: FrameContext, mod: KeyModifiers) !void {
     ctx.state.closePalette();
 }
 
-fn handlePaletteReturnEditParam(ctx: FrameContext, raw_str: []const u8) !void {
+fn handlePaletteReturnEditParam(
+    ctx: FrameContext,
+    param: EditParam,
+    raw_str: []const u8,
+) !void {
     const self = ctx.state;
-    const palette = &self.viewer.ui.palette;
-    const param = palette.mode.toEditParam() orelse return;
     const spec = intents.getSpec(param);
     if (raw_str.len == 0) return;
 
@@ -104,13 +107,14 @@ fn handlePaletteReturnMatchSelection(ctx: FrameContext) !void {
 
     if (palette.selected_idx >= palette.matches.items.len) return;
     const target_idx = palette.matches.items[palette.selected_idx];
-    switch (palette.mode) {
+    const mode = palette.openMode() orelse return;
+    switch (mode) {
         .files => try self.pushIntent(.{ .go_to_image = target_idx }),
         .actions => {
             const item = palette_action_items[target_idx];
             try self.pushIntent(item.intent);
         },
-        .inactive, .directory_navigator, .prompt => {},
+        .directory_navigator, .prompt => {},
     }
 }
 
@@ -189,8 +193,32 @@ fn handlePaletteKeys(
 
     switch (key) {
         .right, .tab => {
-            if (palette.mode == .directory_navigator) {
-                if (key == .tab and mod.shift) {
+            if (palette.openMode()) |mode| switch (mode) {
+                .directory_navigator => {
+                    if (key == .tab and mod.shift) {
+                        const parent_buf = try ctx.frame_allocator.alloc(
+                            u8,
+                            std.Io.Dir.max_path_bytes,
+                        );
+                        defer ctx.frame_allocator.free(parent_buf);
+                        if (getParentDirBuf(
+                            palette.current_nav_dir.items,
+                            parent_buf,
+                        )) |parent_dir| {
+                            palette.query.clearRetainingCapacity();
+                            try self.loadPaletteDirectory(parent_dir);
+                        }
+                    } else {
+                        try handlePaletteDirectoryDrillDown(ctx);
+                    }
+                    return true;
+                },
+                .files, .actions, .prompt => {},
+            };
+        },
+        .left => {
+            if (palette.openMode()) |mode| switch (mode) {
+                .directory_navigator => {
                     const parent_buf = try ctx.frame_allocator.alloc(
                         u8,
                         std.Io.Dir.max_path_bytes,
@@ -203,32 +231,15 @@ fn handlePaletteKeys(
                         palette.query.clearRetainingCapacity();
                         try self.loadPaletteDirectory(parent_dir);
                     }
-                } else {
-                    try handlePaletteDirectoryDrillDown(ctx);
-                }
-                return true;
-            }
-        },
-        .left => {
-            if (palette.mode == .directory_navigator) {
-                const parent_buf = try ctx.frame_allocator.alloc(
-                    u8,
-                    std.Io.Dir.max_path_bytes,
-                );
-                defer ctx.frame_allocator.free(parent_buf);
-                if (getParentDirBuf(
-                    palette.current_nav_dir.items,
-                    parent_buf,
-                )) |parent_dir| {
-                    palette.query.clearRetainingCapacity();
-                    try self.loadPaletteDirectory(parent_dir);
-                }
-                return true;
-            }
+                    return true;
+                },
+                .files, .actions, .prompt => {},
+            };
         },
         .return_key => {
             const raw_str = palette.query.items;
-            switch (palette.mode) {
+            const mode = palette.openMode() orelse return false;
+            switch (mode) {
                 .prompt => |kind| switch (kind) {
                     .go_to_image => {
                         try handlePaletteReturnGoToImage(ctx, raw_str);
@@ -236,15 +247,14 @@ fn handlePaletteKeys(
                     .slideshow_interval => {
                         try handlePaletteReturnSlideshow(ctx, raw_str);
                     },
-                    .edit_param => {
-                        try handlePaletteReturnEditParam(ctx, raw_str);
+                    .edit_param => |param| {
+                        try handlePaletteReturnEditParam(ctx, param, raw_str);
                     },
                 },
                 .directory_navigator => {
                     try handlePaletteReturnDirectory(ctx, mod);
                 },
                 .files, .actions => try handlePaletteReturnMatchSelection(ctx),
-                .inactive => return false,
             }
             return true;
         },
@@ -252,21 +262,25 @@ fn handlePaletteKeys(
         .backspace => {
             if (try palette.deleteCharBackward(self.allocator, entries)) {
                 return false;
-            } else if (palette.mode == .directory_navigator) {
-                const parent_buf = try ctx.frame_allocator.alloc(
-                    u8,
-                    std.Io.Dir.max_path_bytes,
-                );
-                defer ctx.frame_allocator.free(parent_buf);
-                if (getParentDirBuf(
-                    palette.current_nav_dir.items,
-                    parent_buf,
-                )) |parent_dir| {
-                    palette.query.clearRetainingCapacity();
-                    try self.loadPaletteDirectory(parent_dir);
-                }
-                return true;
             }
+            if (palette.openMode()) |mode| switch (mode) {
+                .directory_navigator => {
+                    const parent_buf = try ctx.frame_allocator.alloc(
+                        u8,
+                        std.Io.Dir.max_path_bytes,
+                    );
+                    defer ctx.frame_allocator.free(parent_buf);
+                    if (getParentDirBuf(
+                        palette.current_nav_dir.items,
+                        parent_buf,
+                    )) |parent_dir| {
+                        palette.query.clearRetainingCapacity();
+                        try self.loadPaletteDirectory(parent_dir);
+                    }
+                    return true;
+                },
+                .files, .actions, .prompt => {},
+            };
             return false;
         },
         else => return false,
@@ -281,7 +295,8 @@ fn processPaletteItemClick(
     real_idx: usize,
 ) !bool {
     const self = ctx.state;
-    switch (self.viewer.ui.palette.mode) {
+    const mode = self.viewer.ui.palette.openMode() orelse return false;
+    switch (mode) {
         .files => {
             try self.pushIntent(.{ .go_to_image = real_idx });
             self.closePalette();
@@ -316,7 +331,7 @@ fn processPaletteItemClick(
                 });
             }
         },
-        .inactive, .prompt => {},
+        .prompt => {},
     }
     return false;
 }
@@ -418,7 +433,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
 
     // 1. Open directory navigator at tmp_dir
     try state.loadPaletteDirectory(tmp_dir);
-    state.viewer.ui.palette.mode = .directory_navigator;
+    state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
 
     // Locate index of sub_no_images
     var match_idx_no_img: usize = 0;
@@ -438,8 +453,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .right, .{});
     try std.testing.expectEqual(
-        PaletteMode.directory_navigator,
-        state.viewer.ui.palette.mode,
+        @as(?ActivePaletteMode, .directory_navigator),
+        state.viewer.ui.palette.openMode(),
     );
     try std.testing.expectEqualStrings(
         sub_no_img,
@@ -453,8 +468,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Test Left key -> step up to parent directory, remembering sub_no_images
     _ = try handlePaletteKeys(ctx, .left, .{});
     try std.testing.expectEqual(
-        PaletteMode.directory_navigator,
-        state.viewer.ui.palette.mode,
+        @as(?ActivePaletteMode, .directory_navigator),
+        state.viewer.ui.palette.openMode(),
     );
     try std.testing.expectEqualStrings(
         tmp_dir,
@@ -469,8 +484,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .tab, .{});
     try std.testing.expectEqual(
-        PaletteMode.directory_navigator,
-        state.viewer.ui.palette.mode,
+        @as(?ActivePaletteMode, .directory_navigator),
+        state.viewer.ui.palette.openMode(),
     );
     try std.testing.expectEqualStrings(
         sub_no_img,
@@ -484,8 +499,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Test Shift+Tab key -> step up to parent directory
     _ = try handlePaletteKeys(ctx, .tab, .{ .shift = true });
     try std.testing.expectEqual(
-        PaletteMode.directory_navigator,
-        state.viewer.ui.palette.mode,
+        @as(?ActivePaletteMode, .directory_navigator),
+        state.viewer.ui.palette.openMode(),
     );
     try std.testing.expectEqualStrings(
         tmp_dir,
@@ -496,17 +511,22 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // sub_no_images and initiates palette closing dissolve
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .return_key, .{});
-    try std.testing.expect(state.viewer.ui.palette.is_closing);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => {},
+        .closed, .open => return error.TestUnexpectedResult,
+    }
 
     // Re-open palette
-    state.viewer.ui.palette.is_closing = false;
     try state.loadPaletteDirectory(tmp_dir);
-    state.viewer.ui.palette.mode = .directory_navigator;
+    state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
 
     // Test Shift+Enter key on current directory -> queues open_path intent
     // and initiates palette closing dissolve
     _ = try handlePaletteKeys(ctx, .return_key, .{ .shift = true });
-    try std.testing.expect(state.viewer.ui.palette.is_closing);
+    switch (state.viewer.ui.palette.lifecycle) {
+        .closing => {},
+        .closed, .open => return error.TestUnexpectedResult,
+    }
 }
 
 test "handlePaletteKeys stepping up to parent directory preselects child dir" {
@@ -536,7 +556,7 @@ test "handlePaletteKeys stepping up to parent directory preselects child dir" {
     defer state.deinit();
 
     try state.loadPaletteDirectory(work_dir);
-    state.viewer.ui.palette.mode = .directory_navigator;
+    state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
     try std.testing.expectEqualStrings(
         work_dir,
         state.viewer.ui.palette.current_nav_dir.items,
@@ -597,8 +617,8 @@ test "openPalette directory_navigator starting directory rules" {
 
     try state.openPalette(.directory_navigator);
     try std.testing.expectEqual(
-        PaletteMode.directory_navigator,
-        state.viewer.ui.palette.mode,
+        @as(?ActivePaletteMode, .directory_navigator),
+        state.viewer.ui.palette.openMode(),
     );
     try std.testing.expectEqualStrings(
         tmp_dir,
@@ -709,7 +729,7 @@ test "handlePaletteKeys backspace removes full multi-byte UTF-8 codepoints" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.ui.palette.mode = .files;
+    state.viewer.ui.palette.lifecycle = .{ .open = .files };
     // "a" (1B) + "é" (2B) + "日" (3B) + "🌅" (4B)
     try state.viewer.ui.palette.query.appendSlice(allocator, "aé日🌅");
 
@@ -833,7 +853,7 @@ test "directory_navigator archive_file drill-down and click behavior" {
     defer frame_arena.deinit();
 
     const palette = &state.viewer.ui.palette;
-    palette.mode = .directory_navigator;
+    palette.lifecycle = .{ .open = .directory_navigator };
     try palette.current_nav_dir.appendSlice(allocator, "/tmp/comics");
     try palette.dir_items.append(allocator, .{
         .directory = .{
@@ -871,7 +891,10 @@ test "directory_navigator archive_file drill-down and click behavior" {
     // 2. Clicking an archive_file entry pushes .open_path and closes palette
     const closed = try processPaletteItemClick(ctx, 1);
     try std.testing.expect(closed);
-    try std.testing.expect(palette.is_closing);
+    switch (palette.lifecycle) {
+        .closing => {},
+        .closed, .open => return error.TestUnexpectedResult,
+    }
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
     try std.testing.expectEqualStrings(
         "/tmp/comics/issue1.cbz",

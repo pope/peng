@@ -126,11 +126,11 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     };
 
     // 1. Palette open -> paused
-    state.viewer.ui.palette.mode = .actions;
+    state.viewer.ui.palette.lifecycle = .{ .open = .actions };
     try std.testing.expect(state.isSlideshowPaused());
     try sysUpdateSlideshow(ctx_2s);
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
-    state.viewer.ui.palette.mode = .inactive;
+    state.viewer.ui.palette.lifecycle = .closed;
     try std.testing.expect(!state.isSlideshowPaused());
 
     // 2. Viewport drag active -> paused

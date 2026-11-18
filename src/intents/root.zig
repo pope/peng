@@ -9,6 +9,7 @@ pub const actions = @import("actions.zig");
 pub const keys = @import("keys.zig");
 pub const types = @import("types.zig");
 
+pub const ActivePaletteMode = types.ActivePaletteMode;
 pub const AdjustIntent = types.AdjustIntent;
 pub const AppIntent = types.AppIntent;
 pub const CliOption = actions.CliOption;
@@ -30,7 +31,6 @@ pub const PromptKind = types.PromptKind;
 pub const scale_modes_string = types.scale_modes_string;
 pub const specs = types.specs;
 pub const StepDirection = types.StepDirection;
-pub const TextInputBounds = types.TextInputBounds;
 pub const TextureScaleMode = types.TextureScaleMode;
 pub const ZoomPreset = types.ZoomPreset;
 

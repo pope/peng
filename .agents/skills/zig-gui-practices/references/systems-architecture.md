@@ -266,11 +266,19 @@ ______________________________________________________________________
       formatting branches across IPC, UI layouts, and state stores.
     - Let UI widgets and IPC parsers query `intents.getSpec(param)` to
       clamp, snap, and format values consistently.
-  - **Nested Prompt Palette Mode (`PaletteMode` / `PromptKind`)**:
-    - Modal palette states collapse single-line text/numeric dialogs into
-      `PaletteMode.prompt: PromptKind` (`go_to_image`, `slideshow_interval`,
+  - **Nested Prompt Palette Mode (`PaletteMode` / `ActivePaletteMode` /
+    `PaletteLifecycle`)**:
+    - Modal palette targets collapse single-line text/numeric dialogs into
+      `PromptKind` (`go_to_image`, `slideshow_interval`,
       `edit_param: EditParam`), eliminating 13-arm `.set_brightness` ...
       `.set_texture` switches across `intents`, `palette`, `ui`, and `app`.
+    - `PaletteState` tracks `lifecycle: PaletteLifecycle` (`.closed`,
+      `.open: ActivePaletteMode`, `.closing: ActivePaletteMode`), making
+      closed-and-closing states unrepresentable.
+    - Opening any mode enters via `AppState.openPalette` /
+      `openDirectoryPalette` (resetting stale state, setting `.open`, starting
+      `.palette_reveal`, and enabling text input); in-place directory reload
+      only applies when `openMode()` is already `.directory_navigator`.
     - Confirming a slideshow interval pushes
       `AppIntent.start_slideshow_interval` so interval clamping and
       `NavigationState.slideshow` mutation stay inside `sysExecuteIntents`.

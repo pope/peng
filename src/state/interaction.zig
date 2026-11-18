@@ -398,7 +398,8 @@ pub const InteractionState = struct {
         self: *InteractionState,
         palette: *PaletteState,
     ) void {
-        const cfg = getPaletteConfig(palette.mode);
+        const mode = palette.visibleMode() orelse return;
+        const cfg = getPaletteConfig(mode);
         self.palette_scroll_y = cfg.resolveScrollOffsetY(
             self.palette_scroll_y,
             palette.matches.items.len,

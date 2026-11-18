@@ -9,6 +9,7 @@ const intents = @import("intents");
 const std = @import("std");
 const vfs = @import("vfs");
 
+const ActivePaletteMode = intents.ActivePaletteMode;
 const DirectoryEntry = vfs.DirectoryEntry;
 const EditParam = intents.EditParam;
 const EntryScanState = vfs.EntryScanState;
@@ -17,9 +18,16 @@ const getParentDirBuf = vfs.getParentDirBuf;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const palette_action_items = intents.actions.palette_action_items;
-const PaletteMode = intents.PaletteMode;
 const scanDirectoryEntries = vfs.scanDirectoryEntries;
 const trimTrailingSeparators = vfs.trimTrailingSeparators;
+
+/// Lifecycle state of the command palette modal, coupling visibility and
+/// active mode so closed palettes cannot be closing and vice versa.
+pub const PaletteLifecycle = union(enum) {
+    closed,
+    open: ActivePaletteMode,
+    closing: ActivePaletteMode,
+};
 
 /// Represents a search result item paired with its fuzzy matching score.
 pub const ScoredMatch = struct {
@@ -30,8 +38,7 @@ pub const ScoredMatch = struct {
 /// Main state model for command palette modals, directory navigation, and fuzzy
 /// searching.
 pub const PaletteState = struct {
-    mode: PaletteMode = .inactive,
-    is_closing: bool = false,
+    lifecycle: PaletteLifecycle = .closed,
     query: std.ArrayList(u8) = .empty,
     selected_idx: usize = 0,
     matches: std.ArrayList(usize) = .empty,
@@ -71,12 +78,38 @@ pub const PaletteState = struct {
         return self;
     }
 
-    /// Returns `true` if the palette is open in any active mode.
+    /// Returns `true` if the palette is visible (open or closing dissolve).
     pub inline fn isOpen(self: *const PaletteState) bool {
-        return switch (self.mode) {
-            .inactive => false,
-            .files, .actions, .directory_navigator, .prompt => true,
+        return switch (self.lifecycle) {
+            .closed => false,
+            .open, .closing => true,
         };
+    }
+
+    /// Returns the active mode when visible (open or closing), or `null` when
+    /// closed.
+    pub inline fn visibleMode(self: *const PaletteState) ?ActivePaletteMode {
+        return switch (self.lifecycle) {
+            .closed => null,
+            .open, .closing => |m| m,
+        };
+    }
+
+    /// Returns the active mode only while open and accepting input, or `null`
+    /// when closed or closing.
+    pub inline fn openMode(self: *const PaletteState) ?ActivePaletteMode {
+        return switch (self.lifecycle) {
+            .open => |m| m,
+            .closed, .closing => null,
+        };
+    }
+
+    /// Transitions an open palette into its closing dissolve state.
+    pub inline fn beginClose(self: *PaletteState) void {
+        switch (self.lifecycle) {
+            .open => |m| self.lifecycle = .{ .closing = m },
+            .closed, .closing => {},
+        }
     }
 
     /// Frees all dynamically allocated memory, string arrays, searcher state,
@@ -111,7 +144,7 @@ pub const PaletteState = struct {
     }
 
     /// Clears search query, matched indexes, navigation directory, and
-    /// restores palette to inactive mode.
+    /// restores palette to closed lifecycle state.
     pub fn reset(self: *PaletteState, allocator: std.mem.Allocator) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
@@ -120,8 +153,7 @@ pub const PaletteState = struct {
         self.last_child_dir.clearRetainingCapacity();
         self.clearDirItems(allocator);
         _ = self.dir_scan_generation.fetchAdd(1, .release);
-        self.mode = .inactive;
-        self.is_closing = false;
+        self.lifecycle = .closed;
         self.selected_idx = 0;
         self.selection_dirty = true;
     }
@@ -154,7 +186,10 @@ pub const PaletteState = struct {
     /// Returns whether the palette is currently active and accepting user
     /// input (not closing).
     pub inline fn isAcceptingInput(self: *const PaletteState) bool {
-        return self.isOpen() and !self.is_closing;
+        return switch (self.lifecycle) {
+            .open => true,
+            .closed, .closing => false,
+        };
     }
 
     /// Returns a lazily initialized or resized ASCII fuzzy searcher matching
@@ -495,14 +530,14 @@ pub const PaletteState = struct {
         allocator: std.mem.Allocator,
         entries: []const MediaEntry,
     ) !void {
-        switch (self.mode) {
+        const mode = self.visibleMode() orelse return;
+        switch (mode) {
             .files => try self.rebuildFileMatches(allocator, entries),
             .actions => try self.rebuildActionMatches(allocator),
             .directory_navigator => try self.rebuildDirectoryMatches(allocator),
             .prompt => |kind| switch (kind) {
                 .go_to_image, .slideshow_interval, .edit_param => {},
             },
-            .inactive => {},
         }
     }
 
@@ -659,9 +694,10 @@ pub const PaletteState = struct {
         entries: []const MediaEntry,
         visible_indices: []const usize,
     ) usize {
+        const mode = self.visibleMode() orelse return 64;
         var max_h: usize = 64;
         for (visible_indices) |real_idx| {
-            switch (self.mode) {
+            switch (mode) {
                 .files => {
                     if (real_idx < entries.len) {
                         const m = entries[real_idx];
@@ -696,7 +732,6 @@ pub const PaletteState = struct {
                 .prompt => |kind| switch (kind) {
                     .go_to_image, .slideshow_interval, .edit_param => {},
                 },
-                .inactive => {},
             }
         }
         return max_h;
@@ -914,7 +949,7 @@ const palette_configs: [EditParam.count]PaletteConfig = blk: {
 };
 
 /// Returns the static layout configuration struct for a given palette mode.
-pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
+pub fn getPaletteConfig(mode: ActivePaletteMode) PaletteConfig {
     return switch (mode) {
         .files => .{
             .title = "Search Files",
@@ -944,7 +979,6 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
             },
             .edit_param => |param| palette_configs[@backingInt(param)],
         },
-        .inactive => getPaletteConfig(.files),
     };
 }
 
@@ -1190,7 +1224,7 @@ test "PaletteState - lifecycle, action matching, and reset" {
     var state = try PaletteState.init(allocator);
     defer state.deinit(allocator);
 
-    state.mode = .actions;
+    state.lifecycle = .{ .open = .actions };
     try state.rebuildActionMatches(allocator);
     const all_count = state.matches.items.len;
     try std.testing.expect(all_count > 0);
@@ -1203,7 +1237,7 @@ test "PaletteState - lifecycle, action matching, and reset" {
 
     // Reset clears state
     state.reset(allocator);
-    try std.testing.expectEqual(PaletteMode.inactive, state.mode);
+    try std.testing.expectEqual(PaletteLifecycle.closed, state.lifecycle);
     try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
@@ -1214,7 +1248,7 @@ test "PaletteState - rebuildFileMatches with RAW+JPEG pair" {
     var state = try PaletteState.init(allocator);
     defer state.deinit(allocator);
 
-    state.mode = .files;
+    state.lifecycle = .{ .open = .files };
     const entries = [_]MediaEntry{
         .{ .filesystem = .{ .path = "/photos/forest.png" } },
         .{
@@ -1338,7 +1372,7 @@ test "PaletteState directory_navigator mode configuration and item matching" {
     var palette = try PaletteState.init(alloc);
     defer palette.deinit(alloc);
 
-    palette.mode = .directory_navigator;
+    palette.lifecycle = .{ .open = .directory_navigator };
     try palette.current_nav_dir.appendSlice(alloc, "/home/user/Pictures");
 
     try palette.dir_items.append(alloc, .{
@@ -1448,7 +1482,7 @@ test "PaletteState.computeWindowMaxHaystack across visible rows" {
     const alloc = std.testing.allocator;
     var pal_state = try PaletteState.init(alloc);
     defer pal_state.deinit(alloc);
-    pal_state.mode = .directory_navigator;
+    pal_state.lifecycle = .{ .open = .directory_navigator };
 
     const long_name: [96]u8 = @splat('a');
     try pal_state.dir_items.append(alloc, .{
@@ -1826,7 +1860,7 @@ test "PaletteState - query editing operations and UTF-8 backspace" {
     const alloc = std.testing.allocator;
     var state = try PaletteState.init(alloc);
     defer state.deinit(alloc);
-    state.mode = .files;
+    state.lifecycle = .{ .open = .files };
 
     const entries = [_]MediaEntry{
         .{ .filesystem = .{ .path = "/photos/forest.png" } },

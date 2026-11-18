@@ -1,6 +1,6 @@
 //! Pure Intent Data Types & Enums
 //!
-//! Defines intent data structures, scaling modes, palette modes, bounds,
+//! Defines intent data structures, scaling modes, palette modes,
 //! and command payloads without depending on UI, hardware, or state structs.
 
 const geom = @import("geom");
@@ -71,12 +71,6 @@ pub const filter_modes_string: []const u8 = blk: {
         str = if (i > 0) str ++ ", " ++ name else name;
     }
     break :blk str;
-};
-
-/// Min and max numeric bounds for validated text input dialogs.
-pub const TextInputBounds = struct {
-    min: f32,
-    max: f32,
 };
 
 /// Target parameter identifier for image editing controls and sliders.
@@ -436,6 +430,23 @@ pub const PromptKind = union(enum) {
 };
 
 /// Active modal command palette or interactive numeric dialog mode.
+pub const ActivePaletteMode = union(enum) {
+    files,
+    actions,
+    directory_navigator,
+    prompt: PromptKind,
+
+    /// Returns true if this palette mode requires single-line text/numeric
+    /// input validation.
+    pub fn isTextInputDialog(self: ActivePaletteMode) bool {
+        return switch (self) {
+            .prompt => true,
+            .files, .actions, .directory_navigator => false,
+        };
+    }
+};
+
+/// Requested modal command palette target (including `.inactive` to dismiss).
 pub const PaletteMode = union(enum) {
     inactive,
     files,
@@ -443,40 +454,15 @@ pub const PaletteMode = union(enum) {
     directory_navigator,
     prompt: PromptKind,
 
-    /// Returns the associated EditParam if this mode adjusts a photographic
-    /// parameter, or null otherwise.
-    pub fn toEditParam(self: PaletteMode) ?EditParam {
+    /// Converts a requested `PaletteMode` into an `ActivePaletteMode`, or
+    /// `null` when `.inactive`.
+    pub fn toActive(self: PaletteMode) ?ActivePaletteMode {
         return switch (self) {
-            .prompt => |kind| switch (kind) {
-                .edit_param => |param| param,
-                .go_to_image, .slideshow_interval => null,
-            },
-            .inactive, .files, .actions, .directory_navigator => null,
-        };
-    }
-
-    /// Returns true if this palette mode requires single-line text/numeric
-    /// input validation.
-    pub fn isTextInputDialog(self: PaletteMode) bool {
-        return switch (self) {
-            .prompt => true,
-            .inactive, .files, .actions, .directory_navigator => false,
-        };
-    }
-
-    /// Returns valid numeric bounds for input dialogs, or null if non-numeric
-    /// or search palette.
-    pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
-        return switch (self) {
-            .prompt => |kind| switch (kind) {
-                .edit_param => |param| blk: {
-                    const spec = getSpec(param);
-                    break :blk .{ .min = spec.min, .max = spec.max };
-                },
-                .slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
-                .go_to_image => null,
-            },
-            .inactive, .files, .actions, .directory_navigator => null,
+            .inactive => null,
+            .files => .files,
+            .actions => .actions,
+            .directory_navigator => .directory_navigator,
+            .prompt => |kind| .{ .prompt = kind },
         };
     }
 };
@@ -634,9 +620,8 @@ test "ParamSpec - fromSlug lookup returns exact EditParam for all 13 slugs" {
     try std.testing.expect(fromSlug("") == null);
 }
 
-test "PaletteMode - PromptKind methods cover all variants" {
+test "PaletteMode.toActive and ActivePaletteMode.isTextInputDialog" {
     const bright: PaletteMode = .{ .prompt = .{ .edit_param = .brightness } };
-    const contrast: PaletteMode = .{ .prompt = .{ .edit_param = .contrast } };
     const goto: PaletteMode = .{ .prompt = .go_to_image };
     const slide: PaletteMode = .{ .prompt = .slideshow_interval };
     const inactive: PaletteMode = .inactive;
@@ -645,31 +630,38 @@ test "PaletteMode - PromptKind methods cover all variants" {
     const dir_nav: PaletteMode = .directory_navigator;
 
     try std.testing.expectEqual(
-        @as(?EditParam, .brightness),
-        bright.toEditParam(),
+        @as(?ActivePaletteMode, null),
+        inactive.toActive(),
     );
     try std.testing.expectEqual(
-        @as(?EditParam, .contrast),
-        contrast.toEditParam(),
+        @as(?ActivePaletteMode, .files),
+        files.toActive(),
     );
-    try std.testing.expectEqual(@as(?EditParam, null), goto.toEditParam());
-    try std.testing.expectEqual(@as(?EditParam, null), slide.toEditParam());
-    try std.testing.expectEqual(@as(?EditParam, null), files.toEditParam());
+    try std.testing.expectEqual(
+        @as(?ActivePaletteMode, .actions),
+        actions.toActive(),
+    );
+    try std.testing.expectEqual(
+        @as(?ActivePaletteMode, .directory_navigator),
+        dir_nav.toActive(),
+    );
+    try std.testing.expectEqual(
+        @as(?ActivePaletteMode, .{ .prompt = .{ .edit_param = .brightness } }),
+        bright.toActive(),
+    );
+    try std.testing.expectEqual(
+        @as(?ActivePaletteMode, .{ .prompt = .go_to_image }),
+        goto.toActive(),
+    );
+    try std.testing.expectEqual(
+        @as(?ActivePaletteMode, .{ .prompt = .slideshow_interval }),
+        slide.toActive(),
+    );
 
-    try std.testing.expect(bright.isTextInputDialog());
-    try std.testing.expect(goto.isTextInputDialog());
-    try std.testing.expect(slide.isTextInputDialog());
-    try std.testing.expect(!inactive.isTextInputDialog());
-    try std.testing.expect(!files.isTextInputDialog());
-    try std.testing.expect(!actions.isTextInputDialog());
-    try std.testing.expect(!dir_nav.isTextInputDialog());
-
-    const c_bounds = contrast.getTextInputBounds().?;
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), c_bounds.min, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.0), c_bounds.max, 0.001);
-    const s_bounds = slide.getTextInputBounds().?;
-    try std.testing.expectApproxEqAbs(@as(f32, 0.1), s_bounds.min, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 3600.0), s_bounds.max, 0.001);
-    try std.testing.expect(goto.getTextInputBounds() == null);
-    try std.testing.expect(actions.getTextInputBounds() == null);
+    try std.testing.expect(bright.toActive().?.isTextInputDialog());
+    try std.testing.expect(goto.toActive().?.isTextInputDialog());
+    try std.testing.expect(slide.toActive().?.isTextInputDialog());
+    try std.testing.expect(!files.toActive().?.isTextInputDialog());
+    try std.testing.expect(!actions.toActive().?.isTextInputDialog());
+    try std.testing.expect(!dir_nav.toActive().?.isTextInputDialog());
 }
