@@ -67,12 +67,12 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
 - **Safe Tagged Unions (`switch`)**:
   - Access `union(enum)` payloads strictly inside `switch` (direct `u.variant`
     bypasses safety checks in ReleaseFast).
-  - Model mutually exclusive states (`SlideshowMode`, `ScrollCadence`,
-    `PresentCadence`, `PresentTracker.Phase`, `PanTap`, `ZoomPhase`,
-    `PaletteLifecycle`, `ActivePaletteMode`, `DisplayState`, `DisplayBackend`,
-    `ResidentAsset`, `ThumbnailState`, `InFlightState`, `RawMetadata`,
-    `ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`, `ImageTransition`,
-    `BlurResources`, `RetainedResource`) via `union(enum)`
+  - Model mutually exclusive states (`SlideshowMode`, `SlideshowClock`,
+    `ScrollCadence`, `PresentCadence`, `PresentTracker.Phase`, `PanTap`,
+    `ZoomPhase`, `PaletteLifecycle`, `ActivePaletteMode`, `DisplayState`,
+    `DisplayBackend`, `ResidentAsset`, `ThumbnailState`, `InFlightState`,
+    `RawMetadata`, `ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`,
+    `ImageTransition`, `BlurResources`, `RetainedResource`) via `union(enum)`
     and validation constructors (`PhysicalDims.initPositive`), never loose
     booleans, `0`/`0.0` dimension sentinels, interdependent optionals, or
     optional-surface event multiplexing (`dimensions_probed` vs

@@ -2,12 +2,10 @@ const app_state = @import("../state.zig");
 const context = @import("context.zig");
 const intents = @import("intents");
 const intents_sys = @import("intents.zig");
-const state_pkg = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
-const FrameInput = state_pkg.FrameInput;
 
 /// System Pass: Update slideshow playback and timer.
 ///
@@ -15,8 +13,7 @@ const FrameInput = state_pkg.FrameInput;
 /// 1. Checks if slideshow playback is paused (command palette open, viewport
 ///    dragging, active slide decoding, hidden/suspended window, or explicit
 ///    pause) and disarms the monotonic tick anchor while paused.
-/// 2. If unpaused, advances the slideshow timer via `ctx.now_ms` (falling back
-///    to `ctx.delta_time_ms` on initial arming or synthetic tests).
+/// 2. If unpaused, advances the slideshow timer via monotonic `ctx.now_ms`.
 /// 3. Emits `.next_image` application intent once the accumulated duration
 ///    reaches or exceeds the configured interval.
 pub fn sysUpdateSlideshow(ctx: FrameContext) !void {
@@ -25,10 +22,7 @@ pub fn sysUpdateSlideshow(ctx: FrameContext) !void {
         state.viewer.navigation.slideshow.syncClock(ctx.now_ms, false);
         return;
     }
-    if (state.viewer.navigation.slideshow.tick(
-        ctx.now_ms,
-        ctx.delta_time_ms,
-    )) {
+    if (state.viewer.navigation.slideshow.tick(ctx.now_ms)) {
         try state.pushIntent(.next_image);
     }
 }
@@ -40,54 +34,53 @@ test "AppState slideshow timer auto-advances slide" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    _ = try state.viewer.navigation.appendEntry(allocator, .{
-        .filesystem = .{ .path = "img1.jpg" },
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const id0 = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = try dir_alloc.dupe(u8, "img1.jpg") },
     });
-    _ = try state.viewer.navigation.appendEntry(allocator, .{
-        .filesystem = .{ .path = "img2.jpg" },
+    const id1 = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = try dir_alloc.dupe(u8, "img2.jpg") },
     });
     state.viewer.navigation.current_index = 0;
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{ .asset = .failed },
+    });
+    _ = try state.cache.appendSlot(allocator, id1, .{
+        .resident = .{ .asset = .failed },
+    });
     state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
+    state.viewer.navigation.slideshow.syncClock(1000, true);
 
-    const frame_input_1s = FrameInput{
-        .win_w = 100,
-        .win_h = 100,
-        .scale_x = 1,
-        .scale_y = 1,
-        .mouse_x = 0,
-        .mouse_y = 0,
-        .mouse_left_down = false,
-        .mouse_left_clicked = false,
-        .mouse_inside = true,
-        .quit_request = .none,
-        .scroll_delta_x = 0,
-        .scroll_delta_y = 0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .delta_time_ms = 1000.0,
-    };
-
-    const ctx_1s = FrameContext{
+    try sysUpdateSlideshow(.{
         .state = &state,
         .frame_allocator = allocator,
-        .input = frame_input_1s,
-        .delta_time_ms = 1000.0,
-    };
-
-    try sysUpdateSlideshow(ctx_1s);
+        .now_ms = 2000,
+    });
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
-    try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.current_index.?);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.navigation.current_index.?,
+    );
 
-    // Pass another second (total 2000ms >= 2.0s interval) -> queues .next_image intent
-    try sysUpdateSlideshow(ctx_1s);
+    // Pass another second (total 2000ms >= 2.0s interval) -> queues .next_image
+    const ctx_3s = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 3000,
+    };
+    try sysUpdateSlideshow(ctx_3s);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
-    try std.testing.expectEqual(intents.AppIntent.next_image, state.pending_intents.items[0]);
+    try std.testing.expectEqual(
+        intents.AppIntent.next_image,
+        state.pending_intents.items[0],
+    );
 
     // Intent execution pass advances the slide index
-    try intents_sys.sysExecuteIntents(ctx_1s);
-    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
+    try intents_sys.sysExecuteIntents(ctx_3s);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        state.viewer.navigation.current_index.?,
+    );
 }
 
 test "AppState slideshow pauses during command palette, dragging, or explicit pause" {
@@ -97,46 +90,27 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    _ = try state.viewer.navigation.appendEntry(allocator, .{
-        .filesystem = .{ .path = "img1.jpg" },
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const id0 = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = try dir_alloc.dupe(u8, "img1.jpg") },
     });
     _ = try state.viewer.navigation.appendEntry(allocator, .{
-        .filesystem = .{ .path = "img2.jpg" },
+        .filesystem = .{ .path = try dir_alloc.dupe(u8, "img2.jpg") },
     });
     state.viewer.navigation.current_index = 0;
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{ .asset = .failed },
+    });
     state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 1.0 } };
-
-    const frame_input_1s = FrameInput{
-        .win_w = 100,
-        .win_h = 100,
-        .scale_x = 1,
-        .scale_y = 1,
-        .mouse_x = 0,
-        .mouse_y = 0,
-        .mouse_left_down = false,
-        .mouse_left_clicked = false,
-        .mouse_inside = true,
-        .quit_request = .none,
-        .scroll_delta_x = 0,
-        .scroll_delta_y = 0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .delta_time_ms = 1000.0,
-    };
-
-    const ctx_2s = FrameContext{
-        .state = &state,
-        .frame_allocator = allocator,
-        .input = frame_input_1s,
-        .delta_time_ms = 2000.0,
-    };
 
     // 1. Palette open -> paused
     state.viewer.ui.palette.lifecycle = .{ .open = .actions };
     try std.testing.expect(state.isSlideshowPaused());
-    try sysUpdateSlideshow(ctx_2s);
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 2000,
+    });
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
     state.viewer.ui.palette.lifecycle = .closed;
     try std.testing.expect(!state.isSlideshowPaused());
@@ -144,7 +118,11 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     // 2. Viewport drag active -> paused
     state.viewer.drag_state = .{ .viewport = .{ .last_x = 0, .last_y = 0 } };
     try std.testing.expect(state.isSlideshowPaused());
-    try sysUpdateSlideshow(ctx_2s);
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 4000,
+    });
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
     state.viewer.drag_state = .none;
     try std.testing.expect(!state.isSlideshowPaused());
@@ -152,7 +130,11 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     // 3. Explicit pause -> paused
     state.viewer.navigation.slideshow.pause();
     try std.testing.expect(state.isSlideshowPaused());
-    try sysUpdateSlideshow(ctx_2s);
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 6000,
+    });
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
     state.viewer.navigation.slideshow.unpause();
 
@@ -169,15 +151,30 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     try std.testing.expect(state.isSlideshowPaused());
     try std.testing.expectEqual(
         .wait_indefinite,
-        state.computeFrameWaitStrategy(800, 600, false, false, 1000),
+        state.computeFrameWaitStrategy(800, 600, false, false, 7000),
     );
-    try sysUpdateSlideshow(ctx_2s);
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 8000,
+    });
     try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
 
-    // 5. Window exposed -> resumes and advances
+    // 5. Window exposed -> wake frame arms anchor without advancing, then 1s
+    // later advances
     state.display.setOccluded(false);
     try std.testing.expect(!state.isSlideshowPaused());
-    try sysUpdateSlideshow(ctx_2s);
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 8000,
+    });
+    try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
+    try sysUpdateSlideshow(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 9000,
+    });
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
 }
 

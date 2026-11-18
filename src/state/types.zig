@@ -235,16 +235,11 @@ pub const SlideshowMode = union(enum) {
     pub const MIN_INTERVAL_S: f32 = 0.1;
     pub const MAX_INTERVAL_S: f32 = 3600.0;
 
-    /// Advances the internal slideshow timer using monotonic `now_ms` when
-    /// `now_ms > 0` (arming `.running` with `0.0` elapsed on the first
-    /// unpaused frame, or falling back to `fallback_delta_ms` when
-    /// `now_ms == 0` in clockless tests); returns `true` if the interval has
-    /// elapsed. Does NOT advance when paused or inactive.
-    pub fn tick(
-        self: *SlideshowMode,
-        now_ms: u64,
-        fallback_delta_ms: f64,
-    ) bool {
+    /// Advances the internal slideshow timer using monotonic `now_ms` (arming
+    /// `.running` with `0.0` elapsed on the first unpaused frame); returns
+    /// `true` if the interval has elapsed. Does NOT advance when paused or
+    /// inactive.
+    pub fn tick(self: *SlideshowMode, now_ms: u64) bool {
         switch (self.*) {
             .inactive => return false,
             .active => |*data| {
@@ -252,18 +247,12 @@ pub const SlideshowMode = union(enum) {
                 const step_ms: f64 = switch (data.clock) {
                     .paused => return false,
                     .unarmed => blk: {
-                        if (now_ms > 0) {
-                            data.clock = .{ .running = now_ms };
-                            break :blk 0.0;
-                        }
-                        break :blk @max(0.0, fallback_delta_ms);
+                        data.clock = .{ .running = now_ms };
+                        break :blk 0.0;
                     },
                     .running => |prev| blk: {
-                        if (now_ms > 0) {
-                            data.clock = .{ .running = now_ms };
-                            break :blk @floatFromInt(now_ms -| prev);
-                        }
-                        break :blk @max(0.0, fallback_delta_ms);
+                        data.clock = .{ .running = now_ms };
+                        break :blk @floatFromInt(now_ms -| prev);
                     },
                 };
 
@@ -292,10 +281,10 @@ pub const SlideshowMode = union(enum) {
         }
     }
 
-    /// Arms `.unarmed` to `.{ .running = now_ms }` when `can_advance` and
-    /// `now_ms > 0`, and disarms `.running` to `.unarmed` whenever
-    /// `!can_advance` so occluded/dragging/loading sleep never counts toward
-    /// the slide interval. Preserves `.paused`.
+    /// Arms `.unarmed` to `.{ .running = now_ms }` when `can_advance`, and
+    /// disarms `.running` to `.unarmed` whenever `!can_advance` so
+    /// occluded/dragging/loading sleep never counts toward the slide interval.
+    /// Preserves `.paused`.
     pub fn syncClock(
         self: *SlideshowMode,
         now_ms: u64,
@@ -306,7 +295,7 @@ pub const SlideshowMode = union(enum) {
             .active => |*a| switch (a.clock) {
                 .paused => {},
                 .unarmed => {
-                    if (can_advance and now_ms > 0) {
+                    if (can_advance) {
                         a.clock = .{ .running = now_ms };
                     }
                 },
@@ -330,10 +319,7 @@ pub const SlideshowMode = union(enum) {
                 const since_last: f64 = switch (data.clock) {
                     .paused => return null,
                     .unarmed => 0.0,
-                    .running => |prev| if (now_ms > 0)
-                        @floatFromInt(now_ms -| prev)
-                    else
-                        0.0,
+                    .running => |prev| @floatFromInt(now_ms -| prev),
                 };
                 const target_ms = @as(f64, data.interval_s) * 1000.0;
                 const rem_f = @max(
@@ -378,7 +364,10 @@ pub const SlideshowMode = union(enum) {
 
     /// Returns `true` if the slideshow is currently running (active).
     pub inline fn isActive(self: SlideshowMode) bool {
-        return self == .active;
+        return switch (self) {
+            .active => true,
+            .inactive => false,
+        };
     }
 };
 
@@ -719,40 +708,40 @@ test "SlideshowMode lifecycle, pause, and unpause" {
     // Inactive mode does not tick
     var mode: SlideshowMode = .inactive;
     try std.testing.expect(!mode.isPaused());
-    try std.testing.expect(!mode.tick(0, 1000.0));
+    try std.testing.expect(!mode.tick(0));
     try std.testing.expectEqual(@as(?u64, null), mode.remainingTimeoutMs(1000));
 
-    // Active mode ticking with monotonic timestamps across clamped sleep
+    // Active mode ticking from monotonic timestamp 0 as a normal u64
     mode = .{ .active = .{ .interval_s = 2.0 } };
-    mode.syncClock(1000, true);
+    mode.syncClock(0, true);
     try std.testing.expect(!mode.isPaused());
     try std.testing.expectEqual(
         @as(?u64, 2000),
-        mode.remainingTimeoutMs(1000),
+        mode.remainingTimeoutMs(0),
     );
 
-    // Advance 1s via monotonic clock (even with clamped 33.3ms fallback)
-    try std.testing.expect(!mode.tick(2000, 33.333));
+    // Advance 1s via monotonic clock
+    try std.testing.expect(!mode.tick(1000));
     try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
     try std.testing.expectEqual(
         @as(?u64, 1000),
-        mode.remainingTimeoutMs(2000),
+        mode.remainingTimeoutMs(1000),
     );
 
     // Pause slideshow -> tick returns false and sleep while paused is ignored
     mode.pause();
     try std.testing.expect(mode.isPaused());
     try std.testing.expectEqual(@as(?u64, null), mode.remainingTimeoutMs(5000));
-    try std.testing.expect(!mode.tick(5000, 1000.0));
+    try std.testing.expect(!mode.tick(5000));
     try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
 
     // Resume on wake frame (t=5000ms) arms anchor without counting occluded
     // sleep, then remaining 1000ms advances at t=6000ms
     mode.unpause();
     try std.testing.expect(!mode.isPaused());
-    try std.testing.expect(!mode.tick(5000, 33.333));
+    try std.testing.expect(!mode.tick(5000));
     try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
-    try std.testing.expect(mode.tick(6000, 33.333));
+    try std.testing.expect(mode.tick(6000));
     try std.testing.expectEqual(@as(f64, 0.0), mode.active.timer_ms);
 }
 

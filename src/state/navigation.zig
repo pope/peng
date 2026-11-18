@@ -190,7 +190,7 @@ pub const NavigationState = struct {
 
     /// Returns `true` if slideshow playback mode is active.
     pub inline fn isSlideshowActive(self: *const NavigationState) bool {
-        return self.slideshow == .active;
+        return self.slideshow.isActive();
     }
 
     /// Returns the total count of discovered images in the current media list.
