@@ -1008,7 +1008,7 @@ pub fn executeFrame(
 
         const end_render = sdl.timer.getTicksNs();
         const render_time_ms =
-            @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
+            @as(f64, @floatFromInt(end_render -| start_render)) / 1_000_000.0;
         gpu_res.metrics.ui_render_stats.addSample(render_time_ms);
         gpu_res.metrics.last_ui_vertex_count = vertex_count;
         gpu_res.metrics.last_ui_batch_count = batch_count;

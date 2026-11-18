@@ -163,10 +163,15 @@ ______________________________________________________________________
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` for disk I/O
   and worker decode timing, and `sdl.timer.getTicksNs()` for GPU texture
-  ingestion) measure disk I/O (`read_time_ms`) separately from CPU
-  decompression (`decode_time_ms`) in `DecodeTelemetry` and GPU texture
-  ingestion in `IngestTelemetry` using zero-sentinel tagged unions
-  (`ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`).
+  ingestion, active frame CPU phases, and UI render pass timing) measure disk
+  I/O (`read_time_ms`) separately from CPU decompression (`decode_time_ms`) in
+  `DecodeTelemetry` and GPU texture ingestion in `IngestTelemetry` using
+  zero-sentinel tagged unions (`ArchiveTelemetry`, `UploadMode`,
+  `MipmapTelemetry`). `RenderStats.summarize()` computes rolling 60-frame
+  `StatsSummary` (`mean`, `stdev`, `max`) for both `UiRenderMetrics` (exposing
+  `max_render_time_ms`) and `FrameMetrics` (`ingest`, `intents`, `sync`,
+  `render`, `total`, excluding blocking OS event-wait sleep via
+  `FrameInput.poll_cpu_ms`).
 - **Demand-First Settled Preload & GPU Upload Gating**:
   Once navigation settles ($\\ge 35\\text{ms}$ for `.single_step` or
   $\\ge 200\\text{ms}$ for `.brisk_scroll`) AND the active slot is

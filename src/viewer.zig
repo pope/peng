@@ -32,6 +32,7 @@ pub fn updateFrame(
     last_time: *u64,
 ) !void {
     // Phase 1: Background Event & Input Ingestion
+    const pre_ingest_start_ns = sdl.timer.getTicksNs();
     const skip_wait = (parsed_test_mode or parsed_headless) and
         !app_state.display.isHidden();
     if (skip_wait) {
@@ -49,6 +50,7 @@ pub fn updateFrame(
         sdl.timer.getTicks(),
     );
     const frame_allocator = frame_arena.allocator();
+    const pre_ingest_end_ns = sdl.timer.getTicksNs();
     const input = try input_pkg.pollFrameInput(
         window,
         frame_allocator,
@@ -58,6 +60,7 @@ pub fn updateFrame(
         wait_strategy,
     );
 
+    const post_ingest_start_ns = sdl.timer.getTicksNs();
     // Drain any background worker or IPC events that arrived while waiting in
     // pollFrameInput (including the event that triggered sdl.pushWakeEvent()).
     const post_wait_events = app.drainWorkerEvents(app_state);
@@ -80,9 +83,16 @@ pub fn updateFrame(
             is_slider_active,
         );
     }
+    const post_ingest_end_ns = sdl.timer.getTicksNs();
+    const ingest_cpu_ns =
+        (pre_ingest_end_ns -| pre_ingest_start_ns) +|
+        (post_ingest_end_ns -| post_ingest_start_ns);
+    const ingest_ms =
+        @as(f64, @floatFromInt(ingest_cpu_ns)) / 1_000_000.0 +
+        input.poll_cpu_ms;
 
     // Phase 2: Update Phase — Run all systems sequentially
-    try app.systems.runUpdatePhase(
+    const update_timings = try app.systems.runUpdatePhase(
         app_state,
         input,
         frame_allocator,
@@ -97,6 +107,7 @@ pub fn updateFrame(
     switch (app_state.display) {
         .hidden => {
             _ = frame_arena.reset(.free_all);
+            app_state.frame_metrics.reset();
             const released_ui = resources.releaseTransientResources(
                 app_state.allocator,
             );
@@ -116,6 +127,7 @@ pub fn updateFrame(
         return;
     }
 
+    const render_start_ns = sdl.timer.getTicksNs();
     const ui_model = buildUiViewModel(app_state, resources, input.now_ms);
 
     // Draw / Render
@@ -149,6 +161,16 @@ pub fn updateFrame(
         return err;
     };
     app_state.handleScreenshotPostRender(null);
+    const render_end_ns = sdl.timer.getTicksNs();
+    const render_ms =
+        @as(f64, @floatFromInt(render_end_ns -| render_start_ns)) /
+        1_000_000.0;
+    app_state.frame_metrics.record(.{
+        .ingest_ms = ingest_ms,
+        .intents_ms = update_timings.intents_ms,
+        .sync_ms = update_timings.sync_ms,
+        .render_ms = render_ms,
+    });
 }
 
 /// Constructs a read-only snapshot view-model consumed by the UI layout

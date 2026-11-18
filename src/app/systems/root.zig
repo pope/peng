@@ -1,3 +1,4 @@
+const sdl = @import("sdl");
 const state_mod = @import("../state.zig");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -32,6 +33,13 @@ pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysUpdateSlideshow = slideshow.sysUpdateSlideshow;
 pub const sysUpdateViewport = viewport.sysUpdateViewport;
 
+/// Active CPU timings in milliseconds for Phase 2a (intent reduction) and
+/// Phase 2b (window sync, GPU asset uploads, cache management, and settle).
+pub const UpdatePhaseTimings = struct {
+    intents_ms: f64 = 0.0,
+    sync_ms: f64 = 0.0,
+};
+
 /// Sequential execution of all systems during the Update Phase of the frame.
 /// Guaranteed: All systems run in deterministic order, use frame_allocator,
 /// and do not call each other directly.
@@ -40,7 +48,7 @@ pub fn runUpdatePhase(
     input_frame: FrameInput,
     frame_allocator: std.mem.Allocator,
     parsed_test_mode: bool,
-) !void {
+) !UpdatePhaseTimings {
     const ctx = FrameContext{
         .state = app_state,
         .frame_allocator = frame_allocator,
@@ -48,6 +56,8 @@ pub fn runUpdatePhase(
         .delta_time_ms = input_frame.delta_time_ms,
         .now_ms = input_frame.now_ms,
     };
+
+    const intents_start_ns = sdl.timer.getTicksNs();
 
     // Synchronize window minimize/occlude state before animation and
     // slideshow passes
@@ -83,6 +93,8 @@ pub fn runUpdatePhase(
 
     // Execute All Ingested & Generated Intents
     try sysExecuteIntents(ctx);
+
+    const sync_start_ns = sdl.timer.getTicksNs();
 
     // Window Management System (synchronizes window title and display)
     sysSyncWindow(ctx);
@@ -129,6 +141,14 @@ pub fn runUpdatePhase(
             .none => {},
         }
     }
+
+    const sync_end_ns = sdl.timer.getTicksNs();
+    const intents_ns = sync_start_ns -| intents_start_ns;
+    const sync_ns = sync_end_ns -| sync_start_ns;
+    return .{
+        .intents_ms = @as(f64, @floatFromInt(intents_ns)) / 1_000_000.0,
+        .sync_ms = @as(f64, @floatFromInt(sync_ns)) / 1_000_000.0,
+    };
 }
 
 test {

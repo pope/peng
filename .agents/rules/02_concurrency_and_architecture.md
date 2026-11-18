@@ -10,8 +10,9 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
 
 - **`AppState` (`src/app/state.zig`)**: Owns hardware (`display`, `gpu_device`,
   `gpu_enabled`, `unpack_compute_pipeline`, `upload_staging`), `allocator`, `io`,
-  `cache: ImageCache`, `workers: WorkerManager`, IPC queues/streams,
-  `pending_intents`, `event_batch`, and embeds `viewer: ViewerState`.
+  `cache: ImageCache`, `workers: WorkerManager`, `frame_metrics: FrameMetrics`,
+  IPC queues/streams, `pending_intents`, `event_batch`, and embeds
+  `viewer: ViewerState`.
 - **`ViewerState` (`src/state/viewer_state.zig`)**: 100% main-thread visual/UI
   model. **Purity Invariant**: MUST hold **ZERO** GPU handles, worker pools,
   `std.Io`, mutexes/queues, or stored `std.mem.Allocator` fields (`rotation_map`
@@ -26,14 +27,21 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
 
 ## 2. 3-Phase Frame Pipeline & Intent Registry
 
-- **Phase 1 — Ingestion (`src/viewer.zig`, `src/app/events.zig`)**:
+- **Phase 1 — Ingestion (`src/viewer.zig`, `src/app/events.zig`,
+  `src/input/polling.zig`)**:
   - `drainWorkerEvents` runs before `computeFrameWaitStrategy`/`pollFrameInput`
     (forcing `.poll` if events were drained) and again right after `pollFrameInput`.
+  - `pollFrameInput` records active CPU time into `FrameInput.poll_cpu_ms` via
+    `sdl.timer.getTicksNs()`, subtracting ONLY blocking OS event-wait sleep
+    (`waitEventTimeout`/`waitEvent` when `!pre_wait_terminated`) with `-|`.
   - Uses infallible O(1) `MpscQueue.drain(io, &event_batch)` swap and stages CPU
     surfaces into `ThumbnailState.staged_cpu` and `ResidentAsset.loaded_cpu` /
     `.promoting_gpu` with **zero GPU calls** (disowning transferred pointers
     before `defer evt.deinit()`).
 - **Phase 2 — Sequential Systems (`runUpdatePhase` in `src/app/systems/root.zig`)**:
+  - Returns `!UpdatePhaseTimings` splitting Phase 2a (`intents_ms`,
+    `sysSyncWindowVisibility` through `sysExecuteIntents`) and Phase 2b
+    (`sync_ms`, `sysSyncWindow` through `sysUpdateCache` and settle).
   - Systems accept `ctx: FrameContext` and **MUST NOT** call other systems
     directly (communicating solely via `AppState` or `pending_intents`):
     `sysSyncWindowVisibility` $\\to$ `sysUpdateAnimations` $\\to$
@@ -44,6 +52,9 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `defer self.flushPendingSelectionStreams()`) $\\to$
     `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
     `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`).
+  - Complete visible rendered frames in `updateFrame` record `{ ingest_ms,
+    intents_ms, sync_ms, render_ms }` into `app_state.frame_metrics` (reset on
+    `hideWindow` and `.hidden` without recording partial/suspended frames).
 - **Intentional Pipeline Trade-Offs (Preserve)**:
   1. *Pre-Render Sync*: `sysProcessAssetUploads` and `sysUpdateCache` run right
      *before* `renderFrame` (not after) so staged CPU surfaces/thumbnails promote

@@ -1,7 +1,15 @@
 const std = @import("std");
 
-/// Rolling window of recent frame render duration samples computing mean and
-/// standard deviation.
+/// Summary statistics (mean, sample standard deviation, and peak value) across
+/// a rolling window of duration samples in milliseconds.
+pub const StatsSummary = struct {
+    mean: f64 = 0.0,
+    stdev: f64 = 0.0,
+    max: f64 = 0.0,
+};
+
+/// Rolling window of recent duration samples computing mean, standard
+/// deviation, and rolling peak.
 pub const RenderStats = struct {
     samples: [60]f64 = @splat(0.0),
     head: usize = 0,
@@ -15,17 +23,26 @@ pub const RenderStats = struct {
         if (self.count < 60) self.count += 1;
     }
 
-    /// Computes the arithmetic mean and sample standard deviation across all
-    /// recorded duration samples.
-    pub fn getMeanAndStdev(self: RenderStats) struct { mean: f64, stdev: f64 } {
-        if (self.count == 0) return .{ .mean = 0.0, .stdev = 0.0 };
+    /// Computes the arithmetic mean, sample standard deviation, and rolling
+    /// maximum across all recorded duration samples.
+    pub fn summarize(self: RenderStats) StatsSummary {
+        if (self.count == 0) return .{};
         var sum: f64 = 0.0;
+        var max_val: f64 = self.samples[0];
         var i: usize = 0;
         while (i < self.count) : (i += 1) {
-            sum += self.samples[i];
+            const sample = self.samples[i];
+            sum += sample;
+            max_val = @max(max_val, sample);
         }
         const mean = sum / @as(f64, @floatFromInt(self.count));
-        if (self.count < 2) return .{ .mean = mean, .stdev = 0.0 };
+        if (self.count < 2) {
+            return .{
+                .mean = mean,
+                .stdev = 0.0,
+                .max = max_val,
+            };
+        }
 
         var variance_sum: f64 = 0.0;
         i = 0;
@@ -35,7 +52,73 @@ pub const RenderStats = struct {
         }
         const variance = @max(0.0, variance_sum) /
             @as(f64, @floatFromInt(self.count - 1));
-        return .{ .mean = mean, .stdev = @sqrt(variance) };
+        return .{
+            .mean = mean,
+            .stdev = @sqrt(variance),
+            .max = max_val,
+        };
+    }
+};
+
+/// Single-frame active CPU timing breakdown across the four pipeline phases
+/// in milliseconds (excluding idle event-wait sleep).
+pub const FrameSample = struct {
+    ingest_ms: f64,
+    intents_ms: f64,
+    sync_ms: f64,
+    render_ms: f64,
+
+    /// Returns total active frame CPU time summed across all four phases.
+    pub inline fn totalMs(self: FrameSample) f64 {
+        return self.ingest_ms +
+            self.intents_ms +
+            self.sync_ms +
+            self.render_ms;
+    }
+};
+
+/// Rolling 60-frame timing summary across each active frame phase and total
+/// frame CPU duration for HUD display.
+pub const FrameMetricsSnapshot = struct {
+    ingest: StatsSummary = .{},
+    intents: StatsSummary = .{},
+    sync: StatsSummary = .{},
+    render: StatsSummary = .{},
+    total: StatsSummary = .{},
+};
+
+/// Rolling 60-frame active CPU timing accumulators for each pipeline phase
+/// and total active frame time.
+pub const FrameMetrics = struct {
+    ingest: RenderStats = .{},
+    intents: RenderStats = .{},
+    sync: RenderStats = .{},
+    render: RenderStats = .{},
+    total: RenderStats = .{},
+
+    /// Records one completed visible frame's active phase durations.
+    pub fn record(self: *FrameMetrics, sample: FrameSample) void {
+        self.ingest.addSample(sample.ingest_ms);
+        self.intents.addSample(sample.intents_ms);
+        self.sync.addSample(sample.sync_ms);
+        self.render.addSample(sample.render_ms);
+        self.total.addSample(sample.totalMs());
+    }
+
+    /// Resets all rolling phase timing accumulators back to empty state.
+    pub fn reset(self: *FrameMetrics) void {
+        self.* = .{};
+    }
+
+    /// Computes rolling summary statistics across all five accumulators.
+    pub fn snapshot(self: *const FrameMetrics) FrameMetricsSnapshot {
+        return .{
+            .ingest = self.ingest.summarize(),
+            .intents = self.intents.summarize(),
+            .sync = self.sync.summarize(),
+            .render = self.render.summarize(),
+            .total = self.total.summarize(),
+        };
     }
 };
 
@@ -44,6 +127,7 @@ pub const RenderStats = struct {
 pub const UiRenderMetricsSnapshot = struct {
     mean_render_time_ms: f64 = 0.0,
     stdev_render_time_ms: f64 = 0.0,
+    max_render_time_ms: f64 = 0.0,
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
     atlas_shelf_x: u32 = 0,
@@ -234,6 +318,9 @@ pub const ViewerStats = struct {
 
     // Active image GPU & decoder stats
     active_image: ActiveImageStats = .{},
+
+    // Per-phase active CPU frame timings (rolling 60-frame summary)
+    frame: FrameMetricsSnapshot = .{},
 };
 
 test "ArchiveTelemetry - init returns .none for normal and .archive for CBZ" {
@@ -290,18 +377,25 @@ test "MipmapTelemetry - init distinguishes disabled from multi-level" {
 }
 
 test "RenderStats, UiRenderMetrics, and Thumbnail telemetry" {
-    // 1. RenderStats empty
+    // 1. RenderStats empty and single-sample summary
     var rs = RenderStats{};
-    const empty_ms = rs.getMeanAndStdev();
+    const empty_ms = rs.summarize();
     try std.testing.expectEqual(@as(f64, 0.0), empty_ms.mean);
     try std.testing.expectEqual(@as(f64, 0.0), empty_ms.stdev);
+    try std.testing.expectEqual(@as(f64, 0.0), empty_ms.max);
 
-    // 2. RenderStats samples
     rs.addSample(10.0);
+    const single = rs.summarize();
+    try std.testing.expectEqual(@as(f64, 10.0), single.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), single.stdev);
+    try std.testing.expectEqual(@as(f64, 10.0), single.max);
+
+    // 2. RenderStats multi-sample summary
     rs.addSample(20.0);
-    const ms = rs.getMeanAndStdev();
+    const ms = rs.summarize();
     try std.testing.expectEqual(@as(f64, 15.0), ms.mean);
     try std.testing.expect(ms.stdev > 0.0);
+    try std.testing.expectEqual(@as(f64, 20.0), ms.max);
 
     // 3. UiRenderMetrics & UiRenderMetricsSnapshot defaults
     const metrics = UiRenderMetrics{
@@ -309,13 +403,15 @@ test "RenderStats, UiRenderMetrics, and Thumbnail telemetry" {
         .last_ui_vertex_count = 120,
         .last_ui_batch_count = 4,
     };
-    const stats = metrics.ui_render_stats.getMeanAndStdev();
+    const stats = metrics.ui_render_stats.summarize();
     try std.testing.expectEqual(@as(f64, 15.0), stats.mean);
+    try std.testing.expectEqual(@as(f64, 20.0), stats.max);
     try std.testing.expectEqual(@as(usize, 120), metrics.last_ui_vertex_count);
     try std.testing.expectEqual(@as(usize, 4), metrics.last_ui_batch_count);
 
     const empty_snap = UiRenderMetricsSnapshot{};
     try std.testing.expectEqual(@as(f64, 0.0), empty_snap.mean_render_time_ms);
+    try std.testing.expectEqual(@as(f64, 0.0), empty_snap.max_render_time_ms);
     try std.testing.expectEqual(@as(u32, 0), empty_snap.atlas_used_h);
 
     // 4. ThumbnailSource properties
@@ -355,4 +451,61 @@ test "RenderStats, UiRenderMetrics, and Thumbnail telemetry" {
         .misses = 4,
     };
     try std.testing.expectEqual(@as(usize, 10), ts.totalLookups());
+}
+
+test "RenderStats.summarize evicts early spike after 60 samples" {
+    var rs = RenderStats{};
+    rs.addSample(100.0);
+    try std.testing.expectEqual(@as(f64, 100.0), rs.summarize().max);
+
+    for (0..59) |_| {
+        rs.addSample(2.0);
+    }
+    try std.testing.expectEqual(@as(f64, 100.0), rs.summarize().max);
+
+    // 60th new sample overwrites slot 0 (100.0) in the ring buffer.
+    rs.addSample(2.0);
+    const evicted = rs.summarize();
+    try std.testing.expectEqual(@as(f64, 2.0), evicted.max);
+    try std.testing.expectEqual(@as(f64, 2.0), evicted.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), evicted.stdev);
+}
+
+test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
+    const s1 = FrameSample{
+        .ingest_ms = 0.5,
+        .intents_ms = 1.0,
+        .sync_ms = 2.0,
+        .render_ms = 4.5,
+    };
+    try std.testing.expectEqual(@as(f64, 8.0), s1.totalMs());
+
+    var fm = FrameMetrics{};
+    fm.record(s1);
+    fm.record(.{
+        .ingest_ms = 1.5,
+        .intents_ms = 3.0,
+        .sync_ms = 4.0,
+        .render_ms = 7.5,
+    });
+
+    const snap = fm.snapshot();
+    try std.testing.expectEqual(@as(f64, 1.0), snap.ingest.mean);
+    try std.testing.expectEqual(@as(f64, 1.5), snap.ingest.max);
+    try std.testing.expectEqual(@as(f64, 2.0), snap.intents.mean);
+    try std.testing.expectEqual(@as(f64, 3.0), snap.intents.max);
+    try std.testing.expectEqual(@as(f64, 3.0), snap.sync.mean);
+    try std.testing.expectEqual(@as(f64, 4.0), snap.sync.max);
+    try std.testing.expectEqual(@as(f64, 6.0), snap.render.mean);
+    try std.testing.expectEqual(@as(f64, 7.5), snap.render.max);
+    try std.testing.expectEqual(@as(f64, 12.0), snap.total.mean);
+    try std.testing.expect(snap.total.stdev > 0.0);
+    try std.testing.expectEqual(@as(f64, 16.0), snap.total.max);
+
+    fm.reset();
+    const cleared = fm.snapshot();
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.ingest.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.total.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.total.stdev);
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.total.max);
 }

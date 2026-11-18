@@ -1,6 +1,7 @@
 const edit_panel = @import("edit_panel.zig");
 const geom = @import("geom");
 const intents = @import("intents");
+const palette_pkg = @import("palette");
 const renderer = @import("renderer.zig");
 const state = @import("state");
 const std = @import("std");
@@ -14,6 +15,7 @@ const getSpec = intents.getSpec;
 const LogicalDims = geom.LogicalDims;
 const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
+const PaletteState = palette_pkg.PaletteState;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const UiDrawList = renderer.UiDrawList;
@@ -876,10 +878,40 @@ pub fn renderStatsOverlay(
         try hud.addRow("Mipmap Gen", "N/A");
     }
 
+    const frame_total_str = try frame_allocator.print(
+        "{d:.2} ± {d:.2} ms (max {d:.2})",
+        .{ s.frame.total.mean, s.frame.total.stdev, s.frame.total.max },
+    );
+    const frame_ingest_str = try frame_allocator.print(
+        "{d:.2} ms (max {d:.2})",
+        .{ s.frame.ingest.mean, s.frame.ingest.max },
+    );
+    const frame_intents_str = try frame_allocator.print(
+        "{d:.2} ms (max {d:.2})",
+        .{ s.frame.intents.mean, s.frame.intents.max },
+    );
+    const frame_sync_str = try frame_allocator.print(
+        "{d:.2} ms (max {d:.2})",
+        .{ s.frame.sync.mean, s.frame.sync.max },
+    );
+    const frame_render_str = try frame_allocator.print(
+        "{d:.2} ms (max {d:.2})",
+        .{ s.frame.render.mean, s.frame.render.max },
+    );
+    try hud.addRow("Frame CPU", frame_total_str);
+    try hud.addRow("  1. Ingest", frame_ingest_str);
+    try hud.addRow("  2a. Intents", frame_intents_str);
+    try hud.addRow("  2b. Sync/Upload", frame_sync_str);
+    try hud.addRow("  3. Render", frame_render_str);
+
     const rm = ui_model.render_metrics;
     const ui_render_str = try frame_allocator.print(
-        "{d:.2} ± {d:.2} ms",
-        .{ rm.mean_render_time_ms, rm.stdev_render_time_ms },
+        "{d:.2} ± {d:.2} ms (max {d:.2})",
+        .{
+            rm.mean_render_time_ms,
+            rm.stdev_render_time_ms,
+            rm.max_render_time_ms,
+        },
     );
     const ui_batches_str = try frame_allocator.print(
         "{d}",
@@ -1073,4 +1105,102 @@ test "stats - Exhaustive switch renders all telemetry branches correctly" {
         .disabled => true,
         .generated => false,
     });
+}
+
+test "renderStatsOverlay emits per-phase frame timings and max spikes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const frame_alloc = arena.allocator();
+
+    var pal_state = try PaletteState.init(std.testing.allocator);
+    defer pal_state.deinit(std.testing.allocator);
+
+    var interaction_inst: state.InteractionState = .{};
+    interaction_inst.beginFrameLayout();
+
+    var overlays = state.OverlayState{};
+    overlays.stats_panel.visible = true;
+
+    const model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 0,
+        .current_index = null,
+        .is_loading_files = false,
+        .overlays = overlays,
+        .viewport = .{},
+        .palette = &pal_state,
+        .debug_show_thumb = false,
+        .stats = .{
+            .frame = .{
+                .ingest = .{ .mean = 0.42, .stdev = 0.05, .max = 0.89 },
+                .intents = .{ .mean = 0.15, .stdev = 0.02, .max = 0.30 },
+                .sync = .{ .mean = 1.25, .stdev = 0.10, .max = 2.50 },
+                .render = .{ .mean = 2.18, .stdev = 0.25, .max = 4.10 },
+                .total = .{ .mean = 4.00, .stdev = 0.31, .max = 6.75 },
+            },
+        },
+        .render_metrics = .{
+            .mean_render_time_ms = 1.50,
+            .stdev_render_time_ms = 0.20,
+            .max_render_time_ms = 3.25,
+            .last_ui_batch_count = 5,
+            .last_ui_vertex_count = 240,
+        },
+    };
+
+    var draw_list = UiDrawList{ .allocator = frame_alloc };
+    const measure_data = MeasureTextUserData{};
+    const dims = LogicalDims{ .w = 1024.0, .h = 768.0 };
+    try renderStatsOverlay(
+        &interaction_inst,
+        &draw_list,
+        model,
+        dims,
+        dims,
+        frame_alloc,
+        &measure_data,
+    );
+
+    const card = interaction_inst.stats_card orelse
+        return error.TestExpectedStatsCard;
+    try std.testing.expectEqual(@as(f32, 380.0), card.w);
+    try std.testing.expect(card.h > 0.0);
+
+    const expected = [_][]const u8{
+        "Frame CPU",
+        "4.00 ± 0.31 ms (max 6.75)",
+        "  1. Ingest",
+        "0.42 ms (max 0.89)",
+        "  2a. Intents",
+        "0.15 ms (max 0.30)",
+        "  2b. Sync/Upload",
+        "1.25 ms (max 2.50)",
+        "  3. Render",
+        "2.18 ms (max 4.10)",
+        "UI Render Pass",
+        "1.50 ± 0.20 ms (max 3.25)",
+    };
+
+    for (expected) |needle| {
+        var found = false;
+        for (draw_list.commands.items) |cmd| {
+            switch (cmd.payload) {
+                .text => |t| {
+                    if (std.mem.eql(u8, t.text, needle)) {
+                        found = true;
+                        break;
+                    }
+                },
+                .scissor_start,
+                .scissor_end,
+                .rectangle,
+                .border,
+                .text_runs,
+                .image,
+                .atlas_preview,
+                => {},
+            }
+        }
+        try std.testing.expect(found);
+    }
 }

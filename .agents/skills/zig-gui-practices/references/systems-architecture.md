@@ -3,7 +3,11 @@
 ## System Pass Pipeline Architecture
 
 - **Pattern 1 — Update Phase Execution (`runUpdatePhase` in `src/app/systems/root.zig`)**:
-  - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase` -> `Render Phase`), never via out-of-band calls inside `AppState` or input handlers:
+  - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase
+    frame loop in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase` ->
+    `Render Phase`), never via out-of-band calls inside `AppState` or input
+    handlers, returning `UpdatePhaseTimings` (`intents_ms` for steps 01–08,
+    `sync_ms` for steps 09–11 + post-update settle):
     01. `sysSyncWindowVisibility(ctx)` — Syncs minimize/occlude state before animation/slideshow passes.
     02. `sysUpdateAnimations(ctx)` — Ticks active SoA animation channels by `delta_time_ms`.
     03. `sysExecuteIpcCommands(ctx)` — Parses queued IPC socket commands -> `pending_intents`.
@@ -126,7 +130,8 @@ ______________________________________________________________________
     (`buildUiViewModel`) constructs `UiViewModel` (`src/ui/view_model.zig`)
     from `*const AppState` and `*const RenderResources` as a fully immutable
     snapshot struct containing const pointers and value types (gathering
-    `snapshotStats()` / `snapshotMetrics()` only when HUD panels are visible).
+    `snapshotStats()` — including rolling 60-frame `FrameMetrics` summaries —
+    and `snapshotMetrics()` only when HUD panels are visible).
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 

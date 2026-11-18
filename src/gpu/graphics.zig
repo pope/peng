@@ -491,10 +491,11 @@ pub const RenderResources = struct {
     pub fn snapshotMetrics(
         self: *const RenderResources,
     ) UiRenderMetricsSnapshot {
-        const stats = self.metrics.ui_render_stats.getMeanAndStdev();
+        const stats = self.metrics.ui_render_stats.summarize();
         return .{
             .mean_render_time_ms = stats.mean,
             .stdev_render_time_ms = stats.stdev,
+            .max_render_time_ms = stats.max,
             .last_ui_vertex_count = self.metrics.last_ui_vertex_count,
             .last_ui_batch_count = self.metrics.last_ui_batch_count,
             .atlas_shelf_x = self.text_cache.packer.cur_x,
@@ -1328,6 +1329,7 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     const snap = gpu_res.snapshotMetrics();
     try std.testing.expectEqual(@as(f64, 6.0), snap.mean_render_time_ms);
     try std.testing.expect(snap.stdev_render_time_ms > 0.0);
+    try std.testing.expectEqual(@as(f64, 8.0), snap.max_render_time_ms);
     try std.testing.expectEqual(@as(usize, 360), snap.last_ui_vertex_count);
     try std.testing.expectEqual(@as(usize, 6), snap.last_ui_batch_count);
     try std.testing.expectEqual(@as(u32, 128), snap.atlas_shelf_x);
@@ -1342,6 +1344,7 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     try std.testing.expect(gpu_res.releaseTransientResources(allocator));
     const reset_snap = gpu_res.snapshotMetrics();
     try std.testing.expectEqual(@as(f64, 0.0), reset_snap.mean_render_time_ms);
+    try std.testing.expectEqual(@as(f64, 0.0), reset_snap.max_render_time_ms);
     try std.testing.expectEqual(
         @as(usize, 0),
         reset_snap.last_ui_vertex_count,
@@ -1358,6 +1361,7 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
         @as(f64, 0.0),
         second_snap.mean_render_time_ms,
     );
+    try std.testing.expectEqual(@as(f64, 0.0), second_snap.max_render_time_ms);
     try std.testing.expectEqual(
         @as(usize, 0),
         second_snap.last_ui_vertex_count,

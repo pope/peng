@@ -102,6 +102,8 @@ pub const FrameInput = struct {
     delta_time_ms: f32,
     /// Current frame timestamp in milliseconds.
     now_ms: u64 = 0,
+    /// Active CPU time spent in `pollFrameInput` excluding idle event wait.
+    poll_cpu_ms: f64 = 0.0,
 
     /// Returns the sanitized display DPI scale factor for this frame.
     pub inline fn dpiScale(self: FrameInput) DpiScale {

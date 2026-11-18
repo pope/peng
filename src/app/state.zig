@@ -19,6 +19,7 @@ const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = cache.CacheEntry;
 const DecodeMode = workers_mod.DecodeMode;
 const DisplayState = core.display.DisplayState;
+const FrameMetrics = state_pkg.FrameMetrics;
 const ImageCache = cache.ImageCache;
 const InFlightState = cache.InFlightState;
 const isCbzFile = vfs.isCbzFile;
@@ -72,6 +73,7 @@ pub const AppState = struct {
     cache: ImageCache,
     workers: workers_mod.WorkerManager = .{},
     upload_staging: UploadStagingBuffer = .{},
+    frame_metrics: FrameMetrics = .{},
 
     /// Queues
     event_batch: std.ArrayList(BackgroundEvent) = .empty,
@@ -541,6 +543,7 @@ pub const AppState = struct {
             .total_vram_bytes = self.cache.getTotalVramBytes(),
             .active_decode_threads = active_threads,
             .max_decode_threads = self.workers.getMaxConcurrentDecodes(),
+            .frame = self.frame_metrics.snapshot(),
         };
 
         if (self.getCurrentEntry()) |entry| {
@@ -703,6 +706,7 @@ pub const AppState = struct {
         self.viewer.ui.palette.shrinkToWarmCapacity(self.allocator);
         self.viewer.resetToDefaults();
         self.viewer.ui.interaction.reset();
+        self.frame_metrics.reset();
 
         _ = self.cache.advanceGeneration();
         _ = self.workers.precache_generation.fetchAdd(1, .acq_rel);
@@ -1846,6 +1850,19 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
         },
     };
 
+    state.frame_metrics.record(.{
+        .ingest_ms = 0.25,
+        .intents_ms = 0.5,
+        .sync_ms = 1.0,
+        .render_ms = 2.25,
+    });
+    state.frame_metrics.record(.{
+        .ingest_ms = 0.75,
+        .intents_ms = 1.5,
+        .sync_ms = 3.0,
+        .render_ms = 4.75,
+    });
+
     const promo_snap = state.snapshotStats();
     try std.testing.expect(promo_snap.active_image.decode != null);
     try std.testing.expect(promo_snap.active_image.ingest != null);
@@ -1862,4 +1879,15 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
         ThumbnailSource.freedesktop_cache,
         promo_snap.active_image.thumb_source,
     );
+    try std.testing.expectEqual(@as(f64, 0.75), promo_snap.frame.ingest.max);
+    try std.testing.expectEqual(@as(f64, 1.5), promo_snap.frame.intents.max);
+    try std.testing.expectEqual(@as(f64, 3.0), promo_snap.frame.sync.max);
+    try std.testing.expectEqual(@as(f64, 4.75), promo_snap.frame.render.max);
+    try std.testing.expectEqual(@as(f64, 7.0), promo_snap.frame.total.mean);
+    try std.testing.expectEqual(@as(f64, 10.0), promo_snap.frame.total.max);
+
+    state.hideWindow();
+    const hidden_snap = state.snapshotStats();
+    try std.testing.expectEqual(@as(f64, 0.0), hidden_snap.frame.total.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), hidden_snap.frame.total.max);
 }

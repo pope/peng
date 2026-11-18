@@ -415,6 +415,17 @@ pub fn selectEventWaitStrategy(
     return .wait_indefinite;
 }
 
+/// Computes active CPU polling duration in milliseconds by subtracting
+/// blocking OS event-wait sleep from total elapsed polling nanoseconds.
+fn computeActivePollCpuMs(
+    start_ns: u64,
+    end_ns: u64,
+    wait_sleep_ns: u64,
+) f64 {
+    const active_ns = (end_ns -| start_ns) -| wait_sleep_ns;
+    return @as(f64, @floatFromInt(active_ns)) / 1_000_000.0;
+}
+
 /// Pumps pending SDL events, queries cursor and keyboard states, and
 /// constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
@@ -425,6 +436,8 @@ pub fn pollFrameInput(
     prev_touch_tracker: state.TouchTracker,
     wait_strategy: EventWaitStrategy,
 ) !FrameInput {
+    const poll_start_ns = sdl.timer.getTicksNs();
+
     // Get window sizes and scale
     const win_size = window.getSize();
     const pix_size = window.getSizeInPixels();
@@ -454,12 +467,25 @@ pub fn pollFrameInput(
     }
 
     var event: sdl.Event = undefined;
+    var wait_sleep_ns: u64 = 0;
     const wait_success = if (pre_wait_terminated)
         sdl.events.pollEvent(&event)
     else switch (wait_strategy) {
         .poll => sdl.events.pollEvent(&event),
-        .wait_timeout_ms => |ms| sdl.events.waitEventTimeout(&event, ms),
-        .wait_indefinite => sdl.events.waitEvent(&event),
+        .wait_timeout_ms => |ms| blk: {
+            const wait_start_ns = sdl.timer.getTicksNs();
+            const ok = sdl.events.waitEventTimeout(&event, ms);
+            const wait_end_ns = sdl.timer.getTicksNs();
+            wait_sleep_ns = wait_end_ns -| wait_start_ns;
+            break :blk ok;
+        },
+        .wait_indefinite => blk: {
+            const wait_start_ns = sdl.timer.getTicksNs();
+            const ok = sdl.events.waitEvent(&event);
+            const wait_end_ns = sdl.timer.getTicksNs();
+            wait_sleep_ns = wait_end_ns -| wait_start_ns;
+            break :blk ok;
+        },
     };
 
     if (!wait_success) {
@@ -494,6 +520,13 @@ pub fn pollFrameInput(
     const mouse_buttons = sdl.mouse.getState(&mouse_x_raw, &mouse_y_raw);
     const mouse_left_down = (mouse_buttons & sdl.mouse.mask(sdl.mouse.left)) != 0;
 
+    const poll_end_ns = sdl.timer.getTicksNs();
+    const poll_cpu_ms = computeActivePollCpuMs(
+        poll_start_ns,
+        poll_end_ns,
+        wait_sleep_ns,
+    );
+
     return FrameInput{
         .win_w = @as(f32, @floatFromInt(win_size.w)),
         .win_h = @as(f32, @floatFromInt(win_size.h)),
@@ -521,6 +554,7 @@ pub fn pollFrameInput(
         .dropped_path = frame_input_state.dropped_path_opt,
         .delta_time_ms = delta_time_ms,
         .now_ms = current_ticks,
+        .poll_cpu_ms = poll_cpu_ms,
     };
 }
 
@@ -840,5 +874,33 @@ test "processSDLEvent pinch-to-zoom touch gesture lifecycle and hermeticity" {
     try std.testing.expectEqual(
         @as(u64, 102),
         frame_input.touch_tracker.active_fingers[0].finger_id,
+    );
+}
+
+test "computeActivePollCpuMs subtracts sleep and guards underflow" {
+    // 1. Active polling with zero OS sleep
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 1.5),
+        computeActivePollCpuMs(1_000_000, 2_500_000, 0),
+        0.0001,
+    );
+
+    // 2. Blocking wait sleep subtracted from total elapsed span
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 1.5),
+        computeActivePollCpuMs(1_000_000, 10_500_000, 8_000_000),
+        0.0001,
+    );
+
+    // 3. Monotonic clock rollback guard
+    try std.testing.expectEqual(
+        @as(f64, 0.0),
+        computeActivePollCpuMs(5_000_000, 4_000_000, 0),
+    );
+
+    // 4. Wait sleep exceeding total elapsed guard
+    try std.testing.expectEqual(
+        @as(f64, 0.0),
+        computeActivePollCpuMs(1_000_000, 2_000_000, 5_000_000),
     );
 }
