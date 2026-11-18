@@ -1017,7 +1017,9 @@ test "buildRenderPacket and executeFrame emit TextureRef image batch" {
     }
 
     const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
     var gpu_res = gpu_pkg.graphics.initGpuResources(
+        io,
         setup.gpu_device,
         setup.window,
         setup.initial_dpi_scale,

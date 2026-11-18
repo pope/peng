@@ -1,7 +1,7 @@
 //! SDL3 Low-Level Platform Abstraction Module
 //!
 //! Idiomatic Zig wrappers around SDL3 C APIs for window management,
-//! GPU command buffers, event polling, surfaces, fonts, and timers.
+//! GPU command buffers, event polling, surfaces, and fonts.
 
 const builtin = @import("builtin");
 const std = @import("std");
@@ -11,7 +11,6 @@ pub const font = @import("font.zig");
 pub const gpu = @import("gpu.zig");
 pub const keys = @import("keys.zig");
 pub const surface = @import("surface.zig");
-pub const timer = @import("timer.zig");
 pub const window = @import("window.zig");
 
 const has_glibc_malloc_trim = builtin.link_libc and
@@ -131,6 +130,5 @@ test {
     _ = @import("font.zig");
     _ = @import("gpu.zig");
     _ = @import("keys.zig");
-    _ = @import("timer.zig");
     _ = @import("window.zig");
 }

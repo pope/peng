@@ -1270,6 +1270,7 @@ pub const ConvertResult = struct {
 /// Scales and converts an image surface on a worker thread to prepare it for
 /// GPU upload or CPU display.
 pub fn convertAndScaleSurface(
+    io: std.Io,
     surface: ?sdl.Surface,
     pix_fmt: u32,
     has_gpu_device: bool,
@@ -1281,12 +1282,11 @@ pub fn convertAndScaleSurface(
             pix_fmt != sdl.PixelFormat.unknown and
             surf.format() != pix_fmt)
         {
-            const start_convert = sdl.timer.getTicksNs();
+            const start_convert = std.Io.Clock.awake.now(io);
             if (surf.convert(pix_fmt)) |conv| {
-                const end_convert = sdl.timer.getTicksNs();
-                conversion_time_ms =
-                    @as(f64, @floatFromInt(end_convert - start_convert)) /
-                    1_000_000.0;
+                conversion_time_ms = state_pkg.durationToMs(
+                    start_convert.untilNow(io, .awake),
+                );
                 surf.destroy();
                 final_surface = conv;
             } else {
@@ -1318,12 +1318,11 @@ pub fn convertAndScaleSurface(
                 cur_fmt != sdl.PixelFormat.rgb24 and
                 cur_fmt != sdl.PixelFormat.bgr24)
             {
-                const start_convert = sdl.timer.getTicksNs();
+                const start_convert = std.Io.Clock.awake.now(io);
                 if (surf.convert(sdl.PixelFormat.rgba32)) |conv| {
-                    const end_convert = sdl.timer.getTicksNs();
-                    conversion_time_ms =
-                        @as(f64, @floatFromInt(end_convert - start_convert)) /
-                        1_000_000.0;
+                    conversion_time_ms = state_pkg.durationToMs(
+                        start_convert.untilNow(io, .awake),
+                    );
                     surf.destroy();
                     final_surface = conv;
                 } else {

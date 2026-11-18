@@ -415,20 +415,10 @@ pub fn selectEventWaitStrategy(
     return .wait_indefinite;
 }
 
-/// Computes active CPU polling duration in milliseconds by subtracting
-/// blocking OS event-wait sleep from total elapsed polling nanoseconds.
-fn computeActivePollCpuMs(
-    start_ns: u64,
-    end_ns: u64,
-    wait_sleep_ns: u64,
-) f64 {
-    const active_ns = (end_ns -| start_ns) -| wait_sleep_ns;
-    return state.nsToMs(active_ns);
-}
-
 /// Pumps pending SDL events, queries cursor and keyboard states, and
 /// constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
+    io: std.Io,
     window: sdl.Window,
     frame_allocator: std.mem.Allocator,
     last_time: *u64,
@@ -436,7 +426,7 @@ pub fn pollFrameInput(
     prev_touch_tracker: state.TouchTracker,
     wait_strategy: EventWaitStrategy,
 ) !FrameInput {
-    const poll_start_ns = sdl.timer.getTicksNs();
+    const poll_start = std.Io.Clock.awake.now(io);
 
     // Get window sizes and scale
     const win_size = window.getSize();
@@ -467,23 +457,21 @@ pub fn pollFrameInput(
     }
 
     var event: sdl.Event = undefined;
-    var wait_sleep_ns: u64 = 0;
+    var wait_sleep: std.Io.Duration = .zero;
     const wait_success = if (pre_wait_terminated)
         sdl.events.pollEvent(&event)
     else switch (wait_strategy) {
         .poll => sdl.events.pollEvent(&event),
         .wait_timeout_ms => |ms| blk: {
-            const wait_start_ns = sdl.timer.getTicksNs();
+            const wait_start = std.Io.Clock.awake.now(io);
             const ok = sdl.events.waitEventTimeout(&event, ms);
-            const wait_end_ns = sdl.timer.getTicksNs();
-            wait_sleep_ns = wait_end_ns -| wait_start_ns;
+            wait_sleep = wait_start.untilNow(io, .awake);
             break :blk ok;
         },
         .wait_indefinite => blk: {
-            const wait_start_ns = sdl.timer.getTicksNs();
+            const wait_start = std.Io.Clock.awake.now(io);
             const ok = sdl.events.waitEvent(&event);
-            const wait_end_ns = sdl.timer.getTicksNs();
-            wait_sleep_ns = wait_end_ns -| wait_start_ns;
+            wait_sleep = wait_start.untilNow(io, .awake);
             break :blk ok;
         },
     };
@@ -517,13 +505,12 @@ pub fn pollFrameInput(
     const mouse_buttons = sdl.mouse.getState(&mouse_x_raw, &mouse_y_raw);
     const mouse_left_down = (mouse_buttons & sdl.mouse.mask(sdl.mouse.left)) != 0;
 
-    const poll_end_ns = sdl.timer.getTicksNs();
-    const current_ticks = poll_end_ns / std.time.ns_per_ms;
+    const poll_end = std.Io.Clock.awake.now(io);
+    const current_ticks = state.timestampToMs(poll_end);
     const delta_time_ms = computeClampedDeltaTime(current_ticks, last_time);
-    const poll_cpu_ms = computeActivePollCpuMs(
-        poll_start_ns,
-        poll_end_ns,
-        wait_sleep_ns,
+    const poll_cpu_ms = state.activeDurationMs(
+        poll_start.durationTo(poll_end),
+        wait_sleep,
     );
 
     return FrameInput{
@@ -554,7 +541,7 @@ pub fn pollFrameInput(
         .delta_time_ms = delta_time_ms,
         .now_ms = current_ticks,
         .poll_cpu_ms = poll_cpu_ms,
-        .wait_sleep_ms = state.nsToMs(wait_sleep_ns),
+        .wait_sleep_ms = state.durationToMs(wait_sleep),
         .wait_woke_on_event = wait_success,
     };
 }
@@ -875,33 +862,5 @@ test "processSDLEvent pinch-to-zoom touch gesture lifecycle and hermeticity" {
     try std.testing.expectEqual(
         @as(u64, 102),
         frame_input.touch_tracker.active_fingers[0].finger_id,
-    );
-}
-
-test "computeActivePollCpuMs subtracts sleep and guards underflow" {
-    // 1. Active polling with zero OS sleep
-    try std.testing.expectApproxEqAbs(
-        @as(f64, 1.5),
-        computeActivePollCpuMs(1_000_000, 2_500_000, 0),
-        0.0001,
-    );
-
-    // 2. Blocking wait sleep subtracted from total elapsed span
-    try std.testing.expectApproxEqAbs(
-        @as(f64, 1.5),
-        computeActivePollCpuMs(1_000_000, 10_500_000, 8_000_000),
-        0.0001,
-    );
-
-    // 3. Monotonic clock rollback guard
-    try std.testing.expectEqual(
-        @as(f64, 0.0),
-        computeActivePollCpuMs(5_000_000, 4_000_000, 0),
-    );
-
-    // 4. Wait sleep exceeding total elapsed guard
-    try std.testing.expectEqual(
-        @as(f64, 0.0),
-        computeActivePollCpuMs(1_000_000, 2_000_000, 5_000_000),
     );
 }

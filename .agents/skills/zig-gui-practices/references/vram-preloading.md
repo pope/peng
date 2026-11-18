@@ -167,12 +167,10 @@ ______________________________________________________________________
     `.wait_indefinite`.
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` via
-  `state.durationToMs` wherever `io: std.Io` is in scope—disk I/O, worker
-  decode, `app/systems/root.zig`, `viewer.zig` Phase 1/3—and
-  `sdl.timer.getTicksNs()` via `state.nsToMs` only in `io`-free SDL hardware
-  leaves such as `input/polling.zig`, `gpu/pass.zig`, `gpu/upload.zig`,
-  `cache/root.zig`) measure disk I/O (`read_time_ms`) separately from CPU
-  decompression (`decode_time_ms`) in `DecodeTelemetry` and GPU texture
+  `state.durationToMs` and `state.activeDurationMs` uniformly across `probe`,
+  `vfs`, `cache`, `input`, `gpu`, `app`, and `viewer`, while `src/ui/` and
+  `src/state/` remain clock-free) measure disk I/O (`read_time_ms`) separately
+  from CPU decompression (`decode_time_ms`) in `DecodeTelemetry` and GPU texture
   ingestion in `IngestTelemetry` using zero-sentinel tagged unions
   (`ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`).
   `RenderStats.summarize()` computes rolling 60-frame `StatsSummary`

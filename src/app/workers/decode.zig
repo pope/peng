@@ -656,6 +656,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const unscaled_w: f32 = @floatFromInt(surface.?.w());
     const unscaled_h: f32 = @floatFromInt(surface.?.h());
     const conv_res = convertAndScaleSurface(
+        io,
         surface,
         args.pixel_format,
         args.has_gpu_device,
@@ -1262,6 +1263,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const unscaled_w: f32 = @floatFromInt(surface.?.w());
     const unscaled_h: f32 = @floatFromInt(surface.?.h());
     const conv_res = convertAndScaleSurface(
+        io,
         surface,
         args.pixel_format,
         args.has_gpu_device,

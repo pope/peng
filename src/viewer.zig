@@ -33,7 +33,7 @@ pub fn updateFrame(
 ) !void {
     // Phase 1: Background Event & Input Ingestion
     const pre_ingest_start = std.Io.Clock.awake.now(app_state.io);
-    const pre_wait_ms = sdl.timer.getTicksNs() / std.time.ns_per_ms;
+    const pre_wait_ms = state_pkg.timestampToMs(pre_ingest_start);
     const skip_wait = (parsed_test_mode or parsed_headless) and
         !app_state.display.isHidden();
     if (skip_wait) {
@@ -57,6 +57,7 @@ pub fn updateFrame(
     const frame_allocator = frame_arena.allocator();
     const pre_ingest_end = std.Io.Clock.awake.now(app_state.io);
     const input = try input_pkg.pollFrameInput(
+        app_state.io,
         window,
         frame_allocator,
         last_time,

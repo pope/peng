@@ -459,6 +459,7 @@ pub fn AcquiredFrameBuffer(comptime Handle: type) type {
 /// Cohesive GPU context and render resources initialized for GPU-accelerated
 /// rendering.
 pub const RenderResources = struct {
+    io: std.Io,
     device: sdl.gpu.Device,
     image_pipeline: sdl.gpu.Pipeline,
     ui_pipeline: sdl.gpu.Pipeline,
@@ -809,6 +810,7 @@ fn createShaderFromFormat(
 /// Creates graphics shaders, pipelines, samplers, font texture caches, and
 /// double-buffered staging buffers.
 pub fn initGpuResources(
+    io: std.Io,
     dev: sdl.gpu.Device,
     window: sdl.Window,
     initial_dpi_scale: f32,
@@ -1078,6 +1080,7 @@ pub fn initGpuResources(
     }
 
     return RenderResources{
+        .io = io,
         .device = dev,
         .image_pipeline = image_pipeline,
         .ui_pipeline = ui_pipeline,
@@ -1306,7 +1309,9 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     }
 
     const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
     var gpu_res = initGpuResources(
+        io,
         setup.gpu_device,
         setup.window,
         setup.initial_dpi_scale,

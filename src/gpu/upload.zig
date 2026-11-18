@@ -242,6 +242,7 @@ fn computeFallbackScaleDims(
 /// Copies or converts `current_surf` into a tightly packed 32-bit `mapped`
 /// transfer buffer of size `dst_pitch * u_h`, returning conversion time in ms.
 fn stageSurfaceToRgba32(
+    io: std.Io,
     current_surf: sdl.Surface,
     mapped: []u8,
     u_w: usize,
@@ -281,7 +282,7 @@ fn stageSurfaceToRgba32(
         // falls back to main-thread SIMD conversion here. Plumbing
         // `has_compute_unpack: bool` through DecodeArgs can offload this to
         // background decode workers if this log appears in practice.
-        const start_conv = sdl.timer.getTicksNs();
+        const start_conv = std.Io.Clock.awake.now(io);
         sdl.surface.convertRgb24ToRgba32Simd(
             src_pixels[0 .. src_pitch * u_h],
             mapped[0..size],
@@ -290,15 +291,15 @@ fn stageSurfaceToRgba32(
             src_pitch,
             dst_pitch,
         );
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms =
-            @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        conversion_time_ms = state_pkg.durationToMs(
+            start_conv.untilNow(io, .awake),
+        );
         std.log.info(
             "main-thread RGB24 conversion ({d}x{d}) took {d:.2}ms",
             .{ u_w, u_h, conversion_time_ms },
         );
     } else if (cur_fmt == sdl.PixelFormat.bgr24) {
-        const start_conv = sdl.timer.getTicksNs();
+        const start_conv = std.Io.Clock.awake.now(io);
         sdl.surface.convertBgr24ToRgba32Simd(
             src_pixels[0 .. src_pitch * u_h],
             mapped[0..size],
@@ -307,15 +308,15 @@ fn stageSurfaceToRgba32(
             src_pitch,
             dst_pitch,
         );
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms =
-            @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        conversion_time_ms = state_pkg.durationToMs(
+            start_conv.untilNow(io, .awake),
+        );
         std.log.info(
             "main-thread BGR24 conversion ({d}x{d}) took {d:.2}ms",
             .{ u_w, u_h, conversion_time_ms },
         );
     } else {
-        const start_conv = sdl.timer.getTicksNs();
+        const start_conv = std.Io.Clock.awake.now(io);
         const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32) orelse
             return null;
         defer tmp_surf.destroy();
@@ -333,9 +334,9 @@ fn stageSurfaceToRgba32(
                 );
             }
         }
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms =
-            @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        conversion_time_ms = state_pkg.durationToMs(
+            start_conv.untilNow(io, .awake),
+        );
     }
     return conversion_time_ms;
 }
@@ -349,12 +350,13 @@ fn computeTextureVramBytes(u_w: usize, u_h: usize, num_levels: u32) usize {
 /// generation, using an optional compute pipeline for fast RGB24/BGR24 unpack
 /// and optional staging buffer reuse.
 pub fn uploadSurfaceToGpu(
+    io: std.Io,
     dev: sdl.gpu.Device,
     surf: sdl.Surface,
     comp_pipeline: ?sdl.gpu.ComputePipeline,
     staging: ?*UploadStagingBuffer,
 ) ?GpuUploadResult {
-    const start_upload = sdl.timer.getTicksNs();
+    const start_upload = std.Io.Clock.awake.now(io);
     var current_surf = surf;
 
     const src_fmt = current_surf.format();
@@ -408,7 +410,7 @@ pub fn uploadSurfaceToGpu(
     tex = dev.createTexture(&img_tex_info);
 
     if (tex == null) {
-        const start_fb = sdl.timer.getTicksNs();
+        const start_fb = std.Io.Clock.awake.now(io);
         was_fallback = true;
         var try_max_dim: i32 = 8192;
         while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(
@@ -439,9 +441,9 @@ pub fn uploadSurfaceToGpu(
                 }
             }
         }
-        const end_fb = sdl.timer.getTicksNs();
-        fallback_time_ms =
-            @as(f64, @floatFromInt(end_fb - start_fb)) / 1_000_000.0;
+        fallback_time_ms = state_pkg.durationToMs(
+            start_fb.untilNow(io, .awake),
+        );
     }
 
     const gpu_tex = tex orelse return null;
@@ -554,18 +556,18 @@ pub fn uploadSurfaceToGpu(
 
         var mipmap_time_ms: f64 = 0.0;
         if (num_levels > 1) {
-            const start_mip = sdl.timer.getTicksNs();
+            const start_mip = std.Io.Clock.awake.now(io);
             cmd_wrapper.generateMipmaps(gpu_tex);
-            const end_mip = sdl.timer.getTicksNs();
-            mipmap_time_ms =
-                @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
+            mipmap_time_ms = state_pkg.durationToMs(
+                start_mip.untilNow(io, .awake),
+            );
         }
 
         _ = cmd_wrapper.submit();
 
-        const end_upload = sdl.timer.getTicksNs();
-        const upload_time_ms =
-            @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+        const upload_time_ms = state_pkg.durationToMs(
+            start_upload.untilNow(io, .awake),
+        );
 
         const memory_size_bytes = computeTextureVramBytes(
             u_w,
@@ -626,6 +628,7 @@ pub fn uploadSurfaceToGpu(
     };
 
     _ = stageSurfaceToRgba32(
+        io,
         current_surf,
         mapped[0..size],
         u_w,
@@ -662,18 +665,18 @@ pub fn uploadSurfaceToGpu(
 
     var mipmap_time_ms: f64 = 0.0;
     if (num_levels > 1) {
-        const start_mip = sdl.timer.getTicksNs();
+        const start_mip = std.Io.Clock.awake.now(io);
         cmd_wrapper.generateMipmaps(gpu_tex);
-        const end_mip = sdl.timer.getTicksNs();
-        mipmap_time_ms =
-            @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
+        mipmap_time_ms = state_pkg.durationToMs(
+            start_mip.untilNow(io, .awake),
+        );
     }
 
     _ = cmd_wrapper.submit();
 
-    const end_upload = sdl.timer.getTicksNs();
-    const upload_time_ms =
-        @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+    const upload_time_ms = state_pkg.durationToMs(
+        start_upload.untilNow(io, .awake),
+    );
 
     const memory_size_bytes = computeTextureVramBytes(
         u_w,
@@ -766,7 +769,8 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
         return;
     defer surf1.destroy();
 
-    const res1 = uploadSurfaceToGpu(dev, surf1, null, &staging);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const res1 = uploadSurfaceToGpu(io, dev, surf1, null, &staging);
     try std.testing.expect(res1 != null);
     if (res1) |r| {
         dev.releaseTexture(r.gpu_texture);
@@ -783,7 +787,7 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
         return;
     defer surf2.destroy();
 
-    const res2 = uploadSurfaceToGpu(dev, surf2, null, &staging);
+    const res2 = uploadSurfaceToGpu(io, dev, surf2, null, &staging);
     try std.testing.expect(res2 != null);
     if (res2) |r| {
         dev.releaseTexture(r.gpu_texture);
@@ -836,7 +840,9 @@ test "computeFallbackScaleDims and stageSurfaceToRgba32 downscale safely" {
     const mapped = try allocator.alloc(u8, dst_pitch * u_h);
     defer allocator.free(mapped);
 
+    const io = std.Io.Threaded.global_single_threaded.io();
     const conv_ms = stageSurfaceToRgba32(
+        io,
         scaled,
         mapped,
         u_w,
@@ -927,7 +933,9 @@ test "uploadSurfaceToGpu - compute pipeline unpacks RGB24 and BGR24 pixels" {
             }
         }
 
+        const io = std.Io.Threaded.global_single_threaded.io();
         const uploaded = uploadSurfaceToGpu(
+            io,
             dev,
             surf,
             comp_pipeline,

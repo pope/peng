@@ -16,6 +16,7 @@ pub const viewer_state = @import("viewer_state.zig");
 pub const view_transform = @import("view_transform.zig");
 pub const viewport = @import("viewport.zig");
 
+pub const activeDurationMs = telemetry.activeDurationMs;
 pub const ActiveImageTransition = types.ActiveImageTransition;
 pub const ActiveNotification = snackbar.ActiveNotification;
 pub const ActivePanTap = viewport.ActivePanTap;
@@ -72,7 +73,6 @@ pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S =
     animation_state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S;
 pub const NavDirection = navigation.NavDirection;
 pub const NavigationState = navigation.NavigationState;
-pub const nsToMs = telemetry.nsToMs;
 pub const OverlayState = types.OverlayState;
 pub const PaletteClickHit = interaction.PaletteClickHit;
 pub const PaletteItemHit = interaction.PaletteItemHit;
@@ -94,6 +94,7 @@ pub const StatsSummary = telemetry.StatsSummary;
 pub const ThumbnailInfo = telemetry.ThumbnailInfo;
 pub const ThumbnailSource = telemetry.ThumbnailSource;
 pub const ThumbnailStats = telemetry.ThumbnailStats;
+pub const timestampToMs = telemetry.timestampToMs;
 pub const TitleDisplay = types.TitleDisplay;
 pub const TouchFinger = types.TouchFinger;
 pub const TouchTracker = types.TouchTracker;

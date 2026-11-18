@@ -277,7 +277,10 @@ const AppGraphicsAndState = struct {
         // Spawn initial directory scan & decode worker before graphics/GPU initialization
         // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
         if (self.parsed.arg_path) |path| {
-            try self.state.openPath(path, sdl.timer.getTicks());
+            try self.state.openPath(
+                path,
+                state_pkg.timestampToMs(std.Io.Clock.awake.now(proc_init.io)),
+            );
         } else if (!self.parsed.server_mode) {
             try app.workers.readPipedStdin(
                 &self.state.workers,
@@ -307,6 +310,7 @@ const AppGraphicsAndState = struct {
 
         // 5. GPU Pipeline and Resources Setup
         self.resources = try gpu.graphics.initGpuResources(
+            proc_init.io,
             self.setup.gpu_device,
             self.setup.window,
             self.setup.initial_dpi_scale,
@@ -393,7 +397,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer frame_arena.deinit();
 
-    var last_time = sdl.timer.getTicks();
+    var last_time = state_pkg.timestampToMs(std.Io.Clock.awake.now(ctx.io));
 
     if (build_options.hot_reload) {
         var lib_viewer: LibViewer = try .init(ctx.io);

@@ -1,15 +1,31 @@
 const std = @import("std");
 
-/// Converts a nanosecond duration into fractional milliseconds.
-pub inline fn nsToMs(ns: u64) f64 {
-    return @as(f64, @floatFromInt(ns)) /
-        @as(f64, std.time.ns_per_ms);
-}
-
-/// Converts a `std.Io.Duration` into non-negative milliseconds.
+/// Converts a `std.Io.Duration` into non-negative fractional milliseconds.
 pub inline fn durationToMs(dur: std.Io.Duration) f64 {
     return @as(f64, @floatFromInt(@max(0, dur.nanoseconds))) /
         @as(f64, std.time.ns_per_ms);
+}
+
+/// Computes active milliseconds by subtracting a clamped non-negative
+/// `excluded` wait span from `total` with saturating protection.
+pub inline fn activeDurationMs(
+    total: std.Io.Duration,
+    excluded: std.Io.Duration,
+) f64 {
+    const total_ns: u128 = @intCast(@max(0, total.nanoseconds));
+    const excl_ns: u128 = @intCast(@max(0, excluded.nanoseconds));
+    return @as(f64, @floatFromInt(total_ns -| excl_ns)) /
+        @as(f64, std.time.ns_per_ms);
+}
+
+/// Converts a monotonic `std.Io.Timestamp` into non-negative `u64`
+/// milliseconds, clamping at `0` and saturating at `std.math.maxInt(u64)`.
+pub inline fn timestampToMs(ts: std.Io.Timestamp) u64 {
+    const clamped_ms = @min(
+        @as(i96, std.math.maxInt(u64)),
+        @divTrunc(@max(0, ts.nanoseconds), std.time.ns_per_ms),
+    );
+    return @intCast(clamped_ms);
 }
 
 /// Summary statistics (mean, sample standard deviation, and peak value) across
@@ -1126,10 +1142,29 @@ test "PresentTracker settles via .settling on dt_ms >= 250, tick_gap < 250" {
     try std.testing.expectEqual(@as(?u32, null), tracker.settleTimeoutMs(1262));
 }
 
-test "nsToMs and durationToMs convert nanoseconds and clamp negatives" {
-    try std.testing.expectEqual(@as(f64, 0.0), nsToMs(0));
-    try std.testing.expectEqual(@as(f64, 1.5), nsToMs(1_500_000));
-    try std.testing.expectEqual(@as(f64, 16.0), nsToMs(16_000_000));
+test "durationToMs, activeDurationMs, and timestampToMs clamp safely" {
+    try std.testing.expectEqual(
+        @as(f64, 1.5),
+        activeDurationMs(
+            .{ .nanoseconds = 9_500_000 },
+            .{ .nanoseconds = 8_000_000 },
+        ),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0.0),
+        activeDurationMs(
+            .{ .nanoseconds = 1_000_000 },
+            .{ .nanoseconds = 5_000_000 },
+        ),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        timestampToMs(std.Io.Timestamp.fromNanoseconds(-5_000_000)),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 42),
+        timestampToMs(std.Io.Timestamp.fromNanoseconds(42_999_999)),
+    );
 
     try std.testing.expectEqual(
         @as(f64, 2.25),

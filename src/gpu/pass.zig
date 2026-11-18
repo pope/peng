@@ -67,16 +67,13 @@ pub const PassTimings = struct {
 };
 
 fn buildPassTimings(
-    pass_start_ns: u64,
-    pass_end_ns: u64,
-    swapchain_wait_ns: u64,
+    total_pass: std.Io.Duration,
+    swapchain_wait: std.Io.Duration,
 ) PassTimings {
-    const total_pass_ns = pass_end_ns -| pass_start_ns;
-    const gpu_encode_ns = total_pass_ns -| swapchain_wait_ns;
     return .{
-        .total_pass_ms = state.nsToMs(total_pass_ns),
-        .gpu_encode_ms = state.nsToMs(gpu_encode_ns),
-        .swapchain_wait_ms = state.nsToMs(swapchain_wait_ns),
+        .total_pass_ms = state.durationToMs(total_pass),
+        .gpu_encode_ms = state.activeDurationMs(total_pass, swapchain_wait),
+        .swapchain_wait_ms = state.durationToMs(swapchain_wait),
     };
 }
 
@@ -892,8 +889,9 @@ pub fn executeFrame(
         build_ctx: PacketBuildContext,
     ) anyerror!RenderPacket,
 ) !PassTimings {
-    const pass_start_ns = sdl.timer.getTicksNs();
-    var swapchain_wait_ns: u64 = 0;
+    const io = gpu_res.io;
+    const pass_start = std.Io.Clock.awake.now(io);
+    var swapchain_wait: std.Io.Duration = .zero;
 
     const dev = gpu_res.device;
     const cmd_buf = dev.acquireCommandBuffer() orelse
@@ -955,14 +953,13 @@ pub fn executeFrame(
         .window => |win| {
             var swap_w: u32 = 0;
             var swap_h: u32 = 0;
-            const wait_start_ns = sdl.timer.getTicksNs();
+            const wait_start = std.Io.Clock.awake.now(io);
             const swap_opt = win.waitAndAcquireSwapchainTexture(
                 cmd_buf,
                 &swap_w,
                 &swap_h,
             );
-            const wait_end_ns = sdl.timer.getTicksNs();
-            swapchain_wait_ns = wait_end_ns -| wait_start_ns;
+            swapchain_wait = wait_start.untilNow(io, .awake);
             if (swap_opt) |st| {
                 target_tex = st;
                 target_w = swap_w;
@@ -985,11 +982,9 @@ pub fn executeFrame(
             if (target.capture_filename != null) {
                 return error.SwapchainTextureUnavailable;
             }
-            const pass_end_ns = sdl.timer.getTicksNs();
             return buildPassTimings(
-                pass_start_ns,
-                pass_end_ns,
-                swapchain_wait_ns,
+                pass_start.untilNow(io, .awake),
+                swapchain_wait,
             );
         }
 
@@ -1078,8 +1073,7 @@ pub fn executeFrame(
             return error.SwapchainTextureUnavailable;
         }
     }
-    const pass_end_ns = sdl.timer.getTicksNs();
-    return buildPassTimings(pass_start_ns, pass_end_ns, swapchain_wait_ns);
+    return buildPassTimings(pass_start.untilNow(io, .awake), swapchain_wait);
 }
 
 test "intersectScissor computes correct overlapping rectangle" {
@@ -1294,13 +1288,19 @@ test "findBlurSplit pairs initialized resources with blurred_surface index" {
 }
 
 test "buildPassTimings subtracts swapchain wait saturating safely" {
-    const t = buildPassTimings(1_000_000, 18_500_000, 16_000_000);
+    const t = buildPassTimings(
+        .{ .nanoseconds = 17_500_000 },
+        .{ .nanoseconds = 16_000_000 },
+    );
     try std.testing.expectEqual(@as(f64, 17.5), t.total_pass_ms);
     try std.testing.expectEqual(@as(f64, 1.5), t.gpu_encode_ms);
     try std.testing.expectEqual(@as(f64, 16.0), t.swapchain_wait_ms);
 
     // Clock anomaly / wait exceeding total pass duration saturates to 0.0.
-    const clamped = buildPassTimings(2_000_000, 1_000_000, 5_000_000);
+    const clamped = buildPassTimings(
+        .{ .nanoseconds = -1_000_000 },
+        .{ .nanoseconds = 5_000_000 },
+    );
     try std.testing.expectEqual(@as(f64, 0.0), clamped.total_pass_ms);
     try std.testing.expectEqual(@as(f64, 0.0), clamped.gpu_encode_ms);
     try std.testing.expectEqual(@as(f64, 5.0), clamped.swapchain_wait_ms);

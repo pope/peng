@@ -64,6 +64,7 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) bool {
 
     const dev = state.gpu_device orelse return false;
     const upload_res = uploadSurfaceToGpu(
+        state.io,
         dev,
         extracted.surface,
         state.unpack_compute_pipeline,
@@ -103,6 +104,7 @@ fn ensureCurrentThumbnailLoaded(state: *AppState) bool {
 }
 
 fn uploadActivePendingThumb(
+    io: std.Io,
     cache: *ImageCache,
     staging: *gpu.UploadStagingBuffer,
     gpu_dev: sdl.gpu.Device,
@@ -131,6 +133,7 @@ fn uploadActivePendingThumb(
     defer staged.deinit();
 
     const upload_res = uploadSurfaceToGpu(
+        io,
         gpu_dev,
         staged.surface,
         unpack_pipeline,
@@ -236,6 +239,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
 
     if (cur_key_opt) |cur_key| {
         if (uploadActivePendingThumb(
+            state.io,
             &state.cache,
             &state.upload_staging,
             gpu_dev,
@@ -344,6 +348,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
             }
         }
         if (uploadSurfaceToGpu(
+            state.io,
             gpu_dev,
             target.asset.cpu.surface,
             state.unpack_compute_pipeline,
