@@ -18,7 +18,6 @@ const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = cache.CacheEntry;
 const DecodeMode = workers_mod.DecodeMode;
 const DisplayState = core.display.DisplayState;
-const getParentDirBuf = vfs.getParentDirBuf;
 const ImageCache = cache.ImageCache;
 const InFlightState = cache.InFlightState;
 const isCbzFile = vfs.isCbzFile;
@@ -180,6 +179,17 @@ pub const AppState = struct {
             self.workers.event_queue.hasPending())
         {
             return false;
+        }
+        if (self.viewer.ui.palette.openMode()) |mode| {
+            switch (mode) {
+                .directory_navigator => {
+                    const active = &self.viewer.ui.palette.active_dir_scans;
+                    if (active.load(.acquire) > 0) {
+                        return false;
+                    }
+                },
+                .files, .actions, .prompt => {},
+            }
         }
         if (self.getCurrentEntry()) |entry| {
             if (!entry.inflight.isIdle()) {
@@ -705,20 +715,43 @@ pub const AppState = struct {
         }
     }
 
-    /// Loads directory items into the command palette directory navigator and spawns
-    /// a background worker task to asynchronously count images and subdirectories.
-    pub fn loadPaletteDirectory(self: *AppState, dir_path: []const u8) !void {
-        try self.viewer.ui.palette.loadDirectoryEntries(
+    /// Begins an asynchronous directory load in the Command Palette navigator
+    /// and spawns the two-stage `paletteScanWorker` to list subdirectories and
+    /// count folder contents off the render thread.
+    pub fn loadPaletteDirectory(
+        self: *AppState,
+        dir_path: []const u8,
+        preselect_child: ?[]const u8,
+        walk_up_if_empty: bool,
+    ) !void {
+        const cur_nav = self.viewer.ui.palette.current_nav_dir.items;
+        var prev_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var prev_dir_sfa: std.heap.BufferFirstAllocator = .init(
+            &prev_dir_buf,
             self.allocator,
-            self.io,
-            dir_path,
         );
-        try workers_mod.spawnPaletteScanForItems(
+        const temp_alloc = prev_dir_sfa.allocator();
+        const prev_dir: ?[]const u8 = if (cur_nav.len > 0)
+            try temp_alloc.dupe(u8, cur_nav)
+        else
+            null;
+        defer if (prev_dir) |p| temp_alloc.free(p);
+
+        const spec = try self.viewer.ui.palette.beginDirectoryLoad(
+            self.allocator,
+            dir_path,
+            preselect_child,
+        );
+        try workers_mod.spawnPaletteScan(
             &self.workers,
             self.allocator,
             self.io,
+            spec.generation,
             &self.viewer.ui.palette.dir_scan_generation,
-            self.viewer.ui.palette.dir_items.items,
+            &self.viewer.ui.palette.active_dir_scans,
+            spec.target_dir,
+            if (spec.needs_child_resolve) prev_dir else null,
+            walk_up_if_empty,
         );
     }
 
@@ -792,7 +825,7 @@ pub const AppState = struct {
         dir_path: []const u8,
     ) !void {
         self.beginOpenPalette(.directory_navigator);
-        try self.loadPaletteDirectory(dir_path);
+        try self.loadPaletteDirectory(dir_path, null, false);
         startTextInput(self.display);
     }
 
@@ -814,24 +847,11 @@ pub const AppState = struct {
             ),
             .directory_navigator => {
                 const nav_path = resolveNavigatorInitialPath(self);
-                if (nav_path.preselect_child) |child| {
-                    self.viewer.ui.palette.last_child_dir.clearRetainingCapacity();
-                    try self.viewer.ui.palette.last_child_dir.appendSlice(self.allocator, child);
-                }
-                try self.loadPaletteDirectory(nav_path.start_dir);
-                if (self.viewer.ui.palette.dir_items.items.len == 0) {
-                    var parent_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-                    while (self.viewer.ui.palette.dir_items.items.len == 0) {
-                        const curr =
-                            self.viewer.ui.palette.current_nav_dir.items;
-                        const parent = getParentDirBuf(
-                            curr,
-                            &parent_buf,
-                        ) orelse break;
-                        if (std.mem.eql(u8, parent, curr)) break;
-                        try self.loadPaletteDirectory(parent);
-                    }
-                }
+                try self.loadPaletteDirectory(
+                    nav_path.start_dir,
+                    nav_path.preselect_child,
+                    true,
+                );
             },
             .prompt => |kind| switch (kind) {
                 .slideshow_interval => {
@@ -1624,4 +1644,26 @@ test "AppState.getWaitTimeoutMs schedules staging decay and clears when null" {
         input.EventWaitStrategy.wait_indefinite,
         state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 6000),
     );
+}
+
+test "AppState.isWaitLoadReady blocks during directory_navigator scan" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    state.viewer.ui.palette.active_dir_scans.store(1, .release);
+    try std.testing.expect(!state.isWaitLoadReady());
+
+    // Closing palette unblocks wait_load immediately even if stale scan runs
+    state.viewer.ui.palette.beginClose();
+    try std.testing.expect(state.isWaitLoadReady());
+
+    state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    try std.testing.expect(!state.isWaitLoadReady());
+
+    state.viewer.ui.palette.active_dir_scans.store(0, .release);
+    try std.testing.expect(state.isWaitLoadReady());
 }

@@ -8,6 +8,7 @@ const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
 
+const DirectoryEntry = vfs.DirectoryEntry;
 const EntryScanState = vfs.EntryScanState;
 const ImageCache = cache_pkg.ImageCache;
 const ImageCacheKey = cache_pkg.ImageCacheKey;
@@ -44,6 +45,16 @@ pub fn Generational(comptime T: type) type {
         ) ?T {
             if (self.generation != active_gen.load(.acquire)) return null;
             return self.unchecked_payload;
+        }
+
+        /// Validates `self.generation` against `active_gen`, returning a
+        /// mutable pointer to the inner payload only when they match.
+        pub fn resolvePtr(
+            self: *Self,
+            active_gen: *const std.atomic.Value(usize),
+        ) ?*T {
+            if (self.generation != active_gen.load(.acquire)) return null;
+            return &self.unchecked_payload;
         }
 
         /// Returns the inner payload for unit tests inspecting raw queue
@@ -188,6 +199,23 @@ pub const DirectoryScanResultPayload = struct {
     }
 };
 
+/// Payload delivering the scanned directory entries and resolved navigation
+/// state for the Command Palette directory navigator, backed by an autonomous
+/// worker arena for O(1) transfer or teardown.
+pub const PaletteDirLoadedPayload = struct {
+    arena: std.heap.ArenaAllocator,
+    entries: std.ArrayList(DirectoryEntry),
+    resolved_dir: []const u8,
+    preselect_child: ?[]const u8 = null,
+    current_dir_image_count: usize = 0,
+
+    /// Releases all directory entries, strings, and backing arena pages in
+    /// O(1).
+    pub fn deinit(self: PaletteDirLoadedPayload) void {
+        self.arena.deinit();
+    }
+};
+
 /// Payload delivering the scan status (counts, `.permission_denied`, or
 /// `.failed`) for a directory or archive item in the Command Palette.
 pub const PaletteFolderCountPayload = struct {
@@ -213,6 +241,7 @@ pub const BackgroundEvent = union(enum) {
     decode_failed: SlotBound(DecodeFailedPayload),
     path_discovered: PathDiscoveredPayload,
     directory_scan_result: Generational(DirectoryScanResultPayload),
+    palette_dir_loaded: Generational(PaletteDirLoadedPayload),
     palette_folder_count: Generational(PaletteFolderCountPayload),
     precache_completed: Generational(PrecacheCompletedPayload),
     ipc_command: *ipc.IpcCommandData,
@@ -232,6 +261,9 @@ pub const BackgroundEvent = union(enum) {
             .path_discovered => |p| p.entry.deinit(allocator),
             .directory_scan_result => |res| {
                 res.unchecked_payload.deinit();
+            },
+            .palette_dir_loaded => |loaded| {
+                loaded.unchecked_payload.deinit();
             },
             .palette_folder_count => |cnt| {
                 allocator.free(cnt.unchecked_payload.path);
@@ -264,6 +296,7 @@ pub const BackgroundEvent = union(enum) {
             .decode_failed,
             .path_discovered,
             .directory_scan_result,
+            .palette_dir_loaded,
             .palette_folder_count,
             .precache_completed,
             => self.deinit(allocator),
@@ -273,11 +306,15 @@ pub const BackgroundEvent = union(enum) {
 
 test "Generational.resolve validates generation counter" {
     var active_gen = std.atomic.Value(usize).init(5);
-    const wrapped = Generational(u32).init(5, 42);
+    var wrapped = Generational(u32).init(5, 42);
     try std.testing.expectEqual(@as(?u32, 42), wrapped.resolve(&active_gen));
+    const ptr = wrapped.resolvePtr(&active_gen).?;
+    ptr.* = 99;
+    try std.testing.expectEqual(@as(?u32, 99), wrapped.resolve(&active_gen));
 
     active_gen.store(6, .release);
     try std.testing.expectEqual(@as(?u32, null), wrapped.resolve(&active_gen));
+    try std.testing.expect(wrapped.resolvePtr(&active_gen) == null);
 }
 
 test "SlotBound.resolve validates cache key and presence" {
@@ -410,5 +447,28 @@ test "DirectoryScanResultPayload O(1) deinit without memory leaks" {
         .paths = paths,
     };
 
+    payload.deinit();
+}
+
+test "PaletteDirLoadedPayload O(1) deinit without memory leaks" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const arena_alloc = arena.allocator();
+
+    var entries: std.ArrayList(DirectoryEntry) = .empty;
+    try entries.append(arena_alloc, .{
+        .directory = .{
+            .name = try arena_alloc.dupe(u8, "sub"),
+            .full_path = try arena_alloc.dupe(u8, "/tmp/sub"),
+            .scan = .unscanned,
+        },
+    });
+    const payload = PaletteDirLoadedPayload{
+        .arena = arena,
+        .entries = entries,
+        .resolved_dir = try arena_alloc.dupe(u8, "/tmp"),
+        .preselect_child = try arena_alloc.dupe(u8, "sub"),
+        .current_dir_image_count = 3,
+    };
     payload.deinit();
 }

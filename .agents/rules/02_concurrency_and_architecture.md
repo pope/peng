@@ -52,7 +52,8 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
      `AppIntent`s; decoded `sdl.Surface` and scan payloads stage directly onto
      CPU state in `drainWorkerEvents` so `AppIntent` stays pure value data.
   3. *Startup & Discrete Scan Overlap*: Continuous decodes dispatch via
-     `sysUpdateCache`, while `openPathInternal` / `loadPaletteDirectory` / IPC
+     `sysUpdateCache`, while `openPathInternal` / `loadPaletteDirectory`
+     (2-stage `paletteScanWorker` after zero-I/O `beginDirectoryLoad`) / IPC
      `preview` & `precache` launch one-shot workers directly on transition to
      hide cold-start window/Vulkan init latency.
 - **Intents, Registry & Input Isolation**:
@@ -104,6 +105,11 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     neighbor), transfer `surface` zero-copy to `enqueueDecodedThumbWrite`
     (`MAX_QUEUED_THUMB_WRITES = 8`, yielding when decodes run), and run
     `upload_staging.maybeShrinkIdle`.
+  - `loadPaletteDirectory` dispatches the 2-stage `paletteScanWorker`
+    (Stage 1 `.palette_dir_loaded` with optional `walk_up_if_empty` and O(1)
+    `ArenaAllocator` handoff via `applyLoadedDirectory`; Stage 2
+    `.palette_folder_count`), gated by `dir_scan_generation` and tracked via
+    `active_dir_scans` for `isWaitLoadReady`.
 
 *(Deep recipes: [systems-architecture.md](../skills/zig-gui-practices/references/systems-architecture.md),
 [vram-preloading.md](../skills/zig-gui-practices/references/vram-preloading.md))*

@@ -277,7 +277,17 @@ test "pathScanWorker - directory scan result event generation" {
                 payload.paths[0].getBasename(),
             );
         },
-        else => return error.ExpectedDirectoryScanResult,
+        .exif_orientation_parsed,
+        .dimensions_probed,
+        .thumb_decoded,
+        .image_decoded,
+        .decode_failed,
+        .path_discovered,
+        .palette_dir_loaded,
+        .palette_folder_count,
+        .precache_completed,
+        .ipc_command,
+        => return error.ExpectedDirectoryScanResult,
     }
 
     // Stale generation scan aborts without pushing directory_scan_result

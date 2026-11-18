@@ -30,9 +30,12 @@ ______________________________________________________________________
     (`NavigationState.init`, `PaletteState.init`,
     `AppState.ensureInitialCapacities`) reserve capacities via
     `ensureTotalCapacity(allocator, N)` with rationale comments (while
-    `PaletteState.dir_items` starts `.empty` and allocates both its backing
-    buffer and entry strings inside `dir_arena` via single-allocator
-    `scanDirectoryEntries` with `ensureUnusedCapacity(allocator, 32)`).
+    `PaletteState.dir_items` starts `.empty` and is populated off-thread by
+    Stage 1 of `paletteScanWorker` into a worker `ArenaAllocator` via
+    `scanDirectoryEntries`, then transferred in **O(1)** on
+    `.palette_dir_loaded` via `PaletteState.applyLoadedDirectory`;
+    `beginDirectoryLoad` clears `dir_items` and bumps `dir_scan_generation` on
+    the main thread with zero disk I/O).
   - **Capacity Retention**: Interactive reset methods (`clearIntents()`,
     `PaletteState.reset()`) retain unmanaged list capacities via
     `clearRetainingCapacity()`, while `clearDirItems()` sets
@@ -315,7 +318,10 @@ ______________________________________________________________________
     - Opening any mode enters via `AppState.openPalette` /
       `openDirectoryPalette` (resetting stale state, setting `.open`, starting
       `.palette_reveal`, and enabling text input); in-place directory reload
-      only applies when `openMode()` is already `.directory_navigator`.
+      only applies when `openMode()` is already `.directory_navigator`. Both
+      `.directory_navigator` entry listing (with `walk_up_if_empty`) and child
+      folder counts run asynchronously off-thread via 2-stage
+      `paletteScanWorker` under `dir_scan_generation` and `active_dir_scans`.
     - Confirming a slideshow interval pushes
       `AppIntent.start_slideshow_interval` so interval clamping and
       `NavigationState.slideshow` mutation stay inside `sysExecuteIntents`.

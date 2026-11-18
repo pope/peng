@@ -19,19 +19,23 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
     `resetDirectoryArena()` (`<= 256 KiB`), `TriageMap.resetArena()`
     (`<= 64 KiB`), and `PaletteState.clearDirItems()` (sets `dir_items = .empty`
     and caps `dir_arena` `<= 64 KiB`, freed via `.free_all` in
-    `shrinkToWarmCapacity()`), and call `NavigationState.trimExcessCapacity`
-    after playlist replacements when `capacity > 2 * len` and `> 64`.
+    `shrinkToWarmCapacity()`; `applyLoadedDirectory` transfers the worker
+    `ArenaAllocator` + `dir_items` in **O(1)** and deinits the prior arena),
+    and call `NavigationState.trimExcessCapacity` after playlist replacements
+    when `capacity > 2 * len` and `> 64`.
 - **Autonomous Worker Arenas**:
-  - Allocate `DirectoryScanResultPayload` strings/slices from its embedded
-    `ArenaAllocator` so `BackgroundEvent.deinit` and cancellation unwinds free
-    batches in **O(1)** (`scanDirectoryThreadSafe` likewise uses a scratch arena).
+  - Allocate `DirectoryScanResultPayload` and `PaletteDirLoadedPayload`
+    strings/slices from their embedded `ArenaAllocator` so
+    `BackgroundEvent.deinit`, O(1) main-thread handoffs, and cancellation
+    unwinds free batches in **O(1)** (`scanDirectoryThreadSafe` likewise uses a
+    scratch arena).
 - **Stack vs. Arena Sizing**:
   - Never put unbounded collections on fixed stack arrays `[N]T`; use
     `std.ArrayList(T)` on `frame_allocator` (keep fixed arrays only for
     hardware/spec bounds like 16 GPU vertex slots or 8 EXIF IFD levels).
   - Allocate `>= 4 KB` path buffers (`max_path_bytes`) on `frame_allocator` in
     per-frame passes; stack buffers are fine in discrete non-recursive main-thread
-    transitions (`openPalette`).
+    transitions (`beginDirectoryLoad` / `openPathInternal`).
   - Copy shared byte slices via `@memcpy` before mutating across threads, and
     prefer caller-provided buffers or explicit allocators over unowned heap
     returns.

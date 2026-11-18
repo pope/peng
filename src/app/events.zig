@@ -87,6 +87,12 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                     handleDirectoryScanResultEvent(state, payload);
                 }
             },
+            .palette_dir_loaded => |*loaded| {
+                const active_gen = &state.viewer.ui.palette.dir_scan_generation;
+                if (loaded.resolvePtr(active_gen)) |payload| {
+                    handlePaletteDirLoadedEvent(state, payload);
+                }
+            },
             .palette_folder_count => |cnt| {
                 const active_gen = &state.viewer.ui.palette.dir_scan_generation;
                 if (cnt.resolve(active_gen)) |payload| {
@@ -135,6 +141,27 @@ fn handleDecodeFailedEvent(
             }
         },
     }
+}
+
+fn handlePaletteDirLoadedEvent(
+    state: *AppState,
+    payload: *events.PaletteDirLoadedPayload,
+) void {
+    const mode = state.viewer.ui.palette.openMode() orelse return;
+    switch (mode) {
+        .directory_navigator => {},
+        .files, .actions, .prompt => return,
+    }
+    state.viewer.ui.palette.applyLoadedDirectory(
+        state.allocator,
+        payload.resolved_dir,
+        &payload.arena,
+        &payload.entries,
+        payload.current_dir_image_count,
+        payload.preselect_child,
+    ) catch |err| {
+        std.log.err("Failed to apply loaded palette directory: {}", .{err});
+    };
 }
 
 fn handlePaletteFolderCountEvent(
@@ -240,6 +267,7 @@ fn hasSubsequentImageDecoded(
             .decode_failed,
             .path_discovered,
             .directory_scan_result,
+            .palette_dir_loaded,
             .palette_folder_count,
             .precache_completed,
             .ipc_command,
@@ -859,6 +887,122 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     try std.testing.expectEqual(
         EntryScanState.failed,
         state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
+    );
+}
+
+test "drainWorkerEvents - palette_dir_loaded O(1) handoff and gating" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    state.viewer.ui.palette.dir_scan_generation.store(3, .release);
+
+    // 1. Stale generation event is rejected and freed via evt.deinit()
+    {
+        var stale_arena = std.heap.ArenaAllocator.init(allocator);
+        const sa = stale_arena.allocator();
+        var stale_entries: std.ArrayList(vfs.DirectoryEntry) = .empty;
+        try stale_entries.append(sa, .{
+            .directory = .{
+                .name = try sa.dupe(u8, "stale_dir"),
+                .full_path = try sa.dupe(u8, "/stale/stale_dir"),
+                .scan = .unscanned,
+            },
+        });
+        try state.workers.event_queue.push(allocator, io, .{
+            .palette_dir_loaded = .init(2, .{
+                .arena = stale_arena,
+                .entries = stale_entries,
+                .resolved_dir = try sa.dupe(u8, "/stale"),
+                .preselect_child = null,
+                .current_dir_image_count = 7,
+            }),
+        });
+    }
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.ui.palette.dir_items.items.len,
+    );
+
+    // 2. Matching generation event transfers arena and preselects child
+    {
+        var ok_arena = std.heap.ArenaAllocator.init(allocator);
+        const oa = ok_arena.allocator();
+        var ok_entries: std.ArrayList(vfs.DirectoryEntry) = .empty;
+        try ok_entries.append(oa, .{
+            .directory = .{
+                .name = try oa.dupe(u8, "alpha"),
+                .full_path = try oa.dupe(u8, "/work/alpha"),
+                .scan = .unscanned,
+            },
+        });
+        try ok_entries.append(oa, .{
+            .directory = .{
+                .name = try oa.dupe(u8, "beta"),
+                .full_path = try oa.dupe(u8, "/work/beta"),
+                .scan = .unscanned,
+            },
+        });
+        try state.workers.event_queue.push(allocator, io, .{
+            .palette_dir_loaded = .init(3, .{
+                .arena = ok_arena,
+                .entries = ok_entries,
+                .resolved_dir = try oa.dupe(u8, "/work"),
+                .preselect_child = try oa.dupe(u8, "beta"),
+                .current_dir_image_count = 4,
+            }),
+        });
+    }
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        state.viewer.ui.palette.dir_items.items.len,
+    );
+    try std.testing.expectEqualStrings(
+        "/work",
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expectEqualStrings(
+        "beta",
+        state.viewer.ui.palette.last_child_dir.items,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 4),
+        state.viewer.ui.palette.current_dir_image_count,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        state.viewer.ui.palette.selected_idx,
+    );
+
+    // 3. Closed or non-navigator palette drops payload cleanly
+    state.viewer.ui.palette.lifecycle = .{ .open = .files };
+    {
+        var ignored_arena = std.heap.ArenaAllocator.init(allocator);
+        const ia = ignored_arena.allocator();
+        var ignored_entries: std.ArrayList(vfs.DirectoryEntry) = .empty;
+        try ignored_entries.append(ia, .{
+            .directory = .{
+                .name = try ia.dupe(u8, "gamma"),
+                .full_path = try ia.dupe(u8, "/other/gamma"),
+                .scan = .unscanned,
+            },
+        });
+        try state.workers.event_queue.push(allocator, io, .{
+            .palette_dir_loaded = .init(3, .{
+                .arena = ignored_arena,
+                .entries = ignored_entries,
+                .resolved_dir = try ia.dupe(u8, "/other"),
+            }),
+        });
+    }
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqualStrings(
+        "/work",
+        state.viewer.ui.palette.current_nav_dir.items,
     );
 }
 

@@ -2,6 +2,7 @@ const animation = @import("animation.zig");
 const app_state = @import("../state.zig");
 const cache = @import("cache");
 const context = @import("context.zig");
+const events = @import("../events.zig");
 const intents = @import("intents");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -147,7 +148,7 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
                 switch (cur_mode) {
                     .directory_navigator => {
                         ui.palette.query.clearRetainingCapacity();
-                        try self.loadPaletteDirectory(q);
+                        try self.loadPaletteDirectory(q, null, false);
                         return;
                     },
                     .files, .actions, .prompt => {},
@@ -1823,6 +1824,11 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
     );
 }
 
+fn waitAndDrainPaletteScan(app_st: *AppState, io: std.Io) !void {
+    try app_st.workers.group.await(io);
+    _ = events.drainWorkerEvents(app_st);
+}
+
 test "executeIntent - set_palette directory_navigator clears previous query" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1848,6 +1854,7 @@ test "executeIntent - set_palette directory_navigator clears previous query" {
             .query = tmp_path,
         },
     }, 1000);
+    try waitAndDrainPaletteScan(&app_st, io);
 
     const open_mode = app_st.viewer.ui.palette.openMode() orelse {
         return error.TestUnexpectedResult;
@@ -1893,6 +1900,7 @@ test "executeIntent - set_palette directory_navigator with query from closed" {
             .query = tmp_path,
         },
     }, 1000);
+    try waitAndDrainPaletteScan(&app_st, io);
 
     const open_mode = app_st.viewer.ui.palette.openMode() orelse {
         return error.TestUnexpectedResult;
@@ -1971,6 +1979,7 @@ test "executeIntent - set_palette directory_navigator from closing" {
             .query = tmp_path,
         },
     }, 1000);
+    try waitAndDrainPaletteScan(&app_st, io);
 
     const open_mode = app_st.viewer.ui.palette.openMode() orelse {
         return error.TestUnexpectedResult;
@@ -2042,6 +2051,7 @@ test "executeIntent - set_palette directory_navigator from open actions" {
             .query = tmp_path,
         },
     }, 1000);
+    try waitAndDrainPaletteScan(&app_st, io);
 
     const open_mode = app_st.viewer.ui.palette.openMode() orelse {
         return error.TestUnexpectedResult;

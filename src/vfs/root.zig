@@ -1177,35 +1177,32 @@ pub fn scanDirectoryEntries(
     return current_dir_images;
 }
 
+/// Returns the lexical leaf basename of `path` after stripping trailing
+/// separators (`/` and `\`), without performing filesystem I/O.
+pub fn getStaticChildBasename(path: []const u8) []const u8 {
+    const trimmed = std.mem.trimEnd(u8, path, "/\\");
+    var i = trimmed.len;
+    while (i > 0) {
+        i -= 1;
+        if (trimmed[i] == '/' or trimmed[i] == '\\') {
+            return trimmed[i + 1 ..];
+        }
+    }
+    return trimmed;
+}
+
 /// Resolves and returns the leaf basename of `path`. If `path` ends in `.` or
 /// `..`, resolves the real filesystem path into `buf` to return the actual
 /// directory name.
 pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, path, "/\\");
-    const base = blk: {
-        var i = trimmed.len;
-        while (i > 0) {
-            i -= 1;
-            if (trimmed[i] == '/' or trimmed[i] == '\\') {
-                break :blk trimmed[i + 1 ..];
-            }
-        }
-        break :blk trimmed;
-    };
+    const base = getStaticChildBasename(trimmed);
     if (std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
         if (std.Io.Dir.openDir(std.Io.Dir.cwd(), io, trimmed, .{})) |dir| {
             var mut_dir = dir;
             defer mut_dir.close(io);
             if (mut_dir.realPath(io, buf)) |len| {
-                const real_trimmed = std.mem.trimEnd(u8, buf[0..len], "/\\");
-                var i = real_trimmed.len;
-                while (i > 0) {
-                    i -= 1;
-                    if (real_trimmed[i] == '/' or real_trimmed[i] == '\\') {
-                        return real_trimmed[i + 1 ..];
-                    }
-                }
-                return real_trimmed;
+                return getStaticChildBasename(buf[0..len]);
             } else |err| {
                 std.log.debug(
                     "realPath failed for '{s}': {}",
@@ -1217,6 +1214,29 @@ pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
         }
     }
     return base;
+}
+
+test "getStaticChildBasename" {
+    try std.testing.expectEqualStrings(
+        "home",
+        getStaticChildBasename("/home/"),
+    );
+    try std.testing.expectEqualStrings(
+        "bar",
+        getStaticChildBasename("foo/bar"),
+    );
+    try std.testing.expectEqualStrings(
+        "",
+        getStaticChildBasename("/"),
+    );
+    try std.testing.expectEqualStrings(
+        ".",
+        getStaticChildBasename("/tmp/./"),
+    );
+    try std.testing.expectEqualStrings(
+        "..",
+        getStaticChildBasename("foo/.."),
+    );
 }
 
 test "getChildBasename" {

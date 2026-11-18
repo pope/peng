@@ -1,5 +1,6 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
+const events = @import("../events.zig");
 const intents = @import("intents");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -131,7 +132,7 @@ fn handlePaletteDirectoryDrillDown(ctx: FrameContext) !void {
     const path_copy = try ctx.frame_allocator.dupe(u8, full_path);
     defer ctx.frame_allocator.free(path_copy);
     palette.query.clearRetainingCapacity();
-    try self.loadPaletteDirectory(path_copy);
+    try self.loadPaletteDirectory(path_copy, null, false);
 }
 
 /// Handles keyboard shortcut navigation keys (Escape, Up/Down, Left/Right,
@@ -206,7 +207,11 @@ fn handlePaletteKeys(
                             parent_buf,
                         )) |parent_dir| {
                             palette.query.clearRetainingCapacity();
-                            try self.loadPaletteDirectory(parent_dir);
+                            try self.loadPaletteDirectory(
+                                parent_dir,
+                                null,
+                                false,
+                            );
                         }
                     } else {
                         try handlePaletteDirectoryDrillDown(ctx);
@@ -229,7 +234,7 @@ fn handlePaletteKeys(
                         parent_buf,
                     )) |parent_dir| {
                         palette.query.clearRetainingCapacity();
-                        try self.loadPaletteDirectory(parent_dir);
+                        try self.loadPaletteDirectory(parent_dir, null, false);
                     }
                     return true;
                 },
@@ -275,7 +280,7 @@ fn handlePaletteKeys(
                         parent_buf,
                     )) |parent_dir| {
                         palette.query.clearRetainingCapacity();
-                        try self.loadPaletteDirectory(parent_dir);
+                        try self.loadPaletteDirectory(parent_dir, null, false);
                     }
                     return true;
                 },
@@ -400,6 +405,11 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     return palette_closed_this_frame;
 }
 
+fn waitAndDrainPaletteScan(app_st: *AppState, io: std.Io) !void {
+    try app_st.workers.group.await(io);
+    _ = events.drainWorkerEvents(app_st);
+}
+
 test "handlePaletteKeys directory_navigator key interactions" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -432,8 +442,9 @@ test "handlePaletteKeys directory_navigator key interactions" {
     defer frame_arena.deinit();
 
     // 1. Open directory navigator at tmp_dir
-    try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    try state.loadPaletteDirectory(tmp_dir, null, false);
+    try waitAndDrainPaletteScan(&state, io);
 
     // Locate index of sub_no_images
     var match_idx_no_img: usize = 0;
@@ -452,6 +463,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Test Right key on sub_no_images -> navigate into folder
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .right, .{});
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqual(
         @as(?ActivePaletteMode, .directory_navigator),
         state.viewer.ui.palette.openMode(),
@@ -467,6 +479,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
 
     // Test Left key -> step up to parent directory, remembering sub_no_images
     _ = try handlePaletteKeys(ctx, .left, .{});
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqual(
         @as(?ActivePaletteMode, .directory_navigator),
         state.viewer.ui.palette.openMode(),
@@ -483,6 +496,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Test Tab key on sub_no_images -> navigate into folder
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .tab, .{});
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqual(
         @as(?ActivePaletteMode, .directory_navigator),
         state.viewer.ui.palette.openMode(),
@@ -498,6 +512,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
 
     // Test Shift+Tab key -> step up to parent directory
     _ = try handlePaletteKeys(ctx, .tab, .{ .shift = true });
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqual(
         @as(?ActivePaletteMode, .directory_navigator),
         state.viewer.ui.palette.openMode(),
@@ -517,8 +532,9 @@ test "handlePaletteKeys directory_navigator key interactions" {
     }
 
     // Re-open palette
-    try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    try state.loadPaletteDirectory(tmp_dir, null, false);
+    try waitAndDrainPaletteScan(&state, io);
 
     // Test Shift+Enter key on current directory -> queues open_path intent
     // and initiates palette closing dissolve
@@ -555,8 +571,9 @@ test "handlePaletteKeys stepping up to parent directory preselects child dir" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.loadPaletteDirectory(work_dir);
     state.viewer.ui.palette.lifecycle = .{ .open = .directory_navigator };
+    try state.loadPaletteDirectory(work_dir, null, false);
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqualStrings(
         work_dir,
         state.viewer.ui.palette.current_nav_dir.items,
@@ -564,6 +581,7 @@ test "handlePaletteKeys stepping up to parent directory preselects child dir" {
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     _ = try handlePaletteKeys(ctx, .left, .{});
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqualStrings(
         parent_dir,
         state.viewer.ui.palette.current_nav_dir.items,
@@ -616,6 +634,7 @@ test "openPalette directory_navigator starting directory rules" {
     state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqual(
         @as(?ActivePaletteMode, .directory_navigator),
         state.viewer.ui.palette.openMode(),
@@ -629,6 +648,7 @@ test "openPalette directory_navigator starting directory rules" {
     // last_nav_dir
     state.viewer.navigation.current_index = null;
     try state.openPalette(.directory_navigator);
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqualStrings(
         tmp_dir,
         state.viewer.ui.palette.current_nav_dir.items,
@@ -684,6 +704,7 @@ test "openPalette directory_navigator steps up if 0 subdirectories" {
     // openPalette should see child_leaf has 0 subdirectories, so it steps up to
     // tmp_dir and pre-selects child_leaf
     try state.openPalette(.directory_navigator);
+    try waitAndDrainPaletteScan(&state, io);
     try std.testing.expectEqualStrings(
         tmp_dir,
         state.viewer.ui.palette.current_nav_dir.items,

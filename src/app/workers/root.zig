@@ -29,7 +29,6 @@ pub const WorkerManager = manager.WorkerManager;
 
 pub const spawnDecode = decode.spawnDecode;
 pub const spawnPaletteScan = palette_scan.spawnPaletteScan;
-pub const spawnPaletteScanForItems = palette_scan.spawnPaletteScanForItems;
 pub const spawnPreview = preview.spawnPreview;
 
 /// Spawns a background `pathScanWorker` task to recursively scan directories

@@ -13,12 +13,11 @@ const ActivePaletteMode = intents.ActivePaletteMode;
 const DirectoryEntry = vfs.DirectoryEntry;
 const EditParam = intents.EditParam;
 const EntryScanState = vfs.EntryScanState;
-const getChildBasename = vfs.getChildBasename;
 const getParentDirBuf = vfs.getParentDirBuf;
+const getStaticChildBasename = vfs.getStaticChildBasename;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const palette_action_items = intents.actions.palette_action_items;
-const scanDirectoryEntries = vfs.scanDirectoryEntries;
 const trimTrailingSeparators = vfs.trimTrailingSeparators;
 
 /// Maximum memory bytes retained across directory arena resets (64 KiB).
@@ -36,6 +35,15 @@ pub const PaletteLifecycle = union(enum) {
 pub const ScoredMatch = struct {
     index: usize,
     score: i32,
+};
+
+/// Normalized target directory, scan generation, and child preselection
+/// metadata returned by `PaletteState.beginDirectoryLoad`.
+pub const DirectoryLoadSpec = struct {
+    target_dir: []const u8,
+    generation: usize,
+    preselect_child: ?[]const u8,
+    needs_child_resolve: bool = false,
 };
 
 /// Main state model for command palette modals, directory navigation, and fuzzy
@@ -56,6 +64,7 @@ pub const PaletteState = struct {
     dir_arena: std.heap.ArenaAllocator,
     current_dir_image_count: usize = 0,
     dir_scan_generation: std.atomic.Value(usize) = .init(0),
+    active_dir_scans: std.atomic.Value(usize) = .init(0),
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
 
@@ -110,10 +119,14 @@ pub const PaletteState = struct {
         };
     }
 
-    /// Transitions an open palette into its closing dissolve state.
+    /// Transitions an open palette into its closing dissolve state and
+    /// invalidates any in-flight directory scan generation.
     pub inline fn beginClose(self: *PaletteState) void {
         switch (self.lifecycle) {
-            .open => |m| self.lifecycle = .{ .closing = m },
+            .open => |m| {
+                self.lifecycle = .{ .closing = m };
+                _ = self.dir_scan_generation.fetchAdd(1, .release);
+            },
             .closed, .closing => {},
         }
     }
@@ -457,16 +470,38 @@ pub const PaletteState = struct {
         try self.sortAndExtractMatches(allocator);
     }
 
-    /// Populates directory entries for `dir_path` into `PaletteState`, tracks
-    /// directory navigation history (including last-child directory tracking
-    /// for upward navigation), increments scan generation, and rebuilds fuzzy
-    /// directory matches.
-    pub fn loadDirectoryEntries(
+    fn assignSliceOverlapSafe(
+        list: *std.ArrayList(u8),
+        src: []const u8,
+    ) void {
+        if (src.len == 0) {
+            list.items.len = 0;
+            return;
+        }
+        const alloc_slice = list.allocatedSlice();
+        std.debug.assert(alloc_slice.len >= src.len);
+        const buf_start = @intFromPtr(alloc_slice.ptr);
+        const buf_end = buf_start + alloc_slice.len;
+        const src_start = @intFromPtr(src.ptr);
+        const src_end = src_start + src.len;
+        if (src_start < buf_end and buf_start < src_end) {
+            @memmove(alloc_slice[0..src.len], src);
+            list.items.len = src.len;
+        } else {
+            list.clearRetainingCapacity();
+            list.appendSliceAssumeCapacity(src);
+        }
+    }
+
+    /// Normalizes `dir_path`, updates navigation history and `last_child_dir`,
+    /// clears current directory items and fuzzy matches, increments
+    /// `dir_scan_generation`, and returns metadata to spawn a scan worker.
+    pub fn beginDirectoryLoad(
         self: *PaletteState,
         allocator: std.mem.Allocator,
-        io: std.Io,
         dir_path: []const u8,
-    ) !void {
+        preselect_child: ?[]const u8,
+    ) !DirectoryLoadSpec {
         const raw_target = trimTrailingSeparators(dir_path);
         const target = if (isCbzFile(raw_target))
             (std.Io.Dir.path.dirname(raw_target) orelse ".")
@@ -481,14 +516,18 @@ pub const PaletteState = struct {
         const temp_alloc = fb.allocator();
         const dir_path_copy = try temp_alloc.dupe(u8, target);
         defer temp_alloc.free(dir_path_copy);
+        const child_copy: ?[]const u8 = if (preselect_child) |child|
+            try temp_alloc.dupe(u8, child)
+        else
+            null;
+        defer if (child_copy) |c| temp_alloc.free(c);
 
-        var path_scratch_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-
+        var path_scratch: [std.Io.Dir.max_path_bytes]u8 = undefined;
         var navigated_up = false;
-        if (self.current_nav_dir.items.len > 0) {
+        if (child_copy == null and self.current_nav_dir.items.len > 0) {
             if (getParentDirBuf(
                 self.current_nav_dir.items,
-                &path_scratch_buf,
+                &path_scratch,
             )) |parent_dir| {
                 if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
                     navigated_up = true;
@@ -496,42 +535,142 @@ pub const PaletteState = struct {
             }
         }
 
-        if (navigated_up) {
-            const child_base = getChildBasename(
-                io,
-                self.current_nav_dir.items,
-                &path_scratch_buf,
-            );
-            self.last_child_dir.clearRetainingCapacity();
-            try self.last_child_dir.appendSlice(allocator, child_base);
+        var needs_child_resolve = false;
+        var next_child: ?[]const u8 = null;
+        if (child_copy) |child| {
+            if (!std.mem.eql(u8, self.last_child_dir.items, child)) {
+                next_child = child;
+            }
+        } else if (navigated_up) {
+            const base = getStaticChildBasename(self.current_nav_dir.items);
+            if (std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
+                if (self.last_child_dir.items.len > 0) {
+                    next_child = "";
+                }
+                needs_child_resolve = true;
+            } else {
+                next_child = base;
+            }
         } else if (self.current_nav_dir.items.len > 0) {
-            self.last_child_dir.clearRetainingCapacity();
+            if (self.last_child_dir.items.len > 0) {
+                next_child = "";
+            }
         }
 
-        self.current_nav_dir.clearRetainingCapacity();
-        try self.current_nav_dir.appendSlice(allocator, dir_path_copy);
+        if (next_child) |child| {
+            try self.last_child_dir.ensureTotalCapacity(allocator, child.len);
+        }
+        try self.current_nav_dir.ensureTotalCapacity(
+            allocator,
+            dir_path_copy.len,
+        );
+        try self.last_nav_dir.ensureTotalCapacity(
+            allocator,
+            dir_path_copy.len,
+        );
 
-        self.last_nav_dir.clearRetainingCapacity();
-        try self.last_nav_dir.appendSlice(allocator, dir_path_copy);
+        if (next_child) |child| {
+            assignSliceOverlapSafe(&self.last_child_dir, child);
+        }
 
-        _ = self.dir_scan_generation.fetchAdd(1, .release);
+        assignSliceOverlapSafe(&self.current_nav_dir, dir_path_copy);
+        assignSliceOverlapSafe(&self.last_nav_dir, dir_path_copy);
+
+        const generation = self.dir_scan_generation.fetchAdd(
+            1,
+            .release,
+        ) +% 1;
 
         self.clearDirItems();
-        self.current_dir_image_count = scanDirectoryEntries(
-            self.dir_arena.allocator(),
-            io,
-            dir_path_copy,
-            &self.dir_items,
-        ) catch |err| blk: {
-            std.log.warn(
-                "Failed to scan directory '{s}': {}",
-                .{ dir_path_copy, err },
-            );
-            self.clearDirItems();
-            break :blk 0;
-        };
-        try self.rebuildDirectoryMatches(allocator);
+        self.matches.clearRetainingCapacity();
+        self.scored_matches.clearRetainingCapacity();
+        self.current_dir_image_count = 0;
+        self.selected_idx = 0;
         self.selection_dirty = true;
+
+        return .{
+            .target_dir = self.current_nav_dir.items,
+            .generation = generation,
+            .preselect_child = if (self.last_child_dir.items.len > 0)
+                self.last_child_dir.items
+            else
+                null,
+            .needs_child_resolve = needs_child_resolve,
+        };
+    }
+
+    /// Transfers a worker-populated `dir_arena` and `dir_items` list into
+    /// `PaletteState` in O(1), updates directory state and optional
+    /// `preselect_child`, and rebuilds fuzzy directory matches.
+    ///
+    /// Reinitializes caller `dir_arena` to `.init(child_allocator)` and
+    /// `dir_items` to `.empty` so `BackgroundEvent.deinit` is an O(1) no-op.
+    pub fn applyLoadedDirectory(
+        self: *PaletteState,
+        allocator: std.mem.Allocator,
+        dir_path: []const u8,
+        dir_arena: *std.heap.ArenaAllocator,
+        dir_items: *std.ArrayList(DirectoryEntry),
+        image_count: usize,
+        preselect_child: ?[]const u8,
+    ) !void {
+        var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var fb: std.heap.BufferFirstAllocator = .init(
+            &stack_buf,
+            allocator,
+        );
+        const temp_alloc = fb.allocator();
+        const dir_path_copy = try temp_alloc.dupe(u8, dir_path);
+        defer temp_alloc.free(dir_path_copy);
+        const child_copy: ?[]const u8 = if (preselect_child) |child|
+            try temp_alloc.dupe(u8, child)
+        else
+            null;
+        defer if (child_copy) |c| temp_alloc.free(c);
+
+        if (!std.mem.eql(u8, self.current_nav_dir.items, dir_path_copy)) {
+            try self.current_nav_dir.ensureTotalCapacity(
+                allocator,
+                dir_path_copy.len,
+            );
+        }
+        if (!std.mem.eql(u8, self.last_nav_dir.items, dir_path_copy)) {
+            try self.last_nav_dir.ensureTotalCapacity(
+                allocator,
+                dir_path_copy.len,
+            );
+        }
+        if (child_copy) |child| {
+            if (!std.mem.eql(u8, self.last_child_dir.items, child)) {
+                try self.last_child_dir.ensureTotalCapacity(
+                    allocator,
+                    child.len,
+                );
+            }
+        }
+
+        self.dir_items = .empty;
+        self.dir_arena.deinit();
+        self.dir_arena = dir_arena.*;
+        self.dir_items = dir_items.*;
+        dir_arena.* = .init(self.dir_arena.child_allocator);
+        dir_items.* = .empty;
+
+        if (!std.mem.eql(u8, self.current_nav_dir.items, dir_path_copy)) {
+            assignSliceOverlapSafe(&self.current_nav_dir, dir_path_copy);
+        }
+        if (!std.mem.eql(u8, self.last_nav_dir.items, dir_path_copy)) {
+            assignSliceOverlapSafe(&self.last_nav_dir, dir_path_copy);
+        }
+        if (child_copy) |child| {
+            if (!std.mem.eql(u8, self.last_child_dir.items, child)) {
+                assignSliceOverlapSafe(&self.last_child_dir, child);
+            }
+        }
+
+        self.current_dir_image_count = image_count;
+        self.selection_dirty = true;
+        try self.rebuildDirectoryMatches(allocator);
     }
 
     /// Rebuilds fuzzy search matches based on current palette mode and query.
@@ -1358,11 +1497,10 @@ test "PaletteConfig - Contrast palette config displays 0.0 to 3.0 range" {
     );
 }
 
-test "loadDirectoryEntries preserves root path '/' on upward nav" {
+test "beginDirectoryLoad preserves root path '/' on upward nav" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
 
     var palette = try PaletteState.init(allocator);
     defer palette.deinit(allocator);
@@ -1370,11 +1508,242 @@ test "loadDirectoryEntries preserves root path '/' on upward nav" {
     palette.current_nav_dir.clearRetainingCapacity();
     try palette.current_nav_dir.appendSlice(allocator, "/home");
 
-    try palette.loadDirectoryEntries(allocator, io, "/");
+    const spec = try palette.beginDirectoryLoad(allocator, "/", null);
 
+    try std.testing.expectEqualStrings("/", spec.target_dir);
+    try std.testing.expectEqual(@as(usize, 1), spec.generation);
+    try std.testing.expectEqualStrings("home", spec.preselect_child.?);
+    try std.testing.expect(!spec.needs_child_resolve);
     try std.testing.expectEqualStrings("/", palette.current_nav_dir.items);
     try std.testing.expectEqualStrings("/", palette.last_nav_dir.items);
     try std.testing.expectEqualStrings("home", palette.last_child_dir.items);
+}
+
+test "beginDirectoryLoad normalizes paths, aliases, and signals dot resolve" {
+    const allocator = std.testing.allocator;
+
+    var palette = try PaletteState.init(allocator);
+    defer palette.deinit(allocator);
+
+    palette.lifecycle = .{ .open = .directory_navigator };
+    palette.current_dir_image_count = 9;
+    palette.selected_idx = 3;
+    try palette.matches.append(allocator, 0);
+
+    // .cbz target normalizes to dirname and preserves explicit preselect_child
+    const spec1 = try palette.beginDirectoryLoad(
+        allocator,
+        "/comics/vol1.cbz/",
+        "vol1.cbz",
+    );
+    try std.testing.expectEqualStrings("/comics", spec1.target_dir);
+    try std.testing.expectEqual(@as(usize, 1), spec1.generation);
+    try std.testing.expectEqualStrings("vol1.cbz", spec1.preselect_child.?);
+    try std.testing.expect(!spec1.needs_child_resolve);
+    try std.testing.expectEqual(@as(usize, 0), palette.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 0), palette.current_dir_image_count);
+    try std.testing.expectEqual(@as(usize, 0), palette.selected_idx);
+    try std.testing.expect(palette.selection_dirty);
+
+    // Reloading using an alias into palette.last_nav_dir.items succeeds
+    const spec2 = try palette.beginDirectoryLoad(
+        allocator,
+        palette.last_nav_dir.items,
+        null,
+    );
+    try std.testing.expectEqualStrings("/comics", spec2.target_dir);
+    try std.testing.expectEqual(@as(usize, 2), spec2.generation);
+    try std.testing.expect(spec2.preselect_child == null);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        palette.last_child_dir.items.len,
+    );
+
+    // Upward step from "." requests off-thread child basename resolution
+    palette.current_nav_dir.clearRetainingCapacity();
+    try palette.current_nav_dir.appendSlice(allocator, ".");
+    const spec3 = try palette.beginDirectoryLoad(allocator, "..", null);
+    try std.testing.expectEqualStrings("..", spec3.target_dir);
+    try std.testing.expectEqual(@as(usize, 3), spec3.generation);
+    try std.testing.expect(spec3.needs_child_resolve);
+    try std.testing.expect(spec3.preselect_child == null);
+
+    // beginClose increments dir_scan_generation to cancel active workers
+    palette.beginClose();
+    try std.testing.expectEqual(
+        @as(usize, 4),
+        palette.dir_scan_generation.load(.acquire),
+    );
+}
+
+test "applyLoadedDirectory transfers arena in O(1) and updates preselect" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "alpha_dir");
+    try tmp.dir.createDirPath(io, "beta_dir");
+    var f = try tmp.dir.createFile(io, "photo.png", .{});
+    f.close(io);
+
+    var path_buf: [128]u8 = undefined;
+    const tmp_dir = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+
+    var palette = try PaletteState.init(allocator);
+    defer palette.deinit(allocator);
+    palette.lifecycle = .{ .open = .directory_navigator };
+    _ = try palette.beginDirectoryLoad(allocator, tmp_dir, null);
+
+    var worker_arena = std.heap.ArenaAllocator.init(allocator);
+    defer worker_arena.deinit();
+    var worker_items: std.ArrayList(DirectoryEntry) = .empty;
+    const img_count = try vfs.scanDirectoryEntries(
+        worker_arena.allocator(),
+        io,
+        tmp_dir,
+        &worker_items,
+    );
+    const resolved_dir = try worker_arena.allocator().dupe(u8, tmp_dir);
+    const preselect = try worker_arena.allocator().dupe(u8, "beta_dir");
+
+    palette.selection_dirty = false;
+    try palette.applyLoadedDirectory(
+        allocator,
+        resolved_dir,
+        &worker_arena,
+        &worker_items,
+        img_count,
+        preselect,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), worker_arena.queryCapacity());
+    try std.testing.expectEqual(@as(usize, 0), worker_items.items.len);
+    try std.testing.expectEqual(@as(usize, 2), palette.dir_items.items.len);
+    try std.testing.expectEqual(@as(usize, 1), palette.current_dir_image_count);
+    try std.testing.expectEqual(@as(usize, 1), palette.selected_idx);
+    try std.testing.expectEqualStrings(
+        "beta_dir",
+        palette.last_child_dir.items,
+    );
+    try std.testing.expect(palette.selection_dirty);
+
+    // Passing null preselect_child preserves existing last_child_dir
+    var empty_arena = std.heap.ArenaAllocator.init(allocator);
+    defer empty_arena.deinit();
+    var empty_items: std.ArrayList(DirectoryEntry) = .empty;
+    const same_dir = try empty_arena.allocator().dupe(u8, tmp_dir);
+    try palette.applyLoadedDirectory(
+        allocator,
+        same_dir,
+        &empty_arena,
+        &empty_items,
+        0,
+        null,
+    );
+    try std.testing.expectEqualStrings(
+        "beta_dir",
+        palette.last_child_dir.items,
+    );
+}
+
+test "beginDirectoryLoad and applyLoadedDirectory handle subslice aliasing" {
+    const alloc = std.testing.allocator;
+    var p = try PaletteState.init(alloc);
+    defer p.deinit(alloc);
+
+    // 1. Direct assignSliceOverlapSafe coverage (prefix, interior, empty)
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "0123456789abcdef");
+    PaletteState.assignSliceOverlapSafe(&buf, buf.items[6..14]);
+    try std.testing.expectEqualStrings("6789abcd", buf.items);
+    PaletteState.assignSliceOverlapSafe(&buf, buf.items[0..4]);
+    try std.testing.expectEqualStrings("6789", buf.items);
+    PaletteState.assignSliceOverlapSafe(&buf, "");
+    try std.testing.expectEqual(@as(usize, 0), buf.items.len);
+
+    // 2. beginDirectoryLoad with subslice of last_child_dir and current_nav_dir
+    try p.current_nav_dir.appendSlice(alloc, "/root/parent/child");
+    try p.last_nav_dir.appendSlice(alloc, "/root/parent/child");
+    try p.last_child_dir.appendSlice(alloc, "child_dir");
+
+    const spec = try p.beginDirectoryLoad(
+        alloc,
+        p.current_nav_dir.items[0..12],
+        p.last_child_dir.items[0..5],
+    );
+    try std.testing.expectEqualStrings("/root/parent", spec.target_dir);
+    try std.testing.expectEqualStrings("child", spec.preselect_child.?);
+    try std.testing.expectEqualStrings("/root/parent", p.current_nav_dir.items);
+    try std.testing.expectEqualStrings("/root/parent", p.last_nav_dir.items);
+    try std.testing.expectEqualStrings("child", p.last_child_dir.items);
+
+    // 3. applyLoadedDirectory with subslices of current_nav_dir, last_nav_dir,
+    //    and last_child_dir (including non-prefix subslices)
+    const cases = [_]struct {
+        seed_cur: []const u8,
+        seed_last: []const u8,
+        seed_child: []const u8,
+        dir_src: enum { cur_prefix, cur_tail, last_prefix },
+    }{
+        .{
+            .seed_cur = "/root/parent/child",
+            .seed_last = "/other/path",
+            .seed_child = "child_dir",
+            .dir_src = .cur_prefix,
+        },
+        .{
+            .seed_cur = "/root/parent/child",
+            .seed_last = "/other/path",
+            .seed_child = "child_dir",
+            .dir_src = .cur_tail,
+        },
+        .{
+            .seed_cur = "/other/path",
+            .seed_last = "/root/parent/child",
+            .seed_child = "child_dir",
+            .dir_src = .last_prefix,
+        },
+    };
+
+    for (cases) |tc| {
+        p.current_nav_dir.clearRetainingCapacity();
+        try p.current_nav_dir.appendSlice(alloc, tc.seed_cur);
+        p.last_nav_dir.clearRetainingCapacity();
+        try p.last_nav_dir.appendSlice(alloc, tc.seed_last);
+        p.last_child_dir.clearRetainingCapacity();
+        try p.last_child_dir.appendSlice(alloc, tc.seed_child);
+
+        var w_arena = std.heap.ArenaAllocator.init(alloc);
+        defer w_arena.deinit();
+        var w_items: std.ArrayList(DirectoryEntry) = .empty;
+
+        const dir_arg: []const u8 = switch (tc.dir_src) {
+            .cur_prefix => p.current_nav_dir.items[0..12],
+            .cur_tail => p.current_nav_dir.items[6..18],
+            .last_prefix => p.last_nav_dir.items[0..12],
+        };
+        const exp_dir: []const u8 = switch (tc.dir_src) {
+            .cur_prefix, .last_prefix => "/root/parent",
+            .cur_tail => "parent/child",
+        };
+        try p.applyLoadedDirectory(
+            alloc,
+            dir_arg,
+            &w_arena,
+            &w_items,
+            0,
+            p.last_child_dir.items[0..5],
+        );
+        try std.testing.expectEqualStrings(exp_dir, p.current_nav_dir.items);
+        try std.testing.expectEqualStrings(exp_dir, p.last_nav_dir.items);
+        try std.testing.expectEqualStrings("child", p.last_child_dir.items);
+    }
 }
 
 test "PaletteState directory_navigator mode configuration and item matching" {
@@ -2236,7 +2605,8 @@ test "PaletteState OOM safety on init, rebuildFileMatches, and loadDir" {
         }
     }
 
-    // loadDirectoryEntries rollback under FailingAllocator
+    // beginDirectoryLoad and applyLoadedDirectory rollback under
+    // FailingAllocator
     const io = std.Io.Threaded.global_single_threaded.io();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2250,33 +2620,72 @@ test "PaletteState OOM safety on init, rebuildFileMatches, and loadDir" {
         .{tmp.sub_path},
     );
 
-    const prev_level = std.testing.log_level;
-    std.testing.log_level = .err;
-    defer std.testing.log_level = prev_level;
-
+    var long_buf: [161]u8 = @splat('a');
+    long_buf[0] = '/';
+    const long_dir = &long_buf;
     var dir_fail_idx: usize = 0;
-    while (dir_fail_idx < 48) : (dir_fail_idx += 1) {
+    while (dir_fail_idx < 32) : (dir_fail_idx += 1) {
         var fa = std.testing.FailingAllocator.init(base_alloc, .{
             .fail_index = dir_fail_idx,
         });
         const falloc = fa.allocator();
         var state = PaletteState.init(falloc) catch continue;
         defer state.deinit(falloc);
+
+        if (state.beginDirectoryLoad(falloc, long_dir, null)) |spec| {
+            try std.testing.expectEqualStrings(long_dir, spec.target_dir);
+            try std.testing.expectEqual(
+                @as(usize, 0),
+                state.dir_items.items.len,
+            );
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(
+                @as(usize, 0),
+                state.dir_items.items.len,
+            );
+        }
+    }
+
+    var apply_fail_idx: usize = 0;
+    while (apply_fail_idx < 48) : (apply_fail_idx += 1) {
+        var fa = std.testing.FailingAllocator.init(base_alloc, .{
+            .fail_index = apply_fail_idx,
+        });
+        const falloc = fa.allocator();
+        var state = PaletteState.init(falloc) catch continue;
+        defer state.deinit(falloc);
         state.query.appendSlice(falloc, "dir") catch continue;
 
-        if (state.loadDirectoryEntries(falloc, io, tmp_dir_path)) |_| {
-            if (state.dir_items.items.len == 0) {
-                try std.testing.expectEqual(
-                    @as(usize, 0),
-                    state.dir_items.capacity,
-                );
-                try std.testing.expect(
-                    state.dir_arena.queryCapacity() <=
-                        MAX_RETAINED_DIR_ARENA_BYTES,
-                );
-            } else if (state.dir_items.items.len == 2) {
-                break;
-            }
+        var worker_arena = std.heap.ArenaAllocator.init(base_alloc);
+        defer worker_arena.deinit();
+        var worker_items: std.ArrayList(DirectoryEntry) = .empty;
+        const img_count = try vfs.scanDirectoryEntries(
+            worker_arena.allocator(),
+            io,
+            tmp_dir_path,
+            &worker_items,
+        );
+        const resolved = try worker_arena.allocator().dupe(u8, tmp_dir_path);
+
+        if (state.applyLoadedDirectory(
+            falloc,
+            resolved,
+            &worker_arena,
+            &worker_items,
+            img_count,
+            null,
+        )) |_| {
+            try std.testing.expectEqual(
+                @as(usize, 0),
+                worker_arena.queryCapacity(),
+            );
+            try std.testing.expectEqual(
+                @as(usize, 2),
+                state.dir_items.items.len,
+            );
+            break;
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
         }
