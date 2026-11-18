@@ -93,8 +93,274 @@ pub const FrameSample = struct {
     }
 };
 
+/// Inactivity threshold in milliseconds before a continuous presentation burst
+/// settles back to idle.
+pub const PRESENT_IDLE_GAP_MS: u64 = 250;
+
+const PASSIVE_WAIT_SLEEP_THRESHOLD_MS: f64 = 2.0;
+
+/// Returns `true` when a passive wait woke immediately (`< 2 ms`) due to an
+/// actual OS or background worker event rather than a short timer timeout.
+pub inline fn isPassiveStepPaced(
+    wait_sleep_ms: f64,
+    wait_woke_on_event: bool,
+    post_wait_events: bool,
+) bool {
+    return (wait_woke_on_event or post_wait_events) and
+        wait_sleep_ms < PASSIVE_WAIT_SLEEP_THRESHOLD_MS;
+}
+
+/// Event-driven presentation cadence reported to the Stats for Nerds HUD.
+pub const PresentCadence = union(enum) {
+    idle: struct {
+        last_burst_fps: ?f64 = null,
+    },
+    active: struct {
+        mean_fps: f64,
+        low_fps: f64,
+    },
+};
+
+/// Tracks event-driven presentation intervals and transitions between idle,
+/// isolated primed frames, warm-up frames (absorbing cold VRR/compositor wake),
+/// settling bursts, and continuous streaming bursts.
+pub const PresentTracker = struct {
+    const FrameMark = struct {
+        last_ts: std.Io.Timestamp,
+        last_ms: u64,
+        last_burst_fps: ?f64 = null,
+    };
+
+    const Phase = union(enum) {
+        idle: struct {
+            last_burst_fps: ?f64 = null,
+        },
+        primed: FrameMark,
+        warming: FrameMark,
+        settling: FrameMark,
+        streaming: struct {
+            last_ts: std.Io.Timestamp,
+            last_ms: u64,
+            intervals_ms: RenderStats,
+        },
+    };
+
+    phase: Phase = .{ .idle = .{} },
+
+    fn burstMeanFps(intervals_ms: *const RenderStats) ?f64 {
+        if (intervals_ms.count == 0) return null;
+        const summary = intervals_ms.summarize();
+        if (summary.mean <= 0.0) return null;
+        return 1000.0 / summary.mean;
+    }
+
+    /// Records a completed frame presentation timestamp, tick time, and whether
+    /// this frame ran as a paced continuation without passive event-wait sleep.
+    pub fn record(
+        self: *PresentTracker,
+        present_ts: std.Io.Timestamp,
+        now_ms: u64,
+        is_paced_step: bool,
+    ) void {
+        if (!is_paced_step) {
+            switch (self.phase) {
+                .idle => |idle| {
+                    self.phase = .{
+                        .primed = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = idle.last_burst_fps,
+                        },
+                    };
+                },
+                .primed, .warming, .settling => |p| {
+                    self.phase = .{
+                        .primed = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = p.last_burst_fps,
+                        },
+                    };
+                },
+                .streaming => |*s| {
+                    self.phase = .{
+                        .settling = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = burstMeanFps(&s.intervals_ms),
+                        },
+                    };
+                },
+            }
+            return;
+        }
+
+        const max_gap_ms: f64 = @floatFromInt(PRESENT_IDLE_GAP_MS);
+        switch (self.phase) {
+            .idle => |idle| {
+                self.phase = .{
+                    .primed = .{
+                        .last_ts = present_ts,
+                        .last_ms = now_ms,
+                        .last_burst_fps = idle.last_burst_fps,
+                    },
+                };
+            },
+            .primed, .settling => |p| {
+                const dt_ms = durationToMs(p.last_ts.durationTo(present_ts));
+                const tick_gap = now_ms -| p.last_ms;
+                if (tick_gap < PRESENT_IDLE_GAP_MS and
+                    dt_ms > 0.0 and
+                    dt_ms < max_gap_ms)
+                {
+                    self.phase = .{
+                        .warming = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = p.last_burst_fps,
+                        },
+                    };
+                } else {
+                    self.phase = .{
+                        .primed = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = p.last_burst_fps,
+                        },
+                    };
+                }
+            },
+            .warming => |w| {
+                const dt_ms = durationToMs(w.last_ts.durationTo(present_ts));
+                const tick_gap = now_ms -| w.last_ms;
+                if (tick_gap < PRESENT_IDLE_GAP_MS and
+                    dt_ms > 0.0 and
+                    dt_ms < max_gap_ms)
+                {
+                    var intervals: RenderStats = .{};
+                    intervals.addSample(dt_ms);
+                    self.phase = .{
+                        .streaming = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .intervals_ms = intervals,
+                        },
+                    };
+                } else {
+                    self.phase = .{
+                        .primed = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = w.last_burst_fps,
+                        },
+                    };
+                }
+            },
+            .streaming => |*s| {
+                const dt_ms = durationToMs(s.last_ts.durationTo(present_ts));
+                const tick_gap = now_ms -| s.last_ms;
+                if (tick_gap < PRESENT_IDLE_GAP_MS and dt_ms < max_gap_ms) {
+                    if (dt_ms > 0.0) {
+                        s.intervals_ms.addSample(dt_ms);
+                    }
+                    s.last_ts = present_ts;
+                    s.last_ms = now_ms;
+                } else {
+                    self.phase = .{
+                        .settling = .{
+                            .last_ts = present_ts,
+                            .last_ms = now_ms,
+                            .last_burst_fps = burstMeanFps(&s.intervals_ms),
+                        },
+                    };
+                }
+            },
+        }
+    }
+
+    /// Settles non-paced frames or expired `PRESENT_IDLE_GAP_MS` bursts back
+    /// to `.idle` before building the UI snapshot.
+    pub fn settleBeforeRender(
+        self: *PresentTracker,
+        now_ms: u64,
+        is_paced_step: bool,
+    ) void {
+        switch (self.phase) {
+            .idle => {},
+            .settling => |s| {
+                self.phase = .{
+                    .idle = .{ .last_burst_fps = s.last_burst_fps },
+                };
+            },
+            .primed, .warming => |p| {
+                if (!is_paced_step or
+                    (now_ms -| p.last_ms) >= PRESENT_IDLE_GAP_MS)
+                {
+                    self.phase = .{
+                        .idle = .{ .last_burst_fps = p.last_burst_fps },
+                    };
+                }
+            },
+            .streaming => |*s| {
+                if (!is_paced_step or
+                    (now_ms -| s.last_ms) >= PRESENT_IDLE_GAP_MS)
+                {
+                    self.phase = .{
+                        .idle = .{
+                            .last_burst_fps = burstMeanFps(&s.intervals_ms),
+                        },
+                    };
+                }
+            },
+        }
+    }
+
+    /// Returns `0` when `.settling`, remaining milliseconds until a
+    /// `.streaming` burst expires, or `null` when `.idle`, `.primed`, or
+    /// `.warming`.
+    pub fn settleTimeoutMs(self: *const PresentTracker, now_ms: u64) ?u32 {
+        return switch (self.phase) {
+            .idle, .primed, .warming => null,
+            .settling => 0,
+            .streaming => |*s| @intCast(
+                PRESENT_IDLE_GAP_MS -| (now_ms -| s.last_ms),
+            ),
+        };
+    }
+
+    /// Returns the current `PresentCadence` summary for UI telemetry display.
+    pub fn snapshot(self: *const PresentTracker) PresentCadence {
+        return switch (self.phase) {
+            .idle => |idle| .{
+                .idle = .{ .last_burst_fps = idle.last_burst_fps },
+            },
+            .primed, .warming, .settling => |p| .{
+                .idle = .{ .last_burst_fps = p.last_burst_fps },
+            },
+            .streaming => |*s| blk: {
+                const summary = s.intervals_ms.summarize();
+                const mean_fps = if (summary.mean > 0.0)
+                    1000.0 / summary.mean
+                else
+                    0.0;
+                const low_fps = if (summary.max > 0.0)
+                    1000.0 / summary.max
+                else
+                    0.0;
+                break :blk .{
+                    .active = .{
+                        .mean_fps = mean_fps,
+                        .low_fps = low_fps,
+                    },
+                };
+            },
+        };
+    }
+};
+
 /// Rolling 60-frame timing summary across each active frame phase,
-/// swapchain wait, and total frame CPU duration for HUD display.
+/// swapchain wait, total frame CPU duration, and presentation cadence for HUD
+/// display.
 pub const FrameMetricsSnapshot = struct {
     ingest: StatsSummary = .{},
     intents: StatsSummary = .{},
@@ -103,10 +369,11 @@ pub const FrameMetricsSnapshot = struct {
     gpu_encode: StatsSummary = .{},
     swapchain_wait: StatsSummary = .{},
     total: StatsSummary = .{},
+    present: PresentCadence = .{ .idle = .{} },
 };
 
 /// Rolling 60-frame timing accumulators for each pipeline phase, swapchain
-/// wait, and total active frame CPU time.
+/// wait, total active frame CPU time, and presentation cadence.
 pub const FrameMetrics = struct {
     ingest: RenderStats = .{},
     intents: RenderStats = .{},
@@ -115,9 +382,17 @@ pub const FrameMetrics = struct {
     gpu_encode: RenderStats = .{},
     swapchain_wait: RenderStats = .{},
     total: RenderStats = .{},
+    present: PresentTracker = .{},
 
-    /// Records one completed visible frame's phase durations.
-    pub fn record(self: *FrameMetrics, sample: FrameSample) void {
+    /// Records one completed visible frame's phase durations and presentation
+    /// timestamp.
+    pub fn record(
+        self: *FrameMetrics,
+        sample: FrameSample,
+        present_ts: std.Io.Timestamp,
+        now_ms: u64,
+        is_paced_step: bool,
+    ) void {
         self.ingest.addSample(sample.ingest_ms);
         self.intents.addSample(sample.intents_ms);
         self.sync.addSample(sample.sync_ms);
@@ -125,6 +400,7 @@ pub const FrameMetrics = struct {
         self.gpu_encode.addSample(sample.gpu_encode_ms);
         self.swapchain_wait.addSample(sample.swapchain_wait_ms);
         self.total.addSample(sample.totalMs());
+        self.present.record(present_ts, now_ms, is_paced_step);
     }
 
     /// Resets all rolling phase timing accumulators back to empty state.
@@ -142,6 +418,7 @@ pub const FrameMetrics = struct {
             .gpu_encode = self.gpu_encode.summarize(),
             .swapchain_wait = self.swapchain_wait.summarize(),
             .total = self.total.summarize(),
+            .present = self.present.snapshot(),
         };
     }
 };
@@ -499,7 +776,10 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
     try std.testing.expectEqual(@as(f64, 8.0), s1.totalMs());
 
     var fm = FrameMetrics{};
-    fm.record(s1);
+    const ts0 = std.Io.Timestamp.fromNanoseconds(1_000_000_000);
+    const ts1 = std.Io.Timestamp.fromNanoseconds(1_016_000_000);
+    const ts2 = std.Io.Timestamp.fromNanoseconds(1_032_000_000);
+    fm.record(s1, ts0, 1000, false);
     fm.record(.{
         .ingest_ms = 1.5,
         .intents_ms = 3.0,
@@ -507,7 +787,15 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
         .ui_layout_ms = 2.5,
         .gpu_encode_ms = 5.0,
         .swapchain_wait_ms = 16.5,
-    });
+    }, ts1, 1016, true);
+    fm.record(.{
+        .ingest_ms = 1.0,
+        .intents_ms = 2.0,
+        .sync_ms = 3.0,
+        .ui_layout_ms = 2.0,
+        .gpu_encode_ms = 4.0,
+        .swapchain_wait_ms = 14.5,
+    }, ts2, 1032, true);
 
     const snap = fm.snapshot();
     try std.testing.expectEqual(@as(f64, 1.0), snap.ingest.mean);
@@ -525,6 +813,21 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
     try std.testing.expectEqual(@as(f64, 12.0), snap.total.mean);
     try std.testing.expect(snap.total.stdev > 0.0);
     try std.testing.expectEqual(@as(f64, 16.0), snap.total.max);
+    switch (snap.present) {
+        .idle => return error.TestExpectedActivePresentCadence,
+        .active => |fps| {
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 62.5),
+                fps.mean_fps,
+                0.01,
+            );
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 62.5),
+                fps.low_fps,
+                0.01,
+            );
+        },
+    }
 
     fm.reset();
     const cleared = fm.snapshot();
@@ -535,6 +838,292 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
     try std.testing.expectEqual(@as(f64, 0.0), cleared.total.mean);
     try std.testing.expectEqual(@as(f64, 0.0), cleared.total.stdev);
     try std.testing.expectEqual(@as(f64, 0.0), cleared.total.max);
+    switch (cleared.present) {
+        .active => return error.TestExpectedIdlePresentCadence,
+        .idle => |idle| {
+            try std.testing.expectEqual(
+                @as(?f64, null),
+                idle.last_burst_fps,
+            );
+        },
+    }
+}
+
+test "PresentTracker filters unpaced sleep gaps and cold-wake VRR transients" {
+    var tracker = PresentTracker{};
+    try std.testing.expectEqual(@as(?u32, null), tracker.settleTimeoutMs(1000));
+
+    // Frame 1 wakes from idle; 50ms human pause before Frame 2 starts drag;
+    // Frame 2 -> Frame 3 has a 50ms cold-wake VRR scanout; Frame 3 -> Frame 4
+    // hits steady-state 120Hz (8.333ms). Neither 50ms (20 FPS) gap may pollute
+    // intervals_ms!
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_000_000_000),
+        1000,
+        false,
+    );
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_050_000_000),
+        1050,
+        false,
+    );
+    try std.testing.expectEqual(@as(?u32, null), tracker.settleTimeoutMs(1050));
+    switch (tracker.snapshot()) {
+        .active => return error.TestExpectedIdle,
+        .idle => {},
+    }
+
+    // First paced step enters .warming (absorbs 50ms cold-wake scanout).
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_100_000_000),
+        1100,
+        true,
+    );
+    try std.testing.expectEqual(@as(?u32, null), tracker.settleTimeoutMs(1100));
+    switch (tracker.snapshot()) {
+        .active => return error.TestExpectedIdle,
+        .idle => {},
+    }
+
+    // Second paced step enters .streaming cleanly at 120.0 FPS (low 120.0 FPS).
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_108_333_333),
+        1108,
+        true,
+    );
+    switch (tracker.snapshot()) {
+        .idle => return error.TestExpectedActive,
+        .active => |fps| {
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 120.0),
+                fps.mean_fps,
+                0.1,
+            );
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 120.0),
+                fps.low_fps,
+                0.1,
+            );
+        },
+    }
+
+    // Zero or negative timestamp delta must not corrupt or start .streaming.
+    var invalid_tracker = PresentTracker{};
+    invalid_tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_000_000_000),
+        1000,
+        true,
+    );
+    invalid_tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_000_000_000),
+        1005,
+        true,
+    );
+    invalid_tracker.record(
+        std.Io.Timestamp.fromNanoseconds(999_000_000),
+        1010,
+        true,
+    );
+    switch (invalid_tracker.snapshot()) {
+        .active => return error.TestExpectedIdle,
+        .idle => {},
+    }
+}
+
+test "PresentTracker tracks 120Hz burst, timeout countdown, and 60-sample low" {
+    var tracker = PresentTracker{};
+    const step_ns: i96 = 8_333_333;
+    var cur_ns: i96 = 1_000_000_000;
+    var cur_ms: u64 = 1000;
+
+    tracker.record(std.Io.Timestamp.fromNanoseconds(cur_ns), cur_ms, false);
+    cur_ns += step_ns;
+    cur_ms += 8;
+    tracker.record(std.Io.Timestamp.fromNanoseconds(cur_ns), cur_ms, true);
+    cur_ns += step_ns;
+    cur_ms += 8;
+    tracker.record(std.Io.Timestamp.fromNanoseconds(cur_ns), cur_ms, true);
+
+    try std.testing.expectEqual(
+        @as(?u32, @intCast(PRESENT_IDLE_GAP_MS)),
+        tracker.settleTimeoutMs(cur_ms),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, 1),
+        tracker.settleTimeoutMs(cur_ms + PRESENT_IDLE_GAP_MS - 1),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, 0),
+        tracker.settleTimeoutMs(cur_ms + PRESENT_IDLE_GAP_MS),
+    );
+
+    // Zero-delta timestamp during streaming must not corrupt intervals_ms.
+    tracker.record(std.Io.Timestamp.fromNanoseconds(cur_ns), cur_ms + 1, true);
+    cur_ms += 1;
+    switch (tracker.snapshot()) {
+        .idle => return error.TestExpectedActive,
+        .active => |fps| {
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 120.0),
+                fps.mean_fps,
+                0.1,
+            );
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 120.0),
+                fps.low_fps,
+                0.1,
+            );
+        },
+    }
+
+    // Record a genuine mid-stream 20ms hitch (50.0 FPS) and verify eviction.
+    cur_ns += 20_000_000;
+    cur_ms += 20;
+    tracker.record(std.Io.Timestamp.fromNanoseconds(cur_ns), cur_ms, true);
+    switch (tracker.snapshot()) {
+        .idle => return error.TestExpectedActive,
+        .active => |fps| {
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 50.0),
+                fps.low_fps,
+                0.1,
+            );
+        },
+    }
+
+    for (0..60) |_| {
+        cur_ns += step_ns;
+        cur_ms += 8;
+        tracker.record(std.Io.Timestamp.fromNanoseconds(cur_ns), cur_ms, true);
+    }
+    switch (tracker.snapshot()) {
+        .idle => return error.TestExpectedActive,
+        .active => |fps| {
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 120.0),
+                fps.mean_fps,
+                0.1,
+            );
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 120.0),
+                fps.low_fps,
+                0.1,
+            );
+        },
+    }
+}
+
+test "PresentTracker settles expired or unpaced bursts without wakeup loop" {
+    var tracker = PresentTracker{};
+    const step_ns: i96 = 8_333_333;
+    var cur_ns: i96 = 2_000_000_000;
+    var cur_ms: u64 = 2000;
+
+    for (0..4) |i| {
+        if (i > 0) {
+            cur_ns += step_ns;
+            cur_ms += 8;
+        }
+        tracker.record(
+            std.Io.Timestamp.fromNanoseconds(cur_ns),
+            cur_ms,
+            i > 0,
+        );
+    }
+
+    // Paced pre-render before 250ms keeps .streaming active.
+    tracker.settleBeforeRender(cur_ms + PRESENT_IDLE_GAP_MS - 1, true);
+    switch (tracker.snapshot()) {
+        .idle => return error.TestExpectedActive,
+        .active => {},
+    }
+
+    // At +250ms (unpaced wakeup), settleBeforeRender transitions .streaming ->
+    // .idle with last_burst_fps preserved.
+    const settle_ms = cur_ms + PRESENT_IDLE_GAP_MS;
+    tracker.settleBeforeRender(settle_ms, false);
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        tracker.settleTimeoutMs(settle_ms),
+    );
+    switch (tracker.snapshot()) {
+        .active => return error.TestExpectedIdle,
+        .idle => |idle| {
+            const last = idle.last_burst_fps orelse
+                return error.TestExpectedLastBurstFps;
+            try std.testing.expectApproxEqAbs(@as(f64, 120.0), last, 0.1);
+        },
+    }
+
+    // Wakeup frame repaint records once -> .primed (still idle, null timeout).
+    const wakeup_ns = cur_ns + @as(i96, PRESENT_IDLE_GAP_MS) * 1_000_000;
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(wakeup_ns),
+        settle_ms,
+        false,
+    );
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        tracker.settleTimeoutMs(settle_ms),
+    );
+
+    // Unpaced mouse wiggle 40ms after a burst settles before render immediately
+    // without poisoning intervals_ms with a 40ms (25 FPS) gap.
+    var next_ns = wakeup_ns + step_ns;
+    var next_ms = settle_ms + 8;
+    tracker.record(std.Io.Timestamp.fromNanoseconds(next_ns), next_ms, true);
+    next_ns += step_ns;
+    next_ms += 8;
+    tracker.record(std.Io.Timestamp.fromNanoseconds(next_ns), next_ms, true);
+    try std.testing.expect(tracker.settleTimeoutMs(next_ms) != null);
+
+    tracker.settleBeforeRender(next_ms + 40, false);
+    switch (tracker.snapshot()) {
+        .active => return error.TestExpectedIdle,
+        .idle => |idle| {
+            const last = idle.last_burst_fps orelse
+                return error.TestExpectedLastBurstFps;
+            try std.testing.expectApproxEqAbs(@as(f64, 120.0), last, 0.1);
+        },
+    }
+}
+
+test "PresentTracker settles via .settling on dt_ms >= 250, tick_gap < 250" {
+    var tracker = PresentTracker{};
+    tracker.record(std.Io.Timestamp.fromNanoseconds(994_000_000), 992, false);
+    tracker.record(std.Io.Timestamp.fromNanoseconds(1_002_000_000), 1000, true);
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_010_333_333),
+        1008,
+        true,
+    );
+
+    // Frame wakes paced at tick_gap = 249 (< 250), then finishes at dt >= 250.
+    tracker.settleBeforeRender(1257, true);
+    switch (tracker.snapshot()) {
+        .idle => return error.TestExpectedActive,
+        .active => {},
+    }
+    const ts_late = std.Io.Timestamp.fromNanoseconds(1_260_333_333);
+    tracker.record(ts_late, 1257, true);
+    try std.testing.expectEqual(@as(?u32, 0), tracker.settleTimeoutMs(1260));
+    switch (tracker.snapshot()) {
+        .active => return error.TestExpectedIdle,
+        .idle => |idle| {
+            const last = idle.last_burst_fps orelse
+                return error.TestExpectedLastBurstFps;
+            try std.testing.expectApproxEqAbs(@as(f64, 120.0), last, 0.1);
+        },
+    }
+
+    // Immediate wakeup repaints HUD as .idle and transitions to .primed.
+    tracker.settleBeforeRender(1261, false);
+    tracker.record(
+        std.Io.Timestamp.fromNanoseconds(1_262_000_000),
+        1261,
+        false,
+    );
+    try std.testing.expectEqual(@as(?u32, null), tracker.settleTimeoutMs(1262));
 }
 
 test "nsToMs and durationToMs convert nanoseconds and clamp negatives" {
@@ -554,4 +1143,10 @@ test "nsToMs and durationToMs convert nanoseconds and clamp negatives" {
         @as(f64, 0.0),
         durationToMs(.{ .nanoseconds = -5_000_000 }),
     );
+
+    // 1ms passive timer timeout with zero events must NOT be classified paced.
+    try std.testing.expect(!isPassiveStepPaced(0.75, false, false));
+    try std.testing.expect(isPassiveStepPaced(0.05, true, false));
+    try std.testing.expect(isPassiveStepPaced(0.05, false, true));
+    try std.testing.expect(!isPassiveStepPaced(2.5, true, false));
 }

@@ -57,7 +57,10 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
     dragging, gliding (`pan_controller`/`zoom_controller`), unpopulated prefetch
     cache, or resized; and `getWaitTimeoutMs` for transient overlays,
     `ScrollCadence.settleTimeoutMs` (`35ms` `.single_step`, `200ms`
-    `.brisk_scroll`, `251ms` promotion), and `upload_staging.decayTimeoutMs`.
+    `.brisk_scroll`, `251ms` promotion), `upload_staging.decayTimeoutMs`, and
+    `PresentTracker.settleTimeoutMs` (`250ms` `PRESENT_IDLE_GAP_MS`, gated on
+    `stats_panel.visible` so `.streaming` -> `.settling`/`.idle` -> `.primed`
+    wakes once with zero infinite redraw loop).
 - **Modal Input Decoupling & Scroll Containers**:
   - Gate modal input on `isAcceptingInput()` (`PaletteLifecycle.open`), render
     `visibleMode()` and pass `captures_pointer = false` while `.closing`, and

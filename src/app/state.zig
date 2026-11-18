@@ -302,8 +302,8 @@ pub const AppState = struct {
     }
 
     /// Returns the remaining millisecond deadline for transient holding timers
-    /// (e.g. title auto-hide, snackbar, navigation settle, staging decay),
-    /// or null if none active.
+    /// (e.g. title auto-hide, snackbar, navigation settle, staging decay,
+    /// visible stats present settle), or null if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
         var min_rem: ?u64 = null;
         switch (self.viewer.ui.overlays.title_display) {
@@ -329,10 +329,54 @@ pub const AppState = struct {
             const rem: u64 = decay_rem;
             min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
         }
+        if (self.viewer.ui.overlays.stats_panel.visible) {
+            if (self.frame_metrics.present.settleTimeoutMs(now)) |fps_rem| {
+                const rem: u64 = fps_rem;
+                min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
+            }
+        }
         if (min_rem) |rem| {
             return @intCast(@min(rem, 2000));
         }
         return null;
+    }
+
+    /// Returns `true` when active visual animations, drags, controllers,
+    /// resize events, or pending worker/prefetch work require frame-paced
+    /// polling rather than passive idle waiting.
+    pub fn isFramePaced(
+        self: *const AppState,
+        cur_win_w: f32,
+        cur_win_h: f32,
+    ) bool {
+        const is_current_loading = self.isCurrentSlideLoading();
+        const has_gpu = self.gpu_device != null;
+        const has_unpopulated_cache = blk: {
+            if (self.viewer.navigation.getVisibleCount() <= 1) {
+                break :blk false;
+            }
+            const neighbors =
+                self.viewer.navigation.getVisibleNeighbors() orelse
+                break :blk false;
+            break :blk self.cache.hasUnreadyPrefetchSlots(
+                &self.viewer.navigation,
+                neighbors,
+                has_gpu,
+            );
+        };
+        const last_w = self.viewer.last_win_dims.w;
+        const last_h = self.viewer.last_win_dims.h;
+        const window_resized = last_w != 0 and
+            (last_w != cur_win_w or last_h != cur_win_h);
+        return self.isBusy() or
+            is_current_loading or
+            (self.pending_wait_load_streams.items.len > 0) or
+            (self.viewer.drag_state != .none) or
+            (self.viewer.viewport.isZoomed() and
+                self.viewer.pan_controller.isBusy()) or
+            self.viewer.zoom_controller.isBusy() or
+            has_unpopulated_cache or
+            window_resized;
     }
 
     /// Computes the event-loop wait strategy for `pollFrameInput`.
@@ -357,10 +401,9 @@ pub const AppState = struct {
             .hidden => return .wait_indefinite,
             .visible => {},
         }
-        const is_current_loading = self.isCurrentSlideLoading();
-        const has_gpu = self.gpu_device != null;
         if (self.display.isSuspended()) {
-            const has_pending_work = is_current_loading or
+            const has_gpu = self.gpu_device != null;
+            const has_pending_work = self.isCurrentSlideLoading() or
                 self.cache.hasPendingCpuUploads(has_gpu) or
                 self.viewer.navigation.isLoadingFiles() or
                 self.workers.isBusy() or
@@ -371,32 +414,7 @@ pub const AppState = struct {
             else
                 .wait_indefinite;
         }
-        const has_unpopulated_cache = blk: {
-            if (self.viewer.navigation.getVisibleCount() <= 1) {
-                break :blk false;
-            }
-            const neighbors =
-                self.viewer.navigation.getVisibleNeighbors() orelse
-                break :blk false;
-            break :blk self.cache.hasUnreadyPrefetchSlots(
-                &self.viewer.navigation,
-                neighbors,
-                has_gpu,
-            );
-        };
-        const last_w = self.viewer.last_win_dims.w;
-        const last_h = self.viewer.last_win_dims.h;
-        const window_resized = last_w != 0 and
-            (last_w != cur_win_w or last_h != cur_win_h);
-        const is_busy = self.isBusy() or
-            is_current_loading or
-            (self.pending_wait_load_streams.items.len > 0) or
-            (self.viewer.drag_state != .none) or
-            (self.viewer.viewport.isZoomed() and
-                self.viewer.pan_controller.isBusy()) or
-            self.viewer.zoom_controller.isBusy() or
-            has_unpopulated_cache or
-            window_resized;
+        const is_busy = self.isFramePaced(cur_win_w, cur_win_h);
         const wait_timeout_ms = if (!is_busy)
             self.getWaitTimeoutMs(now_ticks)
         else
@@ -1859,6 +1877,9 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
         },
     };
 
+    const ts0 = std.Io.Timestamp.fromNanoseconds(1_000_000_000);
+    const ts1 = std.Io.Timestamp.fromNanoseconds(1_016_000_000);
+    const ts2 = std.Io.Timestamp.fromNanoseconds(1_032_000_000);
     state.frame_metrics.record(.{
         .ingest_ms = 0.25,
         .intents_ms = 0.5,
@@ -1866,7 +1887,7 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
         .ui_layout_ms = 0.75,
         .gpu_encode_ms = 1.5,
         .swapchain_wait_ms = 13.0,
-    });
+    }, ts0, 1000, false);
     state.frame_metrics.record(.{
         .ingest_ms = 0.75,
         .intents_ms = 1.5,
@@ -1874,7 +1895,15 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
         .ui_layout_ms = 1.75,
         .gpu_encode_ms = 3.0,
         .swapchain_wait_ms = 15.0,
-    });
+    }, ts1, 1016, true);
+    state.frame_metrics.record(.{
+        .ingest_ms = 0.5,
+        .intents_ms = 1.0,
+        .sync_ms = 2.0,
+        .ui_layout_ms = 1.25,
+        .gpu_encode_ms = 2.25,
+        .swapchain_wait_ms = 14.0,
+    }, ts2, 1032, true);
 
     const promo_snap = state.snapshotStats();
     try std.testing.expect(promo_snap.active_image.decode != null);
@@ -1906,9 +1935,122 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
     );
     try std.testing.expectEqual(@as(f64, 7.0), promo_snap.frame.total.mean);
     try std.testing.expectEqual(@as(f64, 10.0), promo_snap.frame.total.max);
+    switch (promo_snap.frame.present) {
+        .idle => return error.TestExpectedActivePresentCadence,
+        .active => |fps| {
+            try std.testing.expectApproxEqAbs(
+                @as(f64, 62.5),
+                fps.mean_fps,
+                0.01,
+            );
+        },
+    }
 
     state.hideWindow();
     const hidden_snap = state.snapshotStats();
     try std.testing.expectEqual(@as(f64, 0.0), hidden_snap.frame.total.mean);
     try std.testing.expectEqual(@as(f64, 0.0), hidden_snap.frame.total.max);
+    switch (hidden_snap.frame.present) {
+        .active => return error.TestExpectedIdlePresentCadence,
+        .idle => |idle| {
+            try std.testing.expectEqual(
+                @as(?f64, null),
+                idle.last_burst_fps,
+            );
+        },
+    }
+}
+
+test "AppState.getWaitTimeoutMs gates present settle on stats_panel.visible" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Enter .streaming at 120Hz.
+    const sample = state_pkg.FrameSample{
+        .ingest_ms = 0.2,
+        .intents_ms = 0.2,
+        .sync_ms = 0.2,
+        .ui_layout_ms = 0.2,
+        .gpu_encode_ms = 0.2,
+    };
+    const ts0 = std.Io.Timestamp.fromNanoseconds(992_000_000);
+    const ts1 = std.Io.Timestamp.fromNanoseconds(1_000_000_000);
+    const ts2 = std.Io.Timestamp.fromNanoseconds(1_008_333_333);
+    state.frame_metrics.record(sample, ts0, 992, false);
+    state.frame_metrics.record(sample, ts1, 1000, true);
+    state.frame_metrics.record(sample, ts2, 1008, true);
+
+    // (a) stats_panel.visible == false: zero settle wakeups during .streaming.
+    try std.testing.expect(!state.viewer.ui.overlays.stats_panel.visible);
+    try std.testing.expectEqual(@as(?i32, null), state.getWaitTimeoutMs(1008));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1008),
+    );
+
+    // (b) stats_panel.visible == true: folds settleTimeoutMs(now) (<= 250ms).
+    state.viewer.ui.overlays.stats_panel.visible = true;
+    try std.testing.expectEqual(@as(?i32, 250), state.getWaitTimeoutMs(1008));
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 250 },
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1008),
+    );
+    try std.testing.expectEqual(@as(?i32, 58), state.getWaitTimeoutMs(1200));
+
+    // Shorter transient title timeout wins via @min when present is streaming.
+    state.viewer.ui.overlays.title_display = .{
+        .transient = .{ .timeout_ms = 1100 },
+    };
+    try std.testing.expectEqual(@as(?i32, 92), state.getWaitTimeoutMs(1008));
+    state.viewer.ui.overlays.title_display = .hidden;
+
+    // (c) After settleBeforeRender + one settled repaint record -> .primed ->
+    // wait_indefinite (zero infinite wakeup loop).
+    const settle_ms = 1008 + state_pkg.PRESENT_IDLE_GAP_MS;
+    state.frame_metrics.present.settleBeforeRender(settle_ms, false);
+    const ts_settle = std.Io.Timestamp.fromNanoseconds(
+        1_008_333_333 + @as(i96, state_pkg.PRESENT_IDLE_GAP_MS) * 1_000_000,
+    );
+    state.frame_metrics.record(sample, ts_settle, settle_ms, false);
+    try std.testing.expectEqual(
+        @as(?i32, null),
+        state.getWaitTimeoutMs(settle_ms),
+    );
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(
+            1024.0,
+            768.0,
+            false,
+            false,
+            settle_ms,
+        ),
+    );
+
+    // hideWindow resets both stats_panel.visible and frame_metrics.present.
+    state.frame_metrics.record(
+        sample,
+        std.Io.Timestamp.fromNanoseconds(
+            ts_settle.nanoseconds + 8_333_333,
+        ),
+        settle_ms + 8,
+        true,
+    );
+    state.frame_metrics.record(
+        sample,
+        std.Io.Timestamp.fromNanoseconds(
+            ts_settle.nanoseconds + 16_666_666,
+        ),
+        settle_ms + 16,
+        true,
+    );
+    state.hideWindow();
+    try std.testing.expect(!state.viewer.ui.overlays.stats_panel.visible);
+    try std.testing.expectEqual(
+        @as(?i32, null),
+        state.getWaitTimeoutMs(settle_ms + 16),
+    );
 }

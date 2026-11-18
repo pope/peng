@@ -906,6 +906,17 @@ pub fn renderStatsOverlay(
         "{d:.2} ms (max {d:.2})",
         .{ s.frame.swapchain_wait.mean, s.frame.swapchain_wait.max },
     );
+    const fps_str: []const u8 = switch (s.frame.present) {
+        .active => |fps| try frame_allocator.print(
+            "{d:.1} FPS (low {d:.1})",
+            .{ fps.mean_fps, fps.low_fps },
+        ),
+        .idle => |idle| if (idle.last_burst_fps) |last|
+            try frame_allocator.print("Idle (last {d:.1} FPS)", .{last})
+        else
+            "Idle (Event-Driven)",
+    };
+    try hud.addRow("Frame Rate", fps_str);
     try hud.addRow("Frame CPU", frame_total_str);
     try hud.addRow("  1. Ingest", frame_ingest_str);
     try hud.addRow("  2a. Intents", frame_intents_str);
@@ -1171,6 +1182,8 @@ test "renderStatsOverlay emits per-phase frame timings and max spikes" {
     try std.testing.expect(card.h > 0.0);
 
     const expected = [_][]const u8{
+        "Frame Rate",
+        "Idle (Event-Driven)",
         "Frame CPU",
         "4.00 ± 0.31 ms (max 6.75)",
         "  1. Ingest",
@@ -1213,4 +1226,105 @@ test "renderStatsOverlay emits per-phase frame timings and max spikes" {
         }
         try std.testing.expect(found);
     }
+}
+
+fn drawListHasText(draw_list: *const UiDrawList, needle: []const u8) bool {
+    for (draw_list.commands.items) |cmd| {
+        switch (cmd.payload) {
+            .text => |t| {
+                if (std.mem.eql(u8, t.text, needle)) return true;
+            },
+            .scissor_start,
+            .scissor_end,
+            .rectangle,
+            .border,
+            .text_runs,
+            .image,
+            .atlas_preview,
+            => {},
+        }
+    }
+    return false;
+}
+
+test "renderStatsOverlay formats active and settled PresentCadence" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const frame_alloc = arena.allocator();
+
+    var pal_state = try PaletteState.init(std.testing.allocator);
+    defer pal_state.deinit(std.testing.allocator);
+
+    var overlays = state.OverlayState{};
+    overlays.stats_panel.visible = true;
+    const dims = LogicalDims{ .w = 1024.0, .h = 768.0 };
+    const measure_data = MeasureTextUserData{};
+
+    // 1. Active streaming burst -> "120.0 FPS (low 118.4)"
+    var interaction_active: state.InteractionState = .{};
+    interaction_active.beginFrameLayout();
+    var list_active = UiDrawList{ .allocator = frame_alloc };
+    try renderStatsOverlay(
+        &interaction_active,
+        &list_active,
+        .{
+            .is_fullscreen = false,
+            .total_images = 0,
+            .current_index = null,
+            .is_loading_files = false,
+            .overlays = overlays,
+            .viewport = .{},
+            .palette = &pal_state,
+            .debug_show_thumb = false,
+            .stats = .{
+                .frame = .{
+                    .present = .{
+                        .active = .{ .mean_fps = 120.0, .low_fps = 118.4 },
+                    },
+                },
+            },
+        },
+        dims,
+        dims,
+        frame_alloc,
+        &measure_data,
+    );
+    try std.testing.expect(drawListHasText(&list_active, "Frame Rate"));
+    try std.testing.expect(
+        drawListHasText(&list_active, "120.0 FPS (low 118.4)"),
+    );
+
+    // 2. Settled idle with last burst FPS -> "Idle (last 120.0 FPS)"
+    var interaction_idle: state.InteractionState = .{};
+    interaction_idle.beginFrameLayout();
+    var list_idle = UiDrawList{ .allocator = frame_alloc };
+    try renderStatsOverlay(
+        &interaction_idle,
+        &list_idle,
+        .{
+            .is_fullscreen = false,
+            .total_images = 0,
+            .current_index = null,
+            .is_loading_files = false,
+            .overlays = overlays,
+            .viewport = .{},
+            .palette = &pal_state,
+            .debug_show_thumb = false,
+            .stats = .{
+                .frame = .{
+                    .present = .{
+                        .idle = .{ .last_burst_fps = 120.0 },
+                    },
+                },
+            },
+        },
+        dims,
+        dims,
+        frame_alloc,
+        &measure_data,
+    );
+    try std.testing.expect(drawListHasText(&list_idle, "Frame Rate"));
+    try std.testing.expect(
+        drawListHasText(&list_idle, "Idle (last 120.0 FPS)"),
+    );
 }

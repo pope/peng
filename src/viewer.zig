@@ -46,6 +46,7 @@ pub fn updateFrame(
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
+    const was_frame_paced = app_state.isFramePaced(cur_win_w, cur_win_h);
     const wait_strategy = app_state.computeFrameWaitStrategy(
         cur_win_w,
         cur_win_h,
@@ -71,6 +72,16 @@ pub fn updateFrame(
     if ((bg_events_processed or post_wait_events) and skip_wait) {
         app_state.viewer.animations.settleAll();
     }
+    const was_passive_wait = switch (wait_strategy) {
+        .poll => false,
+        .wait_indefinite => true,
+        .wait_timeout_ms => !was_frame_paced,
+    };
+    const is_paced_step = !was_passive_wait or state_pkg.isPassiveStepPaced(
+        input.wait_sleep_ms,
+        input.wait_woke_on_event,
+        post_wait_events,
+    );
 
     app_state.viewer.mouse_inside = input.mouse_inside;
     app_state.viewer.touch_tracker = input.touch_tracker;
@@ -133,6 +144,10 @@ pub fn updateFrame(
     }
 
     const phase3_start = std.Io.Clock.awake.now(app_state.io);
+    app_state.frame_metrics.present.settleBeforeRender(
+        input.now_ms,
+        is_paced_step,
+    );
     const ui_model = buildUiViewModel(app_state, resources, input.now_ms);
 
     // Draw / Render
@@ -188,7 +203,7 @@ pub fn updateFrame(
         .ui_layout_ms = ui_layout_ms,
         .gpu_encode_ms = pass_timings.gpu_encode_ms,
         .swapchain_wait_ms = pass_timings.swapchain_wait_ms,
-    });
+    }, phase3_end, input.now_ms, is_paced_step);
 }
 
 /// Constructs a read-only snapshot view-model consumed by the UI layout

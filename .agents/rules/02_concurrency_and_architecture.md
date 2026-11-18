@@ -57,13 +57,14 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `defer self.flushPendingSelectionStreams()`) $\\to$
     `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
     `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`).
-  - Complete visible rendered frames in `updateFrame` record `{ ingest_ms,
-    intents_ms, sync_ms, ui_layout_ms, gpu_encode_ms, swapchain_wait_ms }`
-    into `app_state.frame_metrics` (reset on `hideWindow` and `.hidden` without
-    recording partial/suspended frames). `ui.layout.renderFrame` stays
-    clock-free and returns `gpu.pass.PassTimings` (`total_pass_ms`,
-    `gpu_encode_ms`, `swapchain_wait_ms`), while `viewer.zig` measures Phase 3
-    with `std.Io.Clock.awake.now(io)` and derives
+  - Complete visible rendered frames in `updateFrame` call
+    `app_state.frame_metrics.present.settleBeforeRender(input.now_ms, is_paced_step)` right before `buildUiViewModel` and record `{ ingest_ms, intents_ms, sync_ms, ui_layout_ms, gpu_encode_ms, swapchain_wait_ms }`
+    alongside `(phase3_end, input.now_ms, is_paced_step)` into
+    `app_state.frame_metrics` (reset on `hideWindow` and `.hidden` without
+    recording partial/suspended frames).
+    `ui.layout.renderFrame` stays clock-free and returns `gpu.pass.PassTimings`
+    (`total_pass_ms`, `gpu_encode_ms`, `swapchain_wait_ms`), while `viewer.zig`
+    measures Phase 3 with `std.Io.Clock.awake.now(io)` and derives
     `ui_layout_ms = @max(0.0, phase3_total_ms - pass_timings.total_pass_ms)`;
     `executeFrame` brackets `waitAndAcquireSwapchainTexture` as
     `swapchain_wait_ms` (subtracted with `-|` and excluded from

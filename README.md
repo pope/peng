@@ -361,6 +361,61 @@ Phase 1: Ingest          Phase 2a: Reduce Intents      Phase 2b: Sync Hardware &
 
 ______________________________________________________________________
 
+## Performance Telemetry ("Stats for Nerds")
+
+Press `Shift+D` or `Shift+I` (or select **Toggle Stats for Nerds** in the Command
+Palette) to open the draggable performance overlay. Snapshots are gathered lazily
+in `buildUiViewModel` only while the panel is visible, adding zero overhead
+during normal viewing.
+
+### Cache & Worker Residency
+
+| Metric               | What It Represents                                                                                                          |
+| :------------------- | :-------------------------------------------------------------------------------------------------------------------------- |
+| **Source Mode**      | *(Camera RAW only)* Active RAW stream (`RAW Embedded Preview`).                                                             |
+| **RAW Sensor**       | *(Camera RAW only)* Native sensor pixel dimensions and megapixel count parsed from RAW headers.                             |
+| **Cache Hit**        | `Yes` if the current slide's texture was already resident in the VRAM LRU cache upon navigation; `No` if decoded on demand. |
+| **Memory Size**      | GPU VRAM footprint of the currently displayed texture (including mipmap pyramid levels when enabled).                       |
+| **Total Cache VRAM** | Aggregate GPU VRAM across all resident cached slots vs. the `1024 MB` cache budget, plus resident slot count.               |
+| **Decode Workers**   | Active background decode tasks vs. maximum worker concurrency (`active / max`).                                             |
+
+### Active Image Decode & GPU Upload
+
+| Metric                 | What It Represents                                                                                                                                                                              |
+| :--------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Disk Read Time**     | Background worker I/O time spent reading compressed file or Stage-2 range bytes from storage.                                                                                                   |
+| **CBZ Extract Time**   | *(`.cbz` pages only)* Worker time spent inflating the compressed page entry from the ZIP archive.                                                                                               |
+| **Compressed Size**    | *(`.cbz` pages only)* Compressed byte size of the page inside the `.cbz` archive.                                                                                                               |
+| **Decode Time**        | Worker CPU image decompression duration (`SDL_image` / format decoder).                                                                                                                         |
+| **Convert Time**       | Worker CPU pixel-format conversion duration (e.g., SIMD `RGB24`/`BGR24` $\\to$ `RGBA32` when GPU compute unpack is unavailable, or high-bit-depth conversion).                                  |
+| **GPU Upload**         | Main-thread staging transfer, optional `RGB24` compute unpack, and mipmap command recording duration for the active texture.                                                                    |
+| **GPU Upload Mode**    | `Direct VRAM` when uploaded at full resolution; `CPU Downscale Fallback` when source dimensions exceed hardware texture limits (`16384 px`).                                                    |
+| **CPU Fallback Time**  | *(Fallback mode only)* CPU box/bilinear pre-downscale duration prior to GPU upload.                                                                                                             |
+| **Thumb Load Time**    | Progressive thumbnail load + GPU upload duration, tagged by source (`Header` = initial 256 KB EXIF read, `Positional` = range read beyond 256 KB, `XDG Cache` = `$XDG_CACHE_HOME/thumbnails/`). |
+| **Thumb Hit Ratio**    | Session thumbnail lookup counts across tiers (`Hdr` / `Pos` / `Cache` / `Miss`).                                                                                                                |
+| **Thumb Cache Writes** | Completed (and currently `Queued`) background PNG writes to the Freedesktop shared thumbnail cache.                                                                                             |
+| **Mipmap Status**      | Whether trilinear mipmaps are enabled for the active texture and the allocated mip level count.                                                                                                 |
+| **Mipmap Gen**         | GPU mipmap-generation pass recording time during texture upload.                                                                                                                                |
+
+### Frame Pacing, Phase CPU & UI Geometry (Rolling 60-Frame Window)
+
+| Metric              | What It Represents                                                                                                                                                                                                                                                                     |
+| :------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Frame Rate**      | Event-driven presentation cadence: `mean FPS (low X)` across consecutive VSync-paced frames during motion/animations (filtering out passive event-wait sleep and cold-wake VRR scanout), settling cleanly to `Idle (Event-Driven)` or `Idle (last X FPS)` at `0%` CPU/GPU when static. |
+| **Frame CPU**       | Total **active** main-thread CPU time per rendered frame (`mean ± stdev` and 60-frame `max` spike), summing Phases `1` through `3b` while **excluding** idle OS event-wait sleep and VSync swapchain wait.                                                                             |
+| **1. Ingest**       | Active CPU spent draining the MPSC worker queue, computing wait strategy, pumping SDL input events (excluding blocking `waitEvent` / `waitEventTimeout` sleep), and syncing pointer hit state.                                                                                         |
+| **2a. Intents**     | Active CPU spent ticking animations, running IPC/palette/keyboard/pointer/slideshow systems, and reducing `AppIntent`s (`sysExecuteIntents`).                                                                                                                                          |
+| **2b. Sync/Upload** | Active CPU spent syncing window state, promoting staged CPU surfaces/thumbnails to GPU VRAM (`sysProcessAssetUploads`), and running cache eviction + prefetch dispatch (`sysUpdateCache`).                                                                                             |
+| **3a. UI Layout**   | Active CPU spent building the read-only `UiViewModel` snapshot and immediate-mode `RectCut` `UiDrawList` commands.                                                                                                                                                                     |
+| **3b. GPU Encode**  | Active CPU spent rasterizing/packing uncached glyphs into `TextCache`, batching UI vertices (`buildRenderPacket`), uploading per-frame vertex data, encoding Vulkan/Metal passes, and submitting `cmd_buf` (excluding swapchain wait).                                                 |
+| **Swapchain Wait**  | Blocking duration inside `waitAndAcquireSwapchainTexture` waiting on display VSync or GPU backpressure (excluded from `Frame CPU`).                                                                                                                                                    |
+| **UI Batches**      | Number of GPU draw batches emitted in the most recent frame.                                                                                                                                                                                                                           |
+| **UI Vertices**     | Total UI quad vertices uploaded in the most recent frame.                                                                                                                                                                                                                              |
+
+*(Tip: **Toggle Font Atlas Debug** in the Command Palette opens a companion HUD showing the `1024x1024` glyph shelf cursor, active font-size pages, and cached ASCII/Unicode glyph counts.)*
+
+______________________________________________________________________
+
 ## Running the Automated Test Suite
 
 We have a native visual regression testing suite that runs the app in headless mode, drives it over UDS IPC, and compares screenshot outputs against golden baselines using SDL3 surface diffs.

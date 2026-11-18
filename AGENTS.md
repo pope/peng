@@ -108,11 +108,12 @@ ______________________________________________________________________
   - `switch` on domain enums and tagged unions (`ActivePaletteMode`,
     `PaletteLifecycle`, `PaletteMode`, `PromptKind`, `EditParam`, `AppIntent`,
     `AdjustIntent`, `IpcCommand`, `ZoomPreset`, `TextureScaleMode`,
-    `DecodeMode`, `DecodePriority`, `ScrollCadence`, `PanTap`, `ZoomPhase`,
-    `ZoomDirection`, `ResidentAsset`, `InFlightState`, `ThumbnailState`,
-    `DisplayState`, `DragState`, `MediaEntry`, `BackgroundEvent`) **MUST** list
-    every variant without `else =>` wildcards or `if (x == .a)` chains. Use
-    `intents.getSpec` for `EditParam` metadata.
+    `DecodeMode`, `DecodePriority`, `ScrollCadence`, `PresentCadence`,
+    `PanTap`, `ZoomPhase`, `ZoomDirection`, `ResidentAsset`, `InFlightState`,
+    `ThumbnailState`, `DisplayState`, `DragState`, `MediaEntry`,
+    `BackgroundEvent`) **MUST** list every variant without `else =>`
+    wildcards or `if (x == .a)` chains. Use `intents.getSpec` for `EditParam`
+    metadata.
   - Default declarations to private; delete dead/write-only zombie symbols and
     trivial getter tests.
 - **Mandatory `///` Docs & Strict `<= 80`-Column Ceiling**:

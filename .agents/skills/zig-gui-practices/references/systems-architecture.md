@@ -30,8 +30,7 @@ ______________________________________________________________________
     `delta_time_ms: f64`, and `now_ms: u64`.
   - **Two-Clock Rule (Option A Clock Boundary)**: Simulation, animation,
     timeout, and cadence paths consume explicit `now_ms: u64` threaded from
-    `updateFrame` (`pre_wait_ms` from `sdl.timer.getTicksNs() /
-    std.time.ns_per_ms` before `pollFrameInput`, `input.now_ms` post-wait ->
+    `updateFrame` (`pre_wait_ms` from `sdl.timer.getTicksNs() / std.time.ns_per_ms` before `pollFrameInput`, `input.now_ms` post-wait ->
     `ctx.now_ms` -> `buildUiViewModel`), never calling `sdl.timer.getTicks()`
     ad-hoc. For sub-millisecond stopwatches, never add `@import("sdl")` or
     proxy clock wrappers just to read a clock: use
@@ -139,13 +138,14 @@ ______________________________________________________________________
   - The frame lifecycle enforces a strict barrier between simulation/systems
     (Phase 2) and rendering (Phase 3), keeping `app` and `ui` decoupled with
     zero `@import("ui")` in `src/app/`.
-  - Prior to calling `ui.layout.renderFrame`, `src/viewer.zig`
-    (`buildUiViewModel`) constructs `UiViewModel` (`src/ui/view_model.zig`)
+  - Prior to calling `ui.layout.renderFrame`, `src/viewer.zig` calls
+    `app_state.frame_metrics.present.settleBeforeRender(input.now_ms, is_paced_step)` and then (`buildUiViewModel`) constructs `UiViewModel`
+    (`src/ui/view_model.zig`)
     from `*const AppState` and `*const RenderResources` as a fully immutable
     snapshot struct containing const pointers and value types (gathering
-    `snapshotStats()` — including rolling 60-frame `FrameMetrics` summaries —
-    and `snapshotMetrics()` for batch/vertex/atlas counts only when HUD panels
-    are visible).
+    `snapshotStats()` — including rolling 60-frame `FrameMetrics` summaries and
+    `PresentCadence` — and `snapshotMetrics()` for batch/vertex/atlas counts
+    only when HUD panels are visible).
   - Phase 3 keeps `ui` clock-free and splits CPU layout from GPU submission:
     `ui.layout.renderFrame` returns `gpu.pass.PassTimings` (`total_pass_ms`,
     `gpu_encode_ms`, `swapchain_wait_ms`) directly from `gpu.pass.executeFrame`.
@@ -156,8 +156,8 @@ ______________________________________________________________________
     (across `buildUiViewModel`, `renderFrame`, and non-screenshot
     `handleScreenshotPostRender`) and derives
     `ui_layout_ms = @max(0.0, phase3_total_ms - pass_timings.total_pass_ms)`
-    before recording all phases into `frame_metrics` (`FrameSample.totalMs()`
-    excludes `swapchain_wait_ms`).
+    before recording all phases plus `(phase3_end, input.now_ms, is_paced_step)` into `frame_metrics` (`FrameSample.totalMs()` excludes
+    `swapchain_wait_ms`).
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 

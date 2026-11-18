@@ -15,7 +15,12 @@
 - **Staging Buffer Warm Cap & Idle Decay (`UploadStagingBuffer`)**:
   - `UploadStagingBuffer` (`src/gpu/upload.zig`) keeps retained transfer and compute storage buffers up to `WARM_STAGING_CAP_BYTES = 32 * 1024 * 1024` (32 MiB) warm across frames.
   - At the end of `sysProcessAssetUploads` (`src/app/systems/asset_upload.zig`), `maybeShrinkIdle(gpu_dev, ctx.now_ms, is_idle)` evaluates idle state (`!did_upload and !cache.hasPendingCpuUploads(true) and active_decode_threads == 0`): active frames refresh `oversized_since_ms = now_ms`, and after `IDLE_DECAY_MS = 5000` (5s) idle, any buffer exceeding 32 MiB is released back to `.unallocated` while buffers `<= 32 MiB` stay warm.
-  - `AppState.getWaitTimeoutMs` (`src/app/state.zig`) incorporates `upload_staging.decayTimeoutMs(now)` so idle viewers wake deterministically at the 5s decay boundary before returning to 0% CPU `.wait_indefinite` sleep once `oversized_since_ms == null`.
+  - `AppState.getWaitTimeoutMs` (`src/app/state.zig`) incorporates
+    `upload_staging.decayTimeoutMs(now)` and (when `stats_panel.visible` is
+    `true`) `frame_metrics.present.settleTimeoutMs(now)` so idle viewers wake
+    deterministically at settle/decay boundaries before returning to 0% CPU
+    `.wait_indefinite` sleep once `oversized_since_ms == null` and `present`
+    lands in `.primed`.
 
 ______________________________________________________________________
 
@@ -174,8 +179,18 @@ ______________________________________________________________________
   (`mean`, `stdev`, `max`) for `FrameMetrics` (`ingest`, `intents`, `sync`,
   `ui_layout`, `gpu_encode`, `swapchain_wait`, and `total` — excluding blocking
   OS event-wait sleep via `FrameInput.poll_cpu_ms` and VSync/GPU backpressure
-  `swapchain_wait_ms`), while `UiRenderMetrics` reports `last_ui_batch_count`,
-  `last_ui_vertex_count`, and font-atlas usage.
+  `swapchain_wait_ms`), while `PresentTracker` (5-state `Phase`: `.idle`,
+  `.primed`, `.warming`, `.settling`, `.streaming` with
+  `PRESENT_IDLE_GAP_MS = 250` and `is_paced_step` gating against passive
+  event-wait sleep + VRR cold-wake transients) derives event-driven
+  `PresentCadence` (`mean_fps = 1000.0 / summary.mean`,
+  `low_fps = 1000.0 / summary.max` across its 60-interval `RenderStats` window,
+  settling once via `settleBeforeRender` before `buildUiViewModel`—or via
+  `.settling` with `settleTimeoutMs == 0` when a `.streaming` burst expires in
+  `record`—and `stats_panel.visible`-gated `settleTimeoutMs` in
+  `AppState.getWaitTimeoutMs` without waking idle viewers), and
+  `UiRenderMetrics` reports
+  `last_ui_batch_count`, `last_ui_vertex_count`, and font-atlas usage.
 - **Demand-First Settled Preload & GPU Upload Gating**:
   Once navigation settles ($\\ge 35\\text{ms}$ for `.single_step` or
   $\\ge 200\\text{ms}$ for `.brisk_scroll`) AND the active slot is
