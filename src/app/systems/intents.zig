@@ -210,9 +210,16 @@ fn executeIntent(
         },
         .zoom_by => |zb| {
             if (zb.ratio <= 0.0 or !std.math.isFinite(zb.ratio)) return;
+            if (zb.snap_zoom) |snap| {
+                if (snap <= 0.0 or !std.math.isFinite(snap)) return;
+            }
             vp.mode = .manual;
             const old_zoom = vp.zoom_factor.get();
-            const new_zoom = state.clampZoomFactor(old_zoom * zb.ratio).get();
+            const target = zb.snap_zoom orelse @max(
+                state.ZoomFactor.MIN,
+                old_zoom * zb.ratio,
+            );
+            const new_zoom = state.clampZoomFactor(target).get();
             vp.zoom_factor = state.ZoomFactor.init(new_zoom);
             const ratio = new_zoom / old_zoom;
             vp.pan_x *= ratio;
@@ -2098,7 +2105,12 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
 
     // 1. Navigating from slide 0 to slide 1 must update rotation_angle
     // BEFORE getBaseScale()
-    app_st.viewer.pan_controller.smooth_tap_remaining = 15.0;
+    app_st.viewer.pan_controller.tap = .{
+        .active = .{
+            .direction = .{ .right = true },
+            .remaining_px = 15.0,
+        },
+    };
     try executeIntent(&app_st, .next_image, 1000);
     try std.testing.expectEqual(
         @as(?usize, 1),
@@ -2114,8 +2126,8 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
         0.0001,
     );
     try std.testing.expectEqual(
-        @as(f32, 0.0),
-        app_st.viewer.pan_controller.smooth_tap_remaining,
+        state.PanTap.idle,
+        app_st.viewer.pan_controller.tap,
     );
 
     // 2. Rotating CW (90 -> 180) while in fit mode must resync zoom_factor
@@ -2485,4 +2497,36 @@ test "executeIntent - start_slideshow opens prompt and clamps interval" {
         @as(f32, 7.5),
         app_st.viewer.navigation.slideshow.active.interval_s,
     );
+}
+
+test "executeIntent - zoom_by clamps f32 underflow to ZoomFactor.MIN" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state.ZoomFactor.init(
+        state.ZoomFactor.MIN,
+    );
+    app_st.viewer.viewport.pan_x = 10.0;
+    app_st.viewer.viewport.pan_y = -10.0;
+
+    try executeIntent(
+        &app_st,
+        .{
+            .zoom_by = .{
+                .ratio = 1e-43,
+                .snap_zoom = null,
+            },
+        },
+        1000,
+    );
+
+    try std.testing.expectEqual(
+        state.ZoomFactor.MIN,
+        app_st.viewer.viewport.zoom_factor.get(),
+    );
+    try std.testing.expectEqual(@as(f32, 10.0), app_st.viewer.viewport.pan_x);
+    try std.testing.expectEqual(@as(f32, -10.0), app_st.viewer.viewport.pan_y);
 }

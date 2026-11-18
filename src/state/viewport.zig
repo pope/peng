@@ -313,20 +313,31 @@ pub const DirectionFlags = packed struct(u4) {
     }
 };
 
+/// Active discrete pan tap state tracking direction and remaining pixels.
+pub const ActivePanTap = struct {
+    direction: DirectionFlags,
+    remaining_px: f32,
+};
+
+/// Mutually exclusive smooth pan tap lifecycle state.
+pub const PanTap = union(enum) {
+    idle,
+    active: ActivePanTap,
+};
+
 /// Dynamic state tracking for smooth directional keyboard viewport panning.
 pub const PanController = struct {
-    smooth_tap_remaining: f32 = 0.0,
-    tap_direction: DirectionFlags = .{},
+    tap: PanTap = .idle,
     prev_held: DirectionFlags = .{},
     suppressed_held: DirectionFlags = .{},
 
     pub const TAP_DISTANCE: f32 = 30.0;
+    pub const TAP_EPSILON_PX: f32 = 0.001;
     pub const GLIDE_SPEED: f32 = 800.0; // Physical pixels per second
 
     /// Clears active smooth tap and held motion state.
     pub inline fn clearMotion(self: *PanController) void {
-        self.smooth_tap_remaining = 0.0;
-        self.tap_direction = .{};
+        self.tap = .idle;
         self.prev_held = .{};
     }
 
@@ -342,17 +353,19 @@ pub const PanController = struct {
         self.suppressed_held = held;
     }
 
-    /// Returns true if pan controller has remaining tap motion or held input.
+    /// Returns true if pan controller has an active tap or held input.
     pub inline fn isBusy(self: PanController) bool {
-        return self.smooth_tap_remaining > 0.001 or self.prev_held.hasAny();
+        return switch (self.tap) {
+            .idle => false,
+            .active => true,
+        } or self.prev_held.hasAny();
     }
 };
 
 /// Cardinal zoom direction for keyboard zooming.
-pub const ZoomDirection = enum(u2) {
-    none = 0,
-    in = 1,
-    out = 2,
+pub const ZoomDirection = enum(u1) {
+    in = 0,
+    out = 1,
 };
 
 /// 2-bit zoom direction bitmask for zero-allocation state tracking.
@@ -381,27 +394,37 @@ pub const ZoomFlags = packed struct(u2) {
     }
 };
 
+/// Active discrete zoom tap state operating in log-zoom space.
+pub const ActiveZoomTap = struct {
+    direction: ZoomDirection,
+    remaining_log: f32,
+    detent_target: ?f32 = null,
+};
+
+/// Mutually exclusive motion phase for keyboard zooming.
+pub const ZoomPhase = union(enum) {
+    idle,
+    tap: ActiveZoomTap,
+    detent_pause_ms: f32,
+};
+
 /// Dynamic state tracking for smooth keyboard viewport zooming.
 pub const ZoomController = struct {
-    smooth_tap_remaining: f32 = 0.0,
-    tap_direction: ZoomDirection = .none,
+    phase: ZoomPhase = .idle,
     prev_held: ZoomFlags = .{},
     suppressed_held: ZoomFlags = .{},
-    detent_pause_ms: f32 = 0.0,
-    detent_target: ?f32 = null,
 
     pub const TAP_STEP_RATIO: f32 = 1.25;
     pub const TAP_LOG_DISTANCE: f32 = 0.22314355; // @log(1.25)
+    pub const TAP_EPSILON_LOG: f32 = 0.0001;
     pub const GLIDE_RATE: f32 = 1.5; // Log units/sec (~4.5x per sec on hold)
     pub const DETENT_PAUSE_MS: f32 = 150.0; // 150ms detent pause at 1.0x
+    pub const DETENT_EPSILON_MS: f32 = 0.001;
 
     /// Clears active zoom tap, held motion, and detent pause state.
     pub inline fn clearMotion(self: *ZoomController) void {
-        self.smooth_tap_remaining = 0.0;
-        self.tap_direction = .none;
+        self.phase = .idle;
         self.prev_held = .{};
-        self.detent_pause_ms = 0.0;
-        self.detent_target = null;
     }
 
     /// Resets all zoom controller state including suppressed directions.
@@ -416,34 +439,44 @@ pub const ZoomController = struct {
         self.suppressed_held = held;
     }
 
-    /// Returns true if zoom controller is animating a tap or holding zoom.
+    /// Returns true if zoom controller has an active phase or held input.
     pub inline fn isBusy(self: ZoomController) bool {
-        return self.smooth_tap_remaining > 0.0001 or
-            self.prev_held.hasAny() or
-            self.detent_pause_ms > 0.001;
+        return switch (self.phase) {
+            .idle => false,
+            .tap, .detent_pause_ms => true,
+        } or self.prev_held.hasAny();
     }
 
-    /// Triggers a discrete zoom step in the specified direction.
+    /// Triggers a discrete zoom step in the specified direction, latching a
+    /// `1.0` detent snap target if the projected endpoint crosses `1.0`.
     pub fn triggerTap(
         self: *ZoomController,
         dir: ZoomDirection,
         current_zoom: f32,
     ) void {
-        if (dir == .none) return;
-        self.tap_direction = dir;
-        self.smooth_tap_remaining = TAP_LOG_DISTANCE;
-        const factor: f32 = if (dir == .in)
-            TAP_STEP_RATIO
-        else
-            (1.0 / TAP_STEP_RATIO);
+        const factor: f32 = switch (dir) {
+            .in => TAP_STEP_RATIO,
+            .out => 1.0 / TAP_STEP_RATIO,
+        };
+        const proj_eps: f32 = 1e-5;
         const projected = current_zoom * factor;
-        if (dir == .in and current_zoom < 1.0 and projected >= 1.0) {
-            self.detent_target = 1.0;
-        } else if (dir == .out and current_zoom > 1.0 and projected <= 1.0) {
-            self.detent_target = 1.0;
-        } else {
-            self.detent_target = null;
-        }
+        const detent_target: ?f32 = switch (dir) {
+            .in => if (current_zoom < 1.0 and projected >= 1.0 - proj_eps)
+                1.0
+            else
+                null,
+            .out => if (current_zoom > 1.0 and projected <= 1.0 + proj_eps)
+                1.0
+            else
+                null,
+        };
+        self.phase = .{
+            .tap = .{
+                .direction = dir,
+                .remaining_log = TAP_LOG_DISTANCE,
+                .detent_target = detent_target,
+            },
+        };
     }
 };
 
@@ -657,4 +690,94 @@ test "ImageEdits and ParamSpec exhaustive verification" {
     try std.testing.expect(edits.hasEdits());
     edits.reset();
     try std.testing.expect(!edits.hasEdits());
+}
+
+test "PanController lifecycle: isBusy, clearMotion, suppress, and reset" {
+    var ctrl: PanController = .{};
+    try std.testing.expect(!ctrl.isBusy());
+
+    ctrl.tap = .{
+        .active = .{
+            .direction = .{ .right = true },
+            .remaining_px = 12.0,
+        },
+    };
+    try std.testing.expect(ctrl.isBusy());
+
+    ctrl.clearMotion();
+    try std.testing.expectEqual(PanTap.idle, ctrl.tap);
+    try std.testing.expect(!ctrl.isBusy());
+
+    ctrl.prev_held = .{ .up = true };
+    try std.testing.expect(ctrl.isBusy());
+
+    ctrl.suppress(.{
+        .up = true,
+        .left = true,
+    });
+    try std.testing.expect(!ctrl.isBusy());
+    try std.testing.expect(ctrl.suppressed_held.up);
+    try std.testing.expect(ctrl.suppressed_held.left);
+
+    ctrl.reset();
+    try std.testing.expect(!ctrl.isBusy());
+    try std.testing.expect(!ctrl.suppressed_held.hasAny());
+}
+
+test "ZoomController triggerTap detent latching, isBusy, and suppress" {
+    var ctrl: ZoomController = .{};
+    try std.testing.expect(!ctrl.isBusy());
+
+    // 0.85 * 1.25 = 1.0625 >= 1.0 -> latches 1.0 detent
+    ctrl.triggerTap(.in, 0.85);
+    try std.testing.expect(ctrl.isBusy());
+    switch (ctrl.phase) {
+        .tap => |t| {
+            try std.testing.expectEqual(ZoomDirection.in, t.direction);
+            try std.testing.expectEqual(@as(?f32, 1.0), t.detent_target);
+        },
+        .idle, .detent_pause_ms => return error.TestUnexpectedResult,
+    }
+
+    // 0.5 * 1.25 = 0.625 < 1.0 -> no detent
+    ctrl.triggerTap(.in, 0.5);
+    switch (ctrl.phase) {
+        .tap => |t| {
+            try std.testing.expectEqual(@as(?f32, null), t.detent_target);
+        },
+        .idle, .detent_pause_ms => return error.TestUnexpectedResult,
+    }
+
+    // 1.1 / 1.25 = 0.88 <= 1.0 -> latches 1.0 detent
+    ctrl.triggerTap(.out, 1.1);
+    switch (ctrl.phase) {
+        .tap => |t| {
+            try std.testing.expectEqual(ZoomDirection.out, t.direction);
+            try std.testing.expectEqual(@as(?f32, 1.0), t.detent_target);
+        },
+        .idle, .detent_pause_ms => return error.TestUnexpectedResult,
+    }
+
+    // 2.0 / 1.25 = 1.6 > 1.0 -> no detent
+    ctrl.triggerTap(.out, 2.0);
+    switch (ctrl.phase) {
+        .tap => |t| {
+            try std.testing.expectEqual(@as(?f32, null), t.detent_target);
+        },
+        .idle, .detent_pause_ms => return error.TestUnexpectedResult,
+    }
+
+    // Detent pause reports busy until suppressed or cleared
+    ctrl.phase = .{ .detent_pause_ms = 50.0 };
+    try std.testing.expect(ctrl.isBusy());
+    ctrl.suppress(.{ .in = true });
+    try std.testing.expectEqual(ZoomPhase.idle, ctrl.phase);
+    try std.testing.expect(!ctrl.isBusy());
+    try std.testing.expect(ctrl.suppressed_held.in);
+
+    ctrl.prev_held = .{ .out = true };
+    try std.testing.expect(ctrl.isBusy());
+    ctrl.reset();
+    try std.testing.expect(!ctrl.isBusy());
+    try std.testing.expect(!ctrl.suppressed_held.hasAny());
 }

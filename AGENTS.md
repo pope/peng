@@ -105,20 +105,21 @@ ______________________________________________________________________
   - `switch` on domain enums and tagged unions (`ActivePaletteMode`,
     `PaletteLifecycle`, `PaletteMode`, `PromptKind`, `EditParam`, `AppIntent`,
     `AdjustIntent`, `IpcCommand`, `ZoomPreset`, `TextureScaleMode`,
-    `DecodeMode`, `DecodePriority`, `ScrollCadence`, `ResidentAsset`,
-    `InFlightState`, `ThumbnailState`, `DisplayState`, `DragState`,
-    `MediaEntry`, `BackgroundEvent`) **MUST** list every variant without
-    `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec` for
-    `EditParam` metadata.
+    `DecodeMode`, `DecodePriority`, `ScrollCadence`, `PanTap`, `ZoomPhase`,
+    `ZoomDirection`, `ResidentAsset`, `InFlightState`, `ThumbnailState`,
+    `DisplayState`, `DragState`, `MediaEntry`, `BackgroundEvent`) **MUST** list
+    every variant without `else =>` wildcards or `if (x == .a)` chains. Use
+    `intents.getSpec` for `EditParam` metadata.
   - Default declarations to private; delete dead/write-only zombie symbols and
     trivial getter tests.
 - **Mandatory `///` Docs & Strict `<= 80`-Column Ceiling**:
   - Place an adjacent `///` doc comment immediately above every `pub const <Name> = struct`
     and `pub fn <name>` (documenting purpose, units/spaces, and ownership).
   - Keep all Zig, GLSL, and C lines `<= 80` columns (except unbreakable comment
-    URLs) and indentation `<= ~6` levels. On multi-line nested struct/union
-    literals, put trailing commas on outer levels so closing braces never stack
-    (`} } },` is forbidden):
+    URLs) and indentation `<= ~6` levels. Put trailing commas inside
+    nested/multi-field struct and union literals so `zig fmt` expands each
+    level onto its own lines and closing braces never stack (`} } },` is
+    forbidden):
     ```bash
     git diff | awk '/^\+[^+]/ { if (length($0) > 81) print length($0)-1, $0 }'
     ```

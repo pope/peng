@@ -93,8 +93,11 @@ Defined in `src/state/viewport.zig` (ticked via `src/input/key_mapping.zig`) for
   simultaneous `in` + `out`.
 - **Glide, Tap Floor & Suppression**:
   - `PanController`: `GLIDE_SPEED = 800.0` px/s held, `TAP_DISTANCE = 30.0` px
-    minimum tap travel.
-  - `ZoomController`: logarithmic `GLIDE_RATE = 1.5` ($\\text{zoom} \\cdot e^{\\pm 1.5 dt}$),
-    `TAP_STEP_RATIO = 1.25` minimum tap step, and `DETENT_PAUSE_MS = 150.0` pause
-    on crossing $1.0\\times$ (`detent_target`).
+    minimum tap travel (`TAP_EPSILON_PX = 0.001`), tracked via
+    `tap: PanTap` (`.idle` | `.active: ActivePanTap`).
+  - `ZoomController`: `GLIDE_RATE = 1.5`
+    ($\\text{zoom} \\cdot e^{\\pm 1.5 dt}$), `TAP_STEP_RATIO = 1.25`,
+    `ZoomDirection = enum(u1)` (`.in`, `.out`), and `DETENT_PAUSE_MS = 150.0`
+    pause on crossing $1.0\\times$, tracked via `phase: ZoomPhase`
+    (`.idle` | `.tap: ActiveZoomTap` | `.detent_pause_ms`).
   - Call `suppress(held)` on modal open or UI chrome clicks until keys release.

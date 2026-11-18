@@ -151,7 +151,10 @@ pub fn sysProcessInput(
         );
         if (zoom_opt) |z_delta| {
             try state.pushIntent(.{
-                .zoom_by = .{ .ratio = z_delta.ratio },
+                .zoom_by = .{
+                    .ratio = z_delta.ratio,
+                    .snap_zoom = z_delta.snap_zoom,
+                },
             });
         }
     } else {
@@ -860,8 +863,18 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
 
     app_st.viewer.viewport.mode = .manual;
     app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
-    app_st.viewer.pan_controller.smooth_tap_remaining = 15.0;
-    app_st.viewer.zoom_controller.smooth_tap_remaining = 0.1;
+    app_st.viewer.pan_controller.tap = .{
+        .active = .{
+            .direction = .{ .right = true },
+            .remaining_px = 15.0,
+        },
+    };
+    app_st.viewer.zoom_controller.phase = .{
+        .tap = .{
+            .direction = .in,
+            .remaining_log = 0.1,
+        },
+    };
 
     const keys_empty: std.ArrayList(Key) = .empty;
 
@@ -1050,4 +1063,183 @@ test "sysProcessInput maps QuitRequest and suppresses same-frame input" {
         AppIntent.quit,
         app_st.pending_intents.items[0],
     );
+}
+
+test "sysProcessInput released zoom tap with suppressed key settles idle" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const intents_sys = @import("intents.zig");
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.ZoomFactor.init(1.1);
+    app_st.viewer.zoom_controller.suppress(.{ .in = true });
+
+    var tap_keys: std.ArrayList(Key) = .empty;
+    defer tap_keys.deinit(allocator);
+    try tap_keys.append(allocator, .char_o);
+
+    const empty_keys: std.ArrayList(Key) = .empty;
+    var base_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_request = .none,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = tap_keys,
+        .key_modifiers = .{},
+        .zoom_held = .{ .in = true },
+        .text_input = null,
+        .dropped_path = null,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = base_input,
+        .delta_time_ms = 16.0,
+    }, false);
+    try intents_sys.sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = base_input,
+        .delta_time_ms = 16.0,
+    });
+
+    base_input.keys_pressed = empty_keys;
+    var frame: usize = 0;
+    while (app_st.viewer.zoom_controller.isBusy() and
+        frame < 40) : (frame += 1)
+    {
+        switch (app_st.viewer.zoom_controller.phase) {
+            .idle, .tap => {},
+            .detent_pause_ms => return error.TestUnexpectedResult,
+        }
+        try sysProcessInput(.{
+            .state = &app_st,
+            .frame_allocator = allocator,
+            .input = base_input,
+            .delta_time_ms = 16.0,
+        }, false);
+        try intents_sys.sysExecuteIntents(.{
+            .state = &app_st,
+            .frame_allocator = allocator,
+            .input = base_input,
+            .delta_time_ms = 16.0,
+        });
+    }
+
+    try std.testing.expectEqual(
+        state_pkg.ZoomPhase.idle,
+        app_st.viewer.zoom_controller.phase,
+    );
+    try std.testing.expect(!app_st.viewer.zoom_controller.isBusy());
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        app_st.viewer.viewport.zoom_factor.get(),
+    );
+    try std.testing.expectEqual(
+        input_pkg.EventWaitStrategy.wait_indefinite,
+        app_st.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+}
+
+test "sysProcessInput continuous zoom hold crossing 1.0 pauses once" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const intents_sys = @import("intents.zig");
+    const empty_keys: std.ArrayList(Key) = .empty;
+    const cases = [_]struct {
+        start_zoom: f32,
+        held: state_pkg.ZoomFlags,
+        expect_above_one: bool,
+    }{
+        .{
+            .start_zoom = 0.95,
+            .held = .{ .in = true },
+            .expect_above_one = true,
+        },
+        .{
+            .start_zoom = 1.05,
+            .held = .{ .out = true },
+            .expect_above_one = false,
+        },
+    };
+
+    for (cases) |c| {
+        app_st.viewer.viewport.mode = .manual;
+        app_st.viewer.viewport.zoom_factor = state_pkg.ZoomFactor.init(
+            c.start_zoom,
+        );
+        app_st.viewer.zoom_controller.reset();
+
+        const frame_input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_request = .none,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = empty_keys,
+            .key_modifiers = .{},
+            .zoom_held = c.held,
+            .text_input = null,
+            .dropped_path = null,
+            .delta_time_ms = 16.0,
+        };
+        const ctx = FrameContext{
+            .state = &app_st,
+            .frame_allocator = allocator,
+            .input = frame_input,
+            .delta_time_ms = 16.0,
+        };
+
+        var detent_entries: usize = 0;
+        var in_detent = false;
+        var frame: usize = 0;
+        while (frame < 40) : (frame += 1) {
+            try sysProcessInput(ctx, false);
+            try intents_sys.sysExecuteIntents(ctx);
+            const now_detent = switch (app_st.viewer.zoom_controller.phase) {
+                .detent_pause_ms => true,
+                .idle, .tap => false,
+            };
+            if (now_detent and !in_detent) {
+                detent_entries += 1;
+                try std.testing.expectEqual(
+                    @as(f32, 1.0),
+                    app_st.viewer.viewport.zoom_factor.get(),
+                );
+            }
+            in_detent = now_detent;
+        }
+
+        try std.testing.expectEqual(@as(usize, 1), detent_entries);
+        const end_zoom = app_st.viewer.viewport.zoom_factor.get();
+        if (c.expect_above_one) {
+            try std.testing.expect(end_zoom > 1.0);
+        } else {
+            try std.testing.expect(end_zoom < 1.0);
+        }
+    }
 }

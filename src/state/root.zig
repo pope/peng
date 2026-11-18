@@ -18,8 +18,10 @@ pub const viewport = @import("viewport.zig");
 
 pub const ActiveImageTransition = types.ActiveImageTransition;
 pub const ActiveNotification = snackbar.ActiveNotification;
+pub const ActivePanTap = viewport.ActivePanTap;
 pub const ActiveScreenshot = types.ActiveScreenshot;
 pub const ActiveSnackbar = types.ActiveSnackbar;
+pub const ActiveZoomTap = viewport.ActiveZoomTap;
 pub const AnimationChannel = animation_state.AnimationChannel;
 pub const AnimationState = animation_state.AnimationState;
 pub const ArchiveTelemetry = telemetry.ArchiveTelemetry;
@@ -69,6 +71,7 @@ pub const OverlayState = types.OverlayState;
 pub const PaletteClickHit = interaction.PaletteClickHit;
 pub const PaletteItemHit = interaction.PaletteItemHit;
 pub const PanController = viewport.PanController;
+pub const PanTap = viewport.PanTap;
 pub const QuitRequest = types.QuitRequest;
 pub const RenderStats = telemetry.RenderStats;
 pub const ScrollCadence = types.ScrollCadence;
@@ -98,6 +101,7 @@ pub const ZoomDirection = viewport.ZoomDirection;
 pub const ZoomFactor = viewport.ZoomFactor;
 pub const ZoomFlags = viewport.ZoomFlags;
 pub const ZoomMode = viewport.ZoomMode;
+pub const ZoomPhase = viewport.ZoomPhase;
 
 test {
     _ = animation_state;
