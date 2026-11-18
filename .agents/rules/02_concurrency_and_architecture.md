@@ -31,9 +31,9 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
   `src/input/polling.zig`)**:
   - `drainWorkerEvents(app_state, now_ms)` runs before
     `computeFrameWaitStrategy`/`pollFrameInput` (using `pre_wait_ms` derived
-    from `pre_ingest_start_ns / std.time.ns_per_ms` and forcing `.poll` if
-    events were drained) and again right after `pollFrameInput` (using
-    `input.now_ms`).
+    from `sdl.timer.getTicksNs() / std.time.ns_per_ms` so it shares the SDL
+    tick epoch with `input.now_ms`, and forcing `.poll` if events were drained)
+    and again right after `pollFrameInput` (using `input.now_ms`).
   - `pollFrameInput` samples `poll_end_ns = sdl.timer.getTicksNs()` once to
     derive `FrameInput.now_ms` (`poll_end_ns / std.time.ns_per_ms`) and
     records active CPU time into `FrameInput.poll_cpu_ms`, subtracting ONLY
@@ -58,8 +58,16 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
     `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`).
   - Complete visible rendered frames in `updateFrame` record `{ ingest_ms,
-    intents_ms, sync_ms, render_ms }` into `app_state.frame_metrics` (reset on
-    `hideWindow` and `.hidden` without recording partial/suspended frames).
+    intents_ms, sync_ms, ui_layout_ms, gpu_encode_ms, swapchain_wait_ms }`
+    into `app_state.frame_metrics` (reset on `hideWindow` and `.hidden` without
+    recording partial/suspended frames). `ui.layout.renderFrame` stays
+    clock-free and returns `gpu.pass.PassTimings` (`total_pass_ms`,
+    `gpu_encode_ms`, `swapchain_wait_ms`), while `viewer.zig` measures Phase 3
+    with `std.Io.Clock.awake.now(io)` and derives
+    `ui_layout_ms = @max(0.0, phase3_total_ms - pass_timings.total_pass_ms)`;
+    `executeFrame` brackets `waitAndAcquireSwapchainTexture` as
+    `swapchain_wait_ms` (subtracted with `-|` and excluded from
+    `FrameSample.totalMs()`).
 - **Two-Clock Rule (Simulation `now_ms` vs. Profiling Stopwatches)**:
   - **Simulation / Logical Time (`now_ms: u64`)**: All animation, timeout,
     cadence, and `inflight` timestamp logic threads explicit `now_ms: u64`
@@ -69,11 +77,15 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `sdl.timer.getTicks()` ad-hoc inside `src/app/`, `src/input/`,
     `src/state/`, `src/ui/`, or `src/viewer.zig` (only `src/main.zig` calls
     it at one-time CLI cold-start and loop `last_time` init).
-  - **Sub-Millisecond Profiling Stopwatches**: Use
-    `std.Io.Clock.awake.now(io)` in `io`-bearing pure/worker packages
-    (`probe`, `vfs`, `app/workers`), and `sdl.timer.getTicksNs()` in
-    `io`-free SDL/GPU/frame-loop packages (`input`, `cache`, `gpu`,
-    `app/systems/root.zig`, `viewer.zig`).
+  - **Sub-Millisecond Profiling Stopwatches (Option A Clock Boundary)**: Never
+    add `@import("sdl")` or proxy clock wrappers just to read a clock.
+    Use `std.Io.Clock.awake.now(io)` with `state.durationToMs` wherever
+    `io: std.Io` is in scope (`probe`, `vfs`, `app/workers`,
+    `app/systems/root.zig`, `viewer.zig`), use `sdl.timer.getTicksNs()` with
+    `state.nsToMs` only in `io`-free SDL hardware leaves (`input/polling.zig`,
+    `gpu/pass.zig`, `gpu/upload.zig`, `cache/root.zig`), and keep `src/ui/` and
+    `src/state/` pure and clock-free (`pre_wait_ms` in `viewer.zig` stays on
+    the SDL tick epoch for `input.now_ms` parity).
 - **Intentional Pipeline Trade-Offs (Preserve)**:
   1. *Pre-Render Sync*: `sysProcessAssetUploads` and `sysUpdateCache` run right
      *before* `renderFrame` (not after) so staged CPU surfaces/thumbnails promote

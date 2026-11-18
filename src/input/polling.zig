@@ -423,7 +423,7 @@ fn computeActivePollCpuMs(
     wait_sleep_ns: u64,
 ) f64 {
     const active_ns = (end_ns -| start_ns) -| wait_sleep_ns;
-    return @as(f64, @floatFromInt(active_ns)) / 1_000_000.0;
+    return state.nsToMs(active_ns);
 }
 
 /// Pumps pending SDL events, queries cursor and keyboard states, and

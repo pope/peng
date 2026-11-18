@@ -58,6 +58,28 @@ pub const FrameTargetOptions = struct {
     capture_filename: ?[:0]const u8 = null,
 };
 
+/// Total pass duration, active GPU command encoding duration, and swapchain
+/// acquisition wait duration returned by `executeFrame` in milliseconds.
+pub const PassTimings = struct {
+    total_pass_ms: f64 = 0.0,
+    gpu_encode_ms: f64 = 0.0,
+    swapchain_wait_ms: f64 = 0.0,
+};
+
+fn buildPassTimings(
+    pass_start_ns: u64,
+    pass_end_ns: u64,
+    swapchain_wait_ns: u64,
+) PassTimings {
+    const total_pass_ns = pass_end_ns -| pass_start_ns;
+    const gpu_encode_ns = total_pass_ns -| swapchain_wait_ns;
+    return .{
+        .total_pass_ms = state.nsToMs(total_pass_ns),
+        .gpu_encode_ms = state.nsToMs(gpu_encode_ns),
+        .swapchain_wait_ms = state.nsToMs(swapchain_wait_ns),
+    };
+}
+
 fn scissorEqual(a: ?Rect, b: ?Rect) bool {
     if (a) |sa| {
         if (b) |sb| {
@@ -857,6 +879,7 @@ fn executeRenderPacket(
 
 /// Orchestrates command buffer acquisition, swapchain vs headless target
 /// binding, invocation of render callback, screenshot capture, and fence sync.
+/// Returns pass, active GPU encoding, and swapchain wait timings in ms.
 pub fn executeFrame(
     gpu_res: *RenderResources,
     view_params: ViewportParams,
@@ -868,7 +891,10 @@ pub fn executeFrame(
         ctx: @TypeOf(context),
         build_ctx: PacketBuildContext,
     ) anyerror!RenderPacket,
-) !void {
+) !PassTimings {
+    const pass_start_ns = sdl.timer.getTicksNs();
+    var swapchain_wait_ns: u64 = 0;
+
     const dev = gpu_res.device;
     const cmd_buf = dev.acquireCommandBuffer() orelse
         return error.CommandBufferAcquisitionFailed;
@@ -929,11 +955,15 @@ pub fn executeFrame(
         .window => |win| {
             var swap_w: u32 = 0;
             var swap_h: u32 = 0;
-            if (win.waitAndAcquireSwapchainTexture(
+            const wait_start_ns = sdl.timer.getTicksNs();
+            const swap_opt = win.waitAndAcquireSwapchainTexture(
                 cmd_buf,
                 &swap_w,
                 &swap_h,
-            )) |st| {
+            );
+            const wait_end_ns = sdl.timer.getTicksNs();
+            swapchain_wait_ns = wait_end_ns -| wait_start_ns;
+            if (swap_opt) |st| {
                 target_tex = st;
                 target_w = swap_w;
                 target_h = swap_h;
@@ -955,10 +985,14 @@ pub fn executeFrame(
             if (target.capture_filename != null) {
                 return error.SwapchainTextureUnavailable;
             }
-            return;
+            const pass_end_ns = sdl.timer.getTicksNs();
+            return buildPassTimings(
+                pass_start_ns,
+                pass_end_ns,
+                swapchain_wait_ns,
+            );
         }
 
-        const start_render = sdl.timer.getTicksNs();
         const target_dims = PositiveDimsU32{
             .w = target_w,
             .h = target_h,
@@ -1006,10 +1040,6 @@ pub fn executeFrame(
             target_dims,
         );
 
-        const end_render = sdl.timer.getTicksNs();
-        const render_time_ms =
-            @as(f64, @floatFromInt(end_render -| start_render)) / 1_000_000.0;
-        gpu_res.metrics.ui_render_stats.addSample(render_time_ms);
         gpu_res.metrics.last_ui_vertex_count = vertex_count;
         gpu_res.metrics.last_ui_batch_count = batch_count;
         gpu_res.frame_index += 1;
@@ -1048,6 +1078,8 @@ pub fn executeFrame(
             return error.SwapchainTextureUnavailable;
         }
     }
+    const pass_end_ns = sdl.timer.getTicksNs();
+    return buildPassTimings(pass_start_ns, pass_end_ns, swapchain_wait_ns);
 }
 
 test "intersectScissor computes correct overlapping rectangle" {
@@ -1259,4 +1291,17 @@ test "findBlurSplit pairs initialized resources with blurred_surface index" {
 
     // No blurred_surface in batch slice returns null even when initialized
     try std.testing.expect(findBlurSplit(batches[0..1], blur_res) == null);
+}
+
+test "buildPassTimings subtracts swapchain wait saturating safely" {
+    const t = buildPassTimings(1_000_000, 18_500_000, 16_000_000);
+    try std.testing.expectEqual(@as(f64, 17.5), t.total_pass_ms);
+    try std.testing.expectEqual(@as(f64, 1.5), t.gpu_encode_ms);
+    try std.testing.expectEqual(@as(f64, 16.0), t.swapchain_wait_ms);
+
+    // Clock anomaly / wait exceeding total pass duration saturates to 0.0.
+    const clamped = buildPassTimings(2_000_000, 1_000_000, 5_000_000);
+    try std.testing.expectEqual(@as(f64, 0.0), clamped.total_pass_ms);
+    try std.testing.expectEqual(@as(f64, 0.0), clamped.gpu_encode_ms);
+    try std.testing.expectEqual(@as(f64, 5.0), clamped.swapchain_wait_ms);
 }

@@ -1863,13 +1863,17 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
         .ingest_ms = 0.25,
         .intents_ms = 0.5,
         .sync_ms = 1.0,
-        .render_ms = 2.25,
+        .ui_layout_ms = 0.75,
+        .gpu_encode_ms = 1.5,
+        .swapchain_wait_ms = 13.0,
     });
     state.frame_metrics.record(.{
         .ingest_ms = 0.75,
         .intents_ms = 1.5,
         .sync_ms = 3.0,
-        .render_ms = 4.75,
+        .ui_layout_ms = 1.75,
+        .gpu_encode_ms = 3.0,
+        .swapchain_wait_ms = 15.0,
     });
 
     const promo_snap = state.snapshotStats();
@@ -1891,7 +1895,15 @@ test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
     try std.testing.expectEqual(@as(f64, 0.75), promo_snap.frame.ingest.max);
     try std.testing.expectEqual(@as(f64, 1.5), promo_snap.frame.intents.max);
     try std.testing.expectEqual(@as(f64, 3.0), promo_snap.frame.sync.max);
-    try std.testing.expectEqual(@as(f64, 4.75), promo_snap.frame.render.max);
+    try std.testing.expectEqual(@as(f64, 1.75), promo_snap.frame.ui_layout.max);
+    try std.testing.expectEqual(
+        @as(f64, 3.0),
+        promo_snap.frame.gpu_encode.max,
+    );
+    try std.testing.expectEqual(
+        @as(f64, 15.0),
+        promo_snap.frame.swapchain_wait.max,
+    );
     try std.testing.expectEqual(@as(f64, 7.0), promo_snap.frame.total.mean);
     try std.testing.expectEqual(@as(f64, 10.0), promo_snap.frame.total.max);
 

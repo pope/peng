@@ -1,5 +1,17 @@
 const std = @import("std");
 
+/// Converts a nanosecond duration into fractional milliseconds.
+pub inline fn nsToMs(ns: u64) f64 {
+    return @as(f64, @floatFromInt(ns)) /
+        @as(f64, std.time.ns_per_ms);
+}
+
+/// Converts a `std.Io.Duration` into non-negative milliseconds.
+pub inline fn durationToMs(dur: std.Io.Duration) f64 {
+    return @as(f64, @floatFromInt(@max(0, dur.nanoseconds))) /
+        @as(f64, std.time.ns_per_ms);
+}
+
 /// Summary statistics (mean, sample standard deviation, and peak value) across
 /// a rolling window of duration samples in milliseconds.
 pub const StatsSummary = struct {
@@ -60,48 +72,58 @@ pub const RenderStats = struct {
     }
 };
 
-/// Single-frame active CPU timing breakdown across the four pipeline phases
-/// in milliseconds (excluding idle event-wait sleep).
+/// Single-frame timing breakdown across active CPU pipeline phases and
+/// swapchain VSync wait in milliseconds (excluding idle event-wait sleep).
 pub const FrameSample = struct {
     ingest_ms: f64,
     intents_ms: f64,
     sync_ms: f64,
-    render_ms: f64,
+    ui_layout_ms: f64,
+    gpu_encode_ms: f64,
+    swapchain_wait_ms: f64 = 0.0,
 
-    /// Returns total active frame CPU time summed across all four phases.
+    /// Returns total active frame CPU time summed across active CPU phases
+    /// (excluding swapchain VSync wait and idle event-wait sleep).
     pub inline fn totalMs(self: FrameSample) f64 {
         return self.ingest_ms +
             self.intents_ms +
             self.sync_ms +
-            self.render_ms;
+            self.ui_layout_ms +
+            self.gpu_encode_ms;
     }
 };
 
-/// Rolling 60-frame timing summary across each active frame phase and total
-/// frame CPU duration for HUD display.
+/// Rolling 60-frame timing summary across each active frame phase,
+/// swapchain wait, and total frame CPU duration for HUD display.
 pub const FrameMetricsSnapshot = struct {
     ingest: StatsSummary = .{},
     intents: StatsSummary = .{},
     sync: StatsSummary = .{},
-    render: StatsSummary = .{},
+    ui_layout: StatsSummary = .{},
+    gpu_encode: StatsSummary = .{},
+    swapchain_wait: StatsSummary = .{},
     total: StatsSummary = .{},
 };
 
-/// Rolling 60-frame active CPU timing accumulators for each pipeline phase
-/// and total active frame time.
+/// Rolling 60-frame timing accumulators for each pipeline phase, swapchain
+/// wait, and total active frame CPU time.
 pub const FrameMetrics = struct {
     ingest: RenderStats = .{},
     intents: RenderStats = .{},
     sync: RenderStats = .{},
-    render: RenderStats = .{},
+    ui_layout: RenderStats = .{},
+    gpu_encode: RenderStats = .{},
+    swapchain_wait: RenderStats = .{},
     total: RenderStats = .{},
 
-    /// Records one completed visible frame's active phase durations.
+    /// Records one completed visible frame's phase durations.
     pub fn record(self: *FrameMetrics, sample: FrameSample) void {
         self.ingest.addSample(sample.ingest_ms);
         self.intents.addSample(sample.intents_ms);
         self.sync.addSample(sample.sync_ms);
-        self.render.addSample(sample.render_ms);
+        self.ui_layout.addSample(sample.ui_layout_ms);
+        self.gpu_encode.addSample(sample.gpu_encode_ms);
+        self.swapchain_wait.addSample(sample.swapchain_wait_ms);
         self.total.addSample(sample.totalMs());
     }
 
@@ -110,24 +132,23 @@ pub const FrameMetrics = struct {
         self.* = .{};
     }
 
-    /// Computes rolling summary statistics across all five accumulators.
+    /// Computes rolling summary statistics across all frame accumulators.
     pub fn snapshot(self: *const FrameMetrics) FrameMetricsSnapshot {
         return .{
             .ingest = self.ingest.summarize(),
             .intents = self.intents.summarize(),
             .sync = self.sync.summarize(),
-            .render = self.render.summarize(),
+            .ui_layout = self.ui_layout.summarize(),
+            .gpu_encode = self.gpu_encode.summarize(),
+            .swapchain_wait = self.swapchain_wait.summarize(),
             .total = self.total.summarize(),
         };
     }
 };
 
-/// Snapshot of UI rendering timing statistics, batch counts, and vertex counts
-/// for on-screen telemetry.
+/// Snapshot of UI vertex/batch counts and font-atlas usage metrics for
+/// on-screen telemetry.
 pub const UiRenderMetricsSnapshot = struct {
-    mean_render_time_ms: f64 = 0.0,
-    stdev_render_time_ms: f64 = 0.0,
-    max_render_time_ms: f64 = 0.0,
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
     atlas_shelf_x: u32 = 0,
@@ -138,10 +159,8 @@ pub const UiRenderMetricsSnapshot = struct {
     atlas_unicode_glyphs: usize = 0,
 };
 
-/// UI frame rendering performance metrics, vertex counts, batch counts, and
-/// rolling duration history.
+/// UI frame vertex and batch count telemetry.
 pub const UiRenderMetrics = struct {
-    ui_render_stats: RenderStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
 };
@@ -399,19 +418,15 @@ test "RenderStats, UiRenderMetrics, and Thumbnail telemetry" {
 
     // 3. UiRenderMetrics & UiRenderMetricsSnapshot defaults
     const metrics = UiRenderMetrics{
-        .ui_render_stats = rs,
         .last_ui_vertex_count = 120,
         .last_ui_batch_count = 4,
     };
-    const stats = metrics.ui_render_stats.summarize();
-    try std.testing.expectEqual(@as(f64, 15.0), stats.mean);
-    try std.testing.expectEqual(@as(f64, 20.0), stats.max);
     try std.testing.expectEqual(@as(usize, 120), metrics.last_ui_vertex_count);
     try std.testing.expectEqual(@as(usize, 4), metrics.last_ui_batch_count);
 
     const empty_snap = UiRenderMetricsSnapshot{};
-    try std.testing.expectEqual(@as(f64, 0.0), empty_snap.mean_render_time_ms);
-    try std.testing.expectEqual(@as(f64, 0.0), empty_snap.max_render_time_ms);
+    try std.testing.expectEqual(@as(usize, 0), empty_snap.last_ui_vertex_count);
+    try std.testing.expectEqual(@as(usize, 0), empty_snap.last_ui_batch_count);
     try std.testing.expectEqual(@as(u32, 0), empty_snap.atlas_used_h);
 
     // 4. ThumbnailSource properties
@@ -476,8 +491,11 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
         .ingest_ms = 0.5,
         .intents_ms = 1.0,
         .sync_ms = 2.0,
-        .render_ms = 4.5,
+        .ui_layout_ms = 1.5,
+        .gpu_encode_ms = 3.0,
+        .swapchain_wait_ms = 12.5,
     };
+    // totalMs() excludes swapchain_wait_ms (0.5 + 1.0 + 2.0 + 1.5 + 3.0 = 8.0).
     try std.testing.expectEqual(@as(f64, 8.0), s1.totalMs());
 
     var fm = FrameMetrics{};
@@ -486,7 +504,9 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
         .ingest_ms = 1.5,
         .intents_ms = 3.0,
         .sync_ms = 4.0,
-        .render_ms = 7.5,
+        .ui_layout_ms = 2.5,
+        .gpu_encode_ms = 5.0,
+        .swapchain_wait_ms = 16.5,
     });
 
     const snap = fm.snapshot();
@@ -496,8 +516,12 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
     try std.testing.expectEqual(@as(f64, 3.0), snap.intents.max);
     try std.testing.expectEqual(@as(f64, 3.0), snap.sync.mean);
     try std.testing.expectEqual(@as(f64, 4.0), snap.sync.max);
-    try std.testing.expectEqual(@as(f64, 6.0), snap.render.mean);
-    try std.testing.expectEqual(@as(f64, 7.5), snap.render.max);
+    try std.testing.expectEqual(@as(f64, 2.0), snap.ui_layout.mean);
+    try std.testing.expectEqual(@as(f64, 2.5), snap.ui_layout.max);
+    try std.testing.expectEqual(@as(f64, 4.0), snap.gpu_encode.mean);
+    try std.testing.expectEqual(@as(f64, 5.0), snap.gpu_encode.max);
+    try std.testing.expectEqual(@as(f64, 14.5), snap.swapchain_wait.mean);
+    try std.testing.expectEqual(@as(f64, 16.5), snap.swapchain_wait.max);
     try std.testing.expectEqual(@as(f64, 12.0), snap.total.mean);
     try std.testing.expect(snap.total.stdev > 0.0);
     try std.testing.expectEqual(@as(f64, 16.0), snap.total.max);
@@ -505,7 +529,29 @@ test "FrameSample.totalMs and FrameMetrics record, snapshot, and reset" {
     fm.reset();
     const cleared = fm.snapshot();
     try std.testing.expectEqual(@as(f64, 0.0), cleared.ingest.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.ui_layout.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.gpu_encode.mean);
+    try std.testing.expectEqual(@as(f64, 0.0), cleared.swapchain_wait.mean);
     try std.testing.expectEqual(@as(f64, 0.0), cleared.total.mean);
     try std.testing.expectEqual(@as(f64, 0.0), cleared.total.stdev);
     try std.testing.expectEqual(@as(f64, 0.0), cleared.total.max);
+}
+
+test "nsToMs and durationToMs convert nanoseconds and clamp negatives" {
+    try std.testing.expectEqual(@as(f64, 0.0), nsToMs(0));
+    try std.testing.expectEqual(@as(f64, 1.5), nsToMs(1_500_000));
+    try std.testing.expectEqual(@as(f64, 16.0), nsToMs(16_000_000));
+
+    try std.testing.expectEqual(
+        @as(f64, 2.25),
+        durationToMs(.{ .nanoseconds = 2_250_000 }),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0.0),
+        durationToMs(.{ .nanoseconds = 0 }),
+    );
+    try std.testing.expectEqual(
+        @as(f64, 0.0),
+        durationToMs(.{ .nanoseconds = -5_000_000 }),
+    );
 }

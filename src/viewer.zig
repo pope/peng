@@ -32,8 +32,8 @@ pub fn updateFrame(
     last_time: *u64,
 ) !void {
     // Phase 1: Background Event & Input Ingestion
-    const pre_ingest_start_ns = sdl.timer.getTicksNs();
-    const pre_wait_ms = pre_ingest_start_ns / std.time.ns_per_ms;
+    const pre_ingest_start = std.Io.Clock.awake.now(app_state.io);
+    const pre_wait_ms = sdl.timer.getTicksNs() / std.time.ns_per_ms;
     const skip_wait = (parsed_test_mode or parsed_headless) and
         !app_state.display.isHidden();
     if (skip_wait) {
@@ -54,7 +54,7 @@ pub fn updateFrame(
         pre_wait_ms,
     );
     const frame_allocator = frame_arena.allocator();
-    const pre_ingest_end_ns = sdl.timer.getTicksNs();
+    const pre_ingest_end = std.Io.Clock.awake.now(app_state.io);
     const input = try input_pkg.pollFrameInput(
         window,
         frame_allocator,
@@ -64,7 +64,7 @@ pub fn updateFrame(
         wait_strategy,
     );
 
-    const post_ingest_start_ns = sdl.timer.getTicksNs();
+    const post_ingest_start = std.Io.Clock.awake.now(app_state.io);
     // Drain any background worker or IPC events that arrived while waiting in
     // pollFrameInput (including the event that triggered sdl.pushWakeEvent()).
     const post_wait_events = app.drainWorkerEvents(app_state, input.now_ms);
@@ -87,13 +87,14 @@ pub fn updateFrame(
             is_slider_active,
         );
     }
-    const post_ingest_end_ns = sdl.timer.getTicksNs();
-    const ingest_cpu_ns =
-        (pre_ingest_end_ns -| pre_ingest_start_ns) +|
-        (post_ingest_end_ns -| post_ingest_start_ns);
-    const ingest_ms =
-        @as(f64, @floatFromInt(ingest_cpu_ns)) / 1_000_000.0 +
-        input.poll_cpu_ms;
+    const post_ingest_end = std.Io.Clock.awake.now(app_state.io);
+    const pre_ingest_ms = state_pkg.durationToMs(
+        pre_ingest_start.durationTo(pre_ingest_end),
+    );
+    const post_ingest_ms = state_pkg.durationToMs(
+        post_ingest_start.durationTo(post_ingest_end),
+    );
+    const ingest_ms = pre_ingest_ms + post_ingest_ms + input.poll_cpu_ms;
 
     // Phase 2: Update Phase — Run all systems sequentially
     const update_timings = try app.systems.runUpdatePhase(
@@ -131,7 +132,7 @@ pub fn updateFrame(
         return;
     }
 
-    const render_start_ns = sdl.timer.getTicksNs();
+    const phase3_start = std.Io.Clock.awake.now(app_state.io);
     const ui_model = buildUiViewModel(app_state, resources, input.now_ms);
 
     // Draw / Render
@@ -139,6 +140,7 @@ pub fn updateFrame(
         .idle => null,
         .capturing => |s| s.path,
     };
+    const is_screenshot = (capture_filename != null);
     const target_window = if (app_state.display.isSuspended())
         null
     else
@@ -147,7 +149,7 @@ pub fn updateFrame(
         .{ .window = win }
     else
         .{ .headless = input.logicalWinDims().toPhysical(input.dpiScale()) };
-    ui.layout.renderFrame(
+    const pass_timings = ui.layout.renderFrame(
         &app_state.viewer.ui.interaction,
         ui_model,
         resources,
@@ -164,16 +166,28 @@ pub fn updateFrame(
         app_state.handleScreenshotPostRender(err);
         return err;
     };
-    app_state.handleScreenshotPostRender(null);
-    const render_end_ns = sdl.timer.getTicksNs();
-    const render_ms =
-        @as(f64, @floatFromInt(render_end_ns -| render_start_ns)) /
-        1_000_000.0;
+    const phase3_end = if (is_screenshot) blk: {
+        const end_ts = std.Io.Clock.awake.now(app_state.io);
+        app_state.handleScreenshotPostRender(null);
+        break :blk end_ts;
+    } else blk: {
+        app_state.handleScreenshotPostRender(null);
+        break :blk std.Io.Clock.awake.now(app_state.io);
+    };
+    const phase3_total_ms = state_pkg.durationToMs(
+        phase3_start.durationTo(phase3_end),
+    );
+    const ui_layout_ms = @max(
+        0.0,
+        phase3_total_ms - pass_timings.total_pass_ms,
+    );
     app_state.frame_metrics.record(.{
         .ingest_ms = ingest_ms,
         .intents_ms = update_timings.intents_ms,
         .sync_ms = update_timings.sync_ms,
-        .render_ms = render_ms,
+        .ui_layout_ms = ui_layout_ms,
+        .gpu_encode_ms = pass_timings.gpu_encode_ms,
+        .swapchain_wait_ms = pass_timings.swapchain_wait_ms,
     });
 }
 

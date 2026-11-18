@@ -1,4 +1,3 @@
-const sdl = @import("sdl");
 const state_mod = @import("../state.zig");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -57,7 +56,7 @@ pub fn runUpdatePhase(
         .now_ms = input_frame.now_ms,
     };
 
-    const intents_start_ns = sdl.timer.getTicksNs();
+    const intents_start = std.Io.Clock.awake.now(app_state.io);
 
     // Synchronize window minimize/occlude state before animation and
     // slideshow passes
@@ -94,7 +93,7 @@ pub fn runUpdatePhase(
     // Execute All Ingested & Generated Intents
     try sysExecuteIntents(ctx);
 
-    const sync_start_ns = sdl.timer.getTicksNs();
+    const sync_start = std.Io.Clock.awake.now(app_state.io);
 
     // Window Management System (synchronizes window title and display)
     sysSyncWindow(ctx);
@@ -142,12 +141,14 @@ pub fn runUpdatePhase(
         }
     }
 
-    const sync_end_ns = sdl.timer.getTicksNs();
-    const intents_ns = sync_start_ns -| intents_start_ns;
-    const sync_ns = sync_end_ns -| sync_start_ns;
+    const sync_end = std.Io.Clock.awake.now(app_state.io);
     return .{
-        .intents_ms = @as(f64, @floatFromInt(intents_ns)) / 1_000_000.0,
-        .sync_ms = @as(f64, @floatFromInt(sync_ns)) / 1_000_000.0,
+        .intents_ms = state_pkg.durationToMs(
+            intents_start.durationTo(sync_start),
+        ),
+        .sync_ms = state_pkg.durationToMs(
+            sync_start.durationTo(sync_end),
+        ),
     };
 }
 

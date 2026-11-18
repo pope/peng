@@ -161,17 +161,21 @@ ______________________________________________________________________
     boundaries reliably wake the event loop before dropping to
     `.wait_indefinite`.
 - **Telemetry Metric Split ("Stats for Nerds")**:
-  High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` for disk I/O
-  and worker decode timing, and `sdl.timer.getTicksNs()` for GPU texture
-  ingestion, active frame CPU phases, and UI render pass timing) measure disk
-  I/O (`read_time_ms`) separately from CPU decompression (`decode_time_ms`) in
-  `DecodeTelemetry` and GPU texture ingestion in `IngestTelemetry` using
-  zero-sentinel tagged unions (`ArchiveTelemetry`, `UploadMode`,
-  `MipmapTelemetry`). `RenderStats.summarize()` computes rolling 60-frame
-  `StatsSummary` (`mean`, `stdev`, `max`) for both `UiRenderMetrics` (exposing
-  `max_render_time_ms`) and `FrameMetrics` (`ingest`, `intents`, `sync`,
-  `render`, `total`, excluding blocking OS event-wait sleep via
-  `FrameInput.poll_cpu_ms`).
+  High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` via
+  `state.durationToMs` wherever `io: std.Io` is in scope—disk I/O, worker
+  decode, `app/systems/root.zig`, `viewer.zig` Phase 1/3—and
+  `sdl.timer.getTicksNs()` via `state.nsToMs` only in `io`-free SDL hardware
+  leaves such as `input/polling.zig`, `gpu/pass.zig`, `gpu/upload.zig`,
+  `cache/root.zig`) measure disk I/O (`read_time_ms`) separately from CPU
+  decompression (`decode_time_ms`) in `DecodeTelemetry` and GPU texture
+  ingestion in `IngestTelemetry` using zero-sentinel tagged unions
+  (`ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`).
+  `RenderStats.summarize()` computes rolling 60-frame `StatsSummary`
+  (`mean`, `stdev`, `max`) for `FrameMetrics` (`ingest`, `intents`, `sync`,
+  `ui_layout`, `gpu_encode`, `swapchain_wait`, and `total` — excluding blocking
+  OS event-wait sleep via `FrameInput.poll_cpu_ms` and VSync/GPU backpressure
+  `swapchain_wait_ms`), while `UiRenderMetrics` reports `last_ui_batch_count`,
+  `last_ui_vertex_count`, and font-atlas usage.
 - **Demand-First Settled Preload & GPU Upload Gating**:
   Once navigation settles ($\\ge 35\\text{ms}$ for `.single_step` or
   $\\ge 200\\text{ms}$ for `.brisk_scroll`) AND the active slot is

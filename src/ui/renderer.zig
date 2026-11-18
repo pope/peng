@@ -1073,7 +1073,7 @@ test "buildRenderPacket and executeFrame emit TextureRef image batch" {
         .commands = list.commands.items,
         .view_params = .{},
     };
-    try gpu_pkg.pass.executeFrame(
+    const pass_timings = try gpu_pkg.pass.executeFrame(
         &gpu_res,
         .{},
         allocator,
@@ -1087,6 +1087,11 @@ test "buildRenderPacket and executeFrame emit TextureRef image batch" {
         ProbeCtx.build,
     );
 
+    try std.testing.expectEqual(@as(f64, 0.0), pass_timings.swapchain_wait_ms);
+    try std.testing.expectEqual(
+        pass_timings.total_pass_ms,
+        pass_timings.gpu_encode_ms,
+    );
     try std.testing.expectEqual(@as(usize, 6), probe.vertex_count);
     try std.testing.expectEqual(@as(usize, 1), probe.batch_count);
     try std.testing.expectEqual(

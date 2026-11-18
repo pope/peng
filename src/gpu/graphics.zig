@@ -486,16 +486,12 @@ pub const RenderResources = struct {
     fonts: [1]?sdl.Font = .{null},
     metrics: UiRenderMetrics = .{},
 
-    /// Snapshots rolling UI render timing statistics, vertex/batch counts,
-    /// and live font-atlas metrics for HUD overlay display.
+    /// Snapshots UI vertex/batch counts and live font-atlas metrics for HUD
+    /// overlay display.
     pub fn snapshotMetrics(
         self: *const RenderResources,
     ) UiRenderMetricsSnapshot {
-        const stats = self.metrics.ui_render_stats.summarize();
         return .{
-            .mean_render_time_ms = stats.mean,
-            .stdev_render_time_ms = stats.stdev,
-            .max_render_time_ms = stats.max,
             .last_ui_vertex_count = self.metrics.last_ui_vertex_count,
             .last_ui_batch_count = self.metrics.last_ui_batch_count,
             .atlas_shelf_x = self.text_cache.packer.cur_x,
@@ -1318,8 +1314,6 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     ) catch return;
     defer gpu_res.deinit(allocator);
 
-    gpu_res.metrics.ui_render_stats.addSample(4.0);
-    gpu_res.metrics.ui_render_stats.addSample(8.0);
     gpu_res.metrics.last_ui_vertex_count = 360;
     gpu_res.metrics.last_ui_batch_count = 6;
     gpu_res.text_cache.packer.cur_x = 128;
@@ -1327,9 +1321,6 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     gpu_res.text_cache.page_count = 1;
 
     const snap = gpu_res.snapshotMetrics();
-    try std.testing.expectEqual(@as(f64, 6.0), snap.mean_render_time_ms);
-    try std.testing.expect(snap.stdev_render_time_ms > 0.0);
-    try std.testing.expectEqual(@as(f64, 8.0), snap.max_render_time_ms);
     try std.testing.expectEqual(@as(usize, 360), snap.last_ui_vertex_count);
     try std.testing.expectEqual(@as(usize, 6), snap.last_ui_batch_count);
     try std.testing.expectEqual(@as(u32, 128), snap.atlas_shelf_x);
@@ -1343,8 +1334,6 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     // First call releases text_cache (page_count == 1) and resets metrics.
     try std.testing.expect(gpu_res.releaseTransientResources(allocator));
     const reset_snap = gpu_res.snapshotMetrics();
-    try std.testing.expectEqual(@as(f64, 0.0), reset_snap.mean_render_time_ms);
-    try std.testing.expectEqual(@as(f64, 0.0), reset_snap.max_render_time_ms);
     try std.testing.expectEqual(
         @as(usize, 0),
         reset_snap.last_ui_vertex_count,
@@ -1353,17 +1342,16 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
 
     // Subsequent call with only metrics populated must return false while
     // still resetting metrics.
-    gpu_res.metrics.ui_render_stats.addSample(5.0);
     gpu_res.metrics.last_ui_vertex_count = 42;
+    gpu_res.metrics.last_ui_batch_count = 3;
     try std.testing.expect(!gpu_res.releaseTransientResources(allocator));
     const second_snap = gpu_res.snapshotMetrics();
     try std.testing.expectEqual(
-        @as(f64, 0.0),
-        second_snap.mean_render_time_ms,
-    );
-    try std.testing.expectEqual(@as(f64, 0.0), second_snap.max_render_time_ms);
-    try std.testing.expectEqual(
         @as(usize, 0),
         second_snap.last_ui_vertex_count,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        second_snap.last_ui_batch_count,
     );
 }

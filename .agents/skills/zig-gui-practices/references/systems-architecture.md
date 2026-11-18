@@ -28,14 +28,19 @@ ______________________________________________________________________
   - Every system function signature accepts `ctx: FrameContext` containing
     `state: *AppState`, `frame_allocator: Allocator`, `input: ?FrameInput`,
     `delta_time_ms: f64`, and `now_ms: u64`.
-  - **Two-Clock Rule**: Simulation, animation, timeout, and cadence paths
-    consume explicit `now_ms: u64` threaded from `updateFrame` (`pre_wait_ms`
-    before `pollFrameInput`, `input.now_ms` post-wait -> `ctx.now_ms` ->
-    `buildUiViewModel`), never calling `sdl.timer.getTicks()` ad-hoc.
-    Sub-millisecond profiling stopwatches use `std.Io.Clock.awake.now(io)` in
-    `io`-bearing pure/worker packages (`probe`, `vfs`, `app/workers`) and
-    `sdl.timer.getTicksNs()` in `io`-free SDL/GPU/frame-loop packages
-    (`input`, `cache`, `gpu`, `app/systems/root.zig`, `viewer.zig`).
+  - **Two-Clock Rule (Option A Clock Boundary)**: Simulation, animation,
+    timeout, and cadence paths consume explicit `now_ms: u64` threaded from
+    `updateFrame` (`pre_wait_ms` from `sdl.timer.getTicksNs() /
+    std.time.ns_per_ms` before `pollFrameInput`, `input.now_ms` post-wait ->
+    `ctx.now_ms` -> `buildUiViewModel`), never calling `sdl.timer.getTicks()`
+    ad-hoc. For sub-millisecond stopwatches, never add `@import("sdl")` or
+    proxy clock wrappers just to read a clock: use
+    `std.Io.Clock.awake.now(io)` with `state.durationToMs` wherever
+    `io: std.Io` is in scope (`probe`, `vfs`, `app/workers`,
+    `app/systems/root.zig`, `viewer.zig`), use `sdl.timer.getTicksNs()` with
+    `state.nsToMs` only in `io`-free SDL hardware leaves (`input/polling.zig`,
+    `gpu/pass.zig`, `gpu/upload.zig`, `cache/root.zig`), and keep `src/ui/` and
+    `src/state/` pure and clock-free.
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
   - **Dynamic Array Pre-allocation**: State constructors
     (`NavigationState.init`, `PaletteState.init`,
@@ -139,7 +144,20 @@ ______________________________________________________________________
     from `*const AppState` and `*const RenderResources` as a fully immutable
     snapshot struct containing const pointers and value types (gathering
     `snapshotStats()` — including rolling 60-frame `FrameMetrics` summaries —
-    and `snapshotMetrics()` only when HUD panels are visible).
+    and `snapshotMetrics()` for batch/vertex/atlas counts only when HUD panels
+    are visible).
+  - Phase 3 keeps `ui` clock-free and splits CPU layout from GPU submission:
+    `ui.layout.renderFrame` returns `gpu.pass.PassTimings` (`total_pass_ms`,
+    `gpu_encode_ms`, `swapchain_wait_ms`) directly from `gpu.pass.executeFrame`.
+    `executeFrame` brackets `win.waitAndAcquireSwapchainTexture` as
+    `swapchain_wait_ms` and subtracts it with `-|` from `total_pass_ms` to
+    yield active CPU `gpu_encode_ms`. `updateFrame` (`src/viewer.zig`) measures
+    total Phase 3 elapsed duration via `std.Io.Clock.awake.now(app_state.io)`
+    (across `buildUiViewModel`, `renderFrame`, and non-screenshot
+    `handleScreenshotPostRender`) and derives
+    `ui_layout_ms = @max(0.0, phase3_total_ms - pass_timings.total_pass_ms)`
+    before recording all phases into `frame_metrics` (`FrameSample.totalMs()`
+    excludes `swapchain_wait_ms`).
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 

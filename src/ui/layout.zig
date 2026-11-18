@@ -79,7 +79,7 @@ pub fn computeDrawDims(
 }
 
 /// Builds the complete UI layout hierarchy, accumulates immediate-mode draw
-/// commands, and submits the frame render pass.
+/// commands, and submits the frame render pass, returning `PassTimings` in ms.
 pub fn renderFrame(
     interaction: *state.InteractionState,
     ui_model: UiViewModel,
@@ -89,7 +89,7 @@ pub fn renderFrame(
     frame_allocator: std.mem.Allocator,
     measure_data: *MeasureTextUserData,
     target: FrameTargetOptions,
-) !void {
+) !gpu_pkg.pass.PassTimings {
     const width = input.win_w;
     const height = input.win_h;
     const dpi_scale = input.dpiScale();
@@ -202,7 +202,7 @@ pub fn renderFrame(
     frame_target.needs_blur =
         renderer.hasBlurredSurface(draw_list.commands.items);
 
-    try gpu_pkg.pass.executeFrame(
+    return try gpu_pkg.pass.executeFrame(
         gpu_res,
         ui_model.viewport,
         gpa_allocator,

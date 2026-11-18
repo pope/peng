@@ -30,6 +30,7 @@ pub const computeThumbnailUvCrop = view_transform.computeThumbnailUvCrop;
 pub const DecodeTelemetry = telemetry.DecodeTelemetry;
 pub const DirectionFlags = viewport.DirectionFlags;
 pub const DragState = types.DragState;
+pub const durationToMs = telemetry.durationToMs;
 pub const DURATION_EDIT_PANEL_CLOSE_MS =
     animation_state.DURATION_EDIT_PANEL_CLOSE_MS;
 pub const DURATION_EDIT_PANEL_OPEN_MS =
@@ -70,6 +71,7 @@ pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S =
     animation_state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S;
 pub const NavDirection = navigation.NavDirection;
 pub const NavigationState = navigation.NavigationState;
+pub const nsToMs = telemetry.nsToMs;
 pub const OverlayState = types.OverlayState;
 pub const PaletteClickHit = interaction.PaletteClickHit;
 pub const PaletteItemHit = interaction.PaletteItemHit;
