@@ -28,6 +28,14 @@ ______________________________________________________________________
   - Every system function signature accepts `ctx: FrameContext` containing
     `state: *AppState`, `frame_allocator: Allocator`, `input: ?FrameInput`,
     `delta_time_ms: f64`, and `now_ms: u64`.
+  - **Two-Clock Rule**: Simulation, animation, timeout, and cadence paths
+    consume explicit `now_ms: u64` threaded from `updateFrame` (`pre_wait_ms`
+    before `pollFrameInput`, `input.now_ms` post-wait -> `ctx.now_ms` ->
+    `buildUiViewModel`), never calling `sdl.timer.getTicks()` ad-hoc.
+    Sub-millisecond profiling stopwatches use `std.Io.Clock.awake.now(io)` in
+    `io`-bearing pure/worker packages (`probe`, `vfs`, `app/workers`) and
+    `sdl.timer.getTicksNs()` in `io`-free SDL/GPU/frame-loop packages
+    (`input`, `cache`, `gpu`, `app/systems/root.zig`, `viewer.zig`).
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
   - **Dynamic Array Pre-allocation**: State constructors
     (`NavigationState.init`, `PaletteState.init`,

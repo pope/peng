@@ -1526,7 +1526,7 @@ test "neighbor loaded_cpu with decoding ticket preserves ticket on upload" {
                 .decode = .{},
             }),
         });
-        try std.testing.expect(events_mod.drainWorkerEvents(&state));
+        try std.testing.expect(events_mod.drainWorkerEvents(&state, 1000));
         try std.testing.expect(state.cache.get(key0).?.inflight.isIdle());
         try std.testing.expect(state.cache.get(key1).?.inflight.isIdle());
         try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
@@ -1639,7 +1639,7 @@ test "neighbor loaded_cpu with decoding ticket preserves ticket on upload" {
             .decode = .{},
         }),
     });
-    try std.testing.expect(events_mod.drainWorkerEvents(&state));
+    try std.testing.expect(events_mod.drainWorkerEvents(&state, 1032));
     try std.testing.expect(state.cache.get(key0).?.inflight.isIdle());
     try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
 }

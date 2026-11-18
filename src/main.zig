@@ -277,7 +277,7 @@ const AppGraphicsAndState = struct {
         // Spawn initial directory scan & decode worker before graphics/GPU initialization
         // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
         if (self.parsed.arg_path) |path| {
-            try self.state.openPath(path);
+            try self.state.openPath(path, sdl.timer.getTicks());
         } else if (!self.parsed.server_mode) {
             try app.workers.readPipedStdin(
                 &self.state.workers,

@@ -33,12 +33,16 @@ pub fn updateFrame(
 ) !void {
     // Phase 1: Background Event & Input Ingestion
     const pre_ingest_start_ns = sdl.timer.getTicksNs();
+    const pre_wait_ms = pre_ingest_start_ns / std.time.ns_per_ms;
     const skip_wait = (parsed_test_mode or parsed_headless) and
         !app_state.display.isHidden();
     if (skip_wait) {
         app_state.viewer.animations.settleAll();
     }
-    const bg_events_processed = app.drainWorkerEvents(app_state);
+    const bg_events_processed = app.drainWorkerEvents(
+        app_state,
+        pre_wait_ms,
+    );
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
@@ -47,7 +51,7 @@ pub fn updateFrame(
         cur_win_h,
         bg_events_processed,
         skip_wait,
-        sdl.timer.getTicks(),
+        pre_wait_ms,
     );
     const frame_allocator = frame_arena.allocator();
     const pre_ingest_end_ns = sdl.timer.getTicksNs();
@@ -63,7 +67,7 @@ pub fn updateFrame(
     const post_ingest_start_ns = sdl.timer.getTicksNs();
     // Drain any background worker or IPC events that arrived while waiting in
     // pollFrameInput (including the event that triggered sdl.pushWakeEvent()).
-    const post_wait_events = app.drainWorkerEvents(app_state);
+    const post_wait_events = app.drainWorkerEvents(app_state, input.now_ms);
     if ((bg_events_processed or post_wait_events) and skip_wait) {
         app_state.viewer.animations.settleAll();
     }

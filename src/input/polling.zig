@@ -512,15 +512,14 @@ pub fn pollFrameInput(
         }
     }
 
-    const current_ticks = sdl.timer.getTicks();
-    const delta_time_ms = computeClampedDeltaTime(current_ticks, last_time);
-
     var mouse_x_raw: f32 = 0;
     var mouse_y_raw: f32 = 0;
     const mouse_buttons = sdl.mouse.getState(&mouse_x_raw, &mouse_y_raw);
     const mouse_left_down = (mouse_buttons & sdl.mouse.mask(sdl.mouse.left)) != 0;
 
     const poll_end_ns = sdl.timer.getTicksNs();
+    const current_ticks = poll_end_ns / std.time.ns_per_ms;
+    const delta_time_ms = computeClampedDeltaTime(current_ticks, last_time);
     const poll_cpu_ms = computeActivePollCpuMs(
         poll_start_ns,
         poll_end_ns,

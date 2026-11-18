@@ -17,14 +17,16 @@ const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 const PhysicalDims = geom.PhysicalDims;
 const RawMetadata = probe.RawMetadata;
+const ScrollCadence = state_pkg.ScrollCadence;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail
 /// extractions, directory scans, folder count updates, and IPC commands) from
-/// `workers.event_queue`. Dispatches each event to update texture cache
-/// entries, image lists, rotation maps, and Command Palette state.
+/// `workers.event_queue`, using `now_ms` for navigation cadence and snackbar
+/// deadlines. Dispatches each event to update texture cache entries, image
+/// lists, rotation maps, and Command Palette state.
 /// Returns `true` if at least one event was drained and processed;
 /// otherwise `false`.
-pub fn drainWorkerEvents(state: *AppState) bool {
+pub fn drainWorkerEvents(state: *AppState, now_ms: u64) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.io, &state.event_batch);
     if (state.event_batch.items.len == 0) return false;
@@ -84,7 +86,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             },
             .directory_scan_result => |res| {
                 if (res.resolve(&state.cache.generation)) |payload| {
-                    handleDirectoryScanResultEvent(state, payload);
+                    handleDirectoryScanResultEvent(state, payload, now_ms);
                 }
             },
             .palette_dir_loaded => |*loaded| {
@@ -102,7 +104,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .precache_completed => |res| {
                 const active_gen = &state.workers.precache_generation;
                 if (res.resolve(active_gen)) |payload| {
-                    handlePrecacheCompletedEvent(state, payload);
+                    handlePrecacheCompletedEvent(state, payload, now_ms);
                 }
             },
             .ipc_command => |cmd_data| handleIpcCommandEvent(state, cmd_data),
@@ -174,6 +176,7 @@ fn handlePaletteFolderCountEvent(
 fn handlePrecacheCompletedEvent(
     state: *AppState,
     res: events.PrecacheCompletedPayload,
+    now_ms: u64,
 ) void {
     if (!state.viewer.ui.snackbar.enabled or state.display.isHidden()) return;
 
@@ -199,8 +202,7 @@ fn handlePrecacheCompletedEvent(
     else
         "Thumbnail pre-cache finished";
 
-    const now = sdl.timer.getTicks();
-    state.viewer.ui.snackbar.show(msg, now + 2000);
+    state.viewer.ui.snackbar.show(msg, now_ms +| 2000);
     const progress = state.viewer.animations.get(.snackbar);
     const dur = @max(
         state_pkg.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress),
@@ -447,6 +449,7 @@ fn syncActiveFilePaletteMatches(state: *AppState) void {
 fn handleDirectoryScanResultEvent(
     state: *AppState,
     result_data: events.DirectoryScanResultPayload,
+    now_ms: u64,
 ) void {
     const arena_alloc = state.viewer.navigation.directory_arena.allocator();
     if (result_data.is_dir) {
@@ -514,7 +517,7 @@ fn handleDirectoryScanResultEvent(
         if (target_idx_in_dir) |target_i| {
             _ = state.viewer.navigation.goToIndex(
                 target_i,
-                sdl.timer.getTicks(),
+                now_ms,
             );
         } else {
             _ = state.viewer.navigation.adjustIndexForVisibility();
@@ -529,7 +532,7 @@ test "drainWorkerEvents - empty queue" {
     var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
-    const processed = drainWorkerEvents(&state);
+    const processed = drainWorkerEvents(&state, 1000);
     try std.testing.expect(!processed);
 }
 
@@ -544,7 +547,7 @@ test "drainWorkerEvents - path_discovered" {
         .path_discovered = .{ .entry = .{ .filesystem = .{ .path = path_dup } } },
     });
 
-    const processed = drainWorkerEvents(&state);
+    const processed = drainWorkerEvents(&state, 1000);
     try std.testing.expect(processed);
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.count());
     try std.testing.expectEqual(@as(?usize, 0), state.viewer.navigation.current_index);
@@ -571,7 +574,7 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
             .{ .orientation = .rotate_90 },
         ),
     });
-    const processed1 = drainWorkerEvents(&state);
+    const processed1 = drainWorkerEvents(&state, 1000);
     try std.testing.expect(processed1);
     try std.testing.expectEqual(
         Orientation.rotate_90,
@@ -581,7 +584,7 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     try state.workers.event_queue.push(allocator, io, .{
         .decode_failed = .init(state.cache.activeKey(id0), ticket0.epoch, .{}),
     });
-    const processed2 = drainWorkerEvents(&state);
+    const processed2 = drainWorkerEvents(&state, 1000);
     try std.testing.expect(processed2);
     const fail_asset = state.cache.slots.items(.entry)[0].resident.asset;
     try std.testing.expectEqual(@as(@TypeOf(fail_asset), .failed), fail_asset);
@@ -620,10 +623,14 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     cmd_data.* = .{ .command = cmd_str, .client_stream = undefined };
     try state.workers.event_queue.push(allocator, io, .{ .ipc_command = cmd_data });
 
-    const processed = drainWorkerEvents(&state);
+    const processed = drainWorkerEvents(&state, 5000);
     try std.testing.expect(processed);
     try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.count());
     try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 5000 },
+        state.viewer.navigation.cadence,
+    );
     try std.testing.expectEqual(@as(usize, 1), state.pending_ipc_commands.items.len);
 
     const popped_cmd = state.pending_ipc_commands.pop().?;
@@ -659,7 +666,7 @@ test "drainWorkerEvents - directory_scan_result is_dir trims excess capacity" {
         }),
     });
 
-    const processed = drainWorkerEvents(&state);
+    const processed = drainWorkerEvents(&state, 1000);
     try std.testing.expect(processed);
     try std.testing.expectEqual(
         @as(usize, 2),
@@ -721,7 +728,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
         }),
     });
 
-    const processed = drainWorkerEvents(&state);
+    const processed = drainWorkerEvents(&state, 1000);
     try std.testing.expect(processed);
 
     // Slot 1 should be .loaded_cpu (not uploaded or destroyed) because current
@@ -756,7 +763,7 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and queues decode" {
         }),
     });
 
-    const processed = drainWorkerEvents(&state);
+    const processed = drainWorkerEvents(&state, 1000);
     try std.testing.expect(processed);
 
     const entry = state.cache.get(state.cache.activeKey(id0)).?;
@@ -819,7 +826,7 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
         }),
     });
 
-    _ = drainWorkerEvents(&state);
+    _ = drainWorkerEvents(&state, 1000);
     try std.testing.expectEqual(
         EntryScanState.unscanned,
         state.viewer.ui.palette.dir_items.items[0].directory.scan,
@@ -846,7 +853,7 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
         }),
     });
 
-    _ = drainWorkerEvents(&state);
+    _ = drainWorkerEvents(&state, 1000);
 
     try std.testing.expect(state.viewer.ui.palette.selection_dirty);
     const expected_dir_scan = EntryScanState{
@@ -879,7 +886,7 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
             .scan = .failed,
         }),
     });
-    _ = drainWorkerEvents(&state);
+    _ = drainWorkerEvents(&state, 1000);
     try std.testing.expectEqual(
         EntryScanState.permission_denied,
         state.viewer.ui.palette.dir_items.items[0].directory.scan,
@@ -921,7 +928,7 @@ test "drainWorkerEvents - palette_dir_loaded O(1) handoff and gating" {
             }),
         });
     }
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         @as(usize, 0),
         state.viewer.ui.palette.dir_items.items.len,
@@ -956,7 +963,7 @@ test "drainWorkerEvents - palette_dir_loaded O(1) handoff and gating" {
             }),
         });
     }
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         @as(usize, 2),
         state.viewer.ui.palette.dir_items.items.len,
@@ -999,7 +1006,7 @@ test "drainWorkerEvents - palette_dir_loaded O(1) handoff and gating" {
             }),
         });
     }
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqualStrings(
         "/work",
         state.viewer.ui.palette.current_nav_dir.items,
@@ -1074,7 +1081,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expect(entry1.inflight.isIdle());
     switch (entry1.resident.asset) {
         .promoting_gpu => |*promo| {
@@ -1133,7 +1140,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             },
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         PhysicalDims{ .w = 1616, .h = 1080 },
         entry0.metadata.full_dims.?,
@@ -1166,7 +1173,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             },
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         PhysicalDims{ .w = 6000, .h = 4000 },
         entry0.metadata.full_dims.?,
@@ -1202,7 +1209,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             },
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         PhysicalDims{ .w = 6000, .h = 4000 },
         entry0.metadata.full_dims.?,
@@ -1268,7 +1275,7 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
             .paths = paths1,
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         @as(?usize, 2),
         state.viewer.navigation.current_index,
@@ -1318,7 +1325,7 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
             .paths = paths2,
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         @as(?usize, 1),
         state.viewer.navigation.current_index,
@@ -1355,7 +1362,7 @@ test "drainWorkerEvents - discards stale directory_scan_result" {
             .paths = stale_paths,
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.count());
 }
 
@@ -1395,7 +1402,7 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
     try state.workers.event_queue.push(allocator, io, .{
         .decode_failed = .init(key1, ticket1.epoch, .{}),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         cache.ResidentAsset.failed,
         state.cache.get(key1).?.resident.asset,
@@ -1446,7 +1453,7 @@ test "drainWorkerEvents - directory_scan_result updates open .files palette" {
         ),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         @as(usize, 2),
         state.viewer.ui.palette.matches.items.len,
@@ -1502,7 +1509,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     // Metadata updates while thumbnail stays .unloaded and surface is freed
     try std.testing.expectEqual(
         PhysicalDims{ .w = 6000.0, .h = 4000.0 },
@@ -1558,7 +1565,7 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
 
     // 3. Verify single-file directory scan stability
     try std.testing.expectEqual(
@@ -1594,7 +1601,7 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
             .decode = .{},
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expect(
         state.cache.get(key0).?.resident.asset == .loaded_cpu,
     );
@@ -1648,7 +1655,7 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
 
     // Thumbnail upload was skipped, so entry.thumbnail is not .loaded
     try std.testing.expect(entry.resident.thumbnail != .loaded);
@@ -1768,7 +1775,7 @@ test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     const entry0 = state.cache.get(key0).?;
     switch (entry0.resident.thumbnail) {
         .staged_cpu => |st| try std.testing.expect(st.dct_snapped),
@@ -1794,7 +1801,7 @@ test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expectEqual(
         cache.ThumbnailState.not_available,
         entry0.resident.thumbnail,
@@ -1864,7 +1871,7 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
             .dct_snapped = false,
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
 
     const neighbors = state.viewer.navigation.getVisibleNeighbors().?;
     const entry1_thumb = state.cache.get(key1).?.resident.thumbnail;
@@ -1879,7 +1886,7 @@ test "drainWorkerEvents - neighbor thumb_decoded then decode_failed" {
     try state.workers.event_queue.push(allocator, io, .{
         .decode_failed = .init(key1, ticket1.epoch, .{}),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
 
     const entry1 = state.cache.get(key1).?;
     try std.testing.expectEqual(
@@ -1931,7 +1938,7 @@ test "drainWorkerEvents - thumb_only thumb_decoded queues decode" {
         }),
     });
 
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
 
     const entry0 = state.cache.get(key0).?;
     switch (entry0.inflight) {
@@ -1968,6 +1975,53 @@ test "drainWorkerEvents - thumb_only thumb_decoded queues decode" {
             .decode = .{},
         }),
     });
-    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(drainWorkerEvents(&state, 1000));
     try std.testing.expect(entry0.resident.asset == .none);
+}
+
+test "drainWorkerEvents - precache_completed uses explicit now_ms" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const gen = state.workers.precache_generation.load(.acquire);
+    try state.workers.event_queue.push(allocator, io, .{
+        .precache_completed = .init(gen, .{
+            .written = 3,
+            .already_valid = 2,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state, 4321));
+    try std.testing.expectEqual(
+        @as(u64, 6321),
+        state.viewer.ui.snackbar.getTimeoutMs(),
+    );
+    try std.testing.expectEqualStrings(
+        "Pre-cached 3 thumbnails (2 already cached)",
+        state.viewer.ui.snackbar.getMessage(),
+    );
+}
+
+test "drainWorkerEvents - precache_completed saturates now_ms deadline" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const gen = state.workers.precache_generation.load(.acquire);
+    try state.workers.event_queue.push(allocator, io, .{
+        .precache_completed = .init(gen, .{
+            .written = 1,
+            .already_valid = 0,
+        }),
+    });
+
+    const near_max = std.math.maxInt(u64) - 10;
+    try std.testing.expect(drainWorkerEvents(&state, near_max));
+    try std.testing.expectEqual(
+        std.math.maxInt(u64),
+        state.viewer.ui.snackbar.getTimeoutMs(),
+    );
 }

@@ -23,7 +23,7 @@ const sysUpdateAnimations = animation.sysUpdateAnimations;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled or self.display.isHidden()) return;
-    self.viewer.ui.snackbar.show(msg, now_ms + 1500);
+    self.viewer.ui.snackbar.show(msg, now_ms +| 1500);
     const progress = self.viewer.animations.get(.snackbar);
     const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
     self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
@@ -194,7 +194,7 @@ fn executeIntent(
     const ui = &self.viewer.ui;
 
     switch (intent) {
-        .open_path => |p| try self.openPath(p),
+        .open_path => |p| try self.openPath(p, now_ms),
         .open_window => {
             self.showAndRaiseWindow();
             if (nav.count() == 0 and !ui.palette.isOpen()) {
@@ -398,7 +398,7 @@ fn executeIntent(
             if (should_show_auto_title) {
                 if (!ui.overlays.title_display.isPinned()) {
                     ui.overlays.title_display = .{
-                        .transient = .{ .timeout_ms = now_ms + 1500 },
+                        .transient = .{ .timeout_ms = now_ms +| 1500 },
                     };
                     const progress = self.viewer.animations.get(.title_overlay);
                     const dur = @max(
@@ -531,9 +531,9 @@ fn executeIntent(
         },
         .refresh_directory => {
             if (nav.getCurrentImageEntry()) |entry| {
-                try self.reloadPath(entry.getSourcePath());
+                try self.reloadPath(entry.getSourcePath(), now_ms);
             } else if (nav.last_scanned_dir.items.len > 0) {
-                try self.reloadPath(nav.last_scanned_dir.items);
+                try self.reloadPath(nav.last_scanned_dir.items, now_ms);
             }
         },
         .mark_pick => {
@@ -591,9 +591,9 @@ fn executeIntent(
             showCustomSnackbar(self, msg, now_ms);
             _ = self.cache.advanceGeneration();
             if (nav.getCurrentImageEntry()) |entry| {
-                try self.reloadPath(entry.getSourcePath());
+                try self.reloadPath(entry.getSourcePath(), now_ms);
             } else if (nav.last_scanned_dir.items.len > 0) {
-                try self.reloadPath(nav.last_scanned_dir.items);
+                try self.reloadPath(nav.last_scanned_dir.items, now_ms);
             }
         },
         .set_raw_jpeg_stacking => |enable| {
@@ -606,9 +606,9 @@ fn executeIntent(
                 showCustomSnackbar(self, msg, now_ms);
                 _ = self.cache.advanceGeneration();
                 if (nav.getCurrentImageEntry()) |entry| {
-                    try self.reloadPath(entry.getSourcePath());
+                    try self.reloadPath(entry.getSourcePath(), now_ms);
                 } else if (nav.last_scanned_dir.items.len > 0) {
-                    try self.reloadPath(nav.last_scanned_dir.items);
+                    try self.reloadPath(nav.last_scanned_dir.items, now_ms);
                 }
             }
         },
@@ -846,7 +846,7 @@ fn triggerSnackbarForIntent(
     }, &buf);
 
     if (msg.len > 0) {
-        self.viewer.ui.snackbar.show(msg, now_ms + rule.duration_ms);
+        self.viewer.ui.snackbar.show(msg, now_ms +| rule.duration_ms);
         const progress = self.viewer.animations.get(.snackbar);
         const dur = @max(
             state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress),
@@ -1826,7 +1826,7 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
 
 fn waitAndDrainPaletteScan(app_st: *AppState, io: std.Io) !void {
     try app_st.workers.group.await(io);
-    _ = events.drainWorkerEvents(app_st);
+    _ = events.drainWorkerEvents(app_st, 1000);
 }
 
 test "executeIntent - set_palette directory_navigator clears previous query" {
@@ -2539,4 +2539,49 @@ test "executeIntent - zoom_by clamps f32 underflow to ZoomFactor.MIN" {
     );
     try std.testing.expectEqual(@as(f32, 10.0), app_st.viewer.viewport.pan_x);
     try std.testing.expectEqual(@as(f32, -10.0), app_st.viewer.viewport.pan_y);
+}
+
+test "executeIntent - saturates snackbar and title deadlines near max u64" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const near_max = std.math.maxInt(u64) - 10;
+
+    // 1. Declarative intent snackbar deadline (applyIntentSnackbar)
+    try app_st.pushIntent(.{ .set_filter = .mitchell });
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+        .now_ms = near_max,
+    });
+    try std.testing.expectEqual(
+        std.math.maxInt(u64),
+        app_st.viewer.ui.snackbar.getTimeoutMs(),
+    );
+
+    // 2. Custom snackbar deadline (showCustomSnackbar)
+    app_st.workers.thumb_cache_config = .disabled;
+    try executeIntent(&app_st, .precache_directory, near_max);
+    try std.testing.expectEqual(
+        std.math.maxInt(u64),
+        app_st.viewer.ui.snackbar.getTimeoutMs(),
+    );
+
+    // 3. Auto-title overlay deadline (title_display.transient)
+    const item = MediaEntry{ .filesystem = .{ .path = "test.jpg" } };
+    _ = try app_st.viewer.navigation.appendEntry(allocator, item);
+    _ = try app_st.viewer.navigation.appendEntry(allocator, item);
+    app_st.viewer.navigation.current_index = 0;
+    app_st.viewer.navigation.cadence.recordNavigation(near_max - 50);
+    try executeIntent(&app_st, .next_image, near_max);
+    switch (app_st.viewer.ui.overlays.title_display) {
+        .transient => |t| try std.testing.expectEqual(
+            std.math.maxInt(u64),
+            t.timeout_ms,
+        ),
+        .hidden, .pinned => return error.TestExpectedTransientTitle,
+    }
 }

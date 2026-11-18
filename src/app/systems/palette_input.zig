@@ -407,7 +407,7 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 
 fn waitAndDrainPaletteScan(app_st: *AppState, io: std.Io) !void {
     try app_st.workers.group.await(io);
-    _ = events.drainWorkerEvents(app_st);
+    _ = events.drainWorkerEvents(app_st, 1000);
 }
 
 test "handlePaletteKeys directory_navigator key interactions" {

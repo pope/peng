@@ -28,6 +28,7 @@ const MediaId = vfs.MediaId;
 const MipmapTelemetry = state_pkg.MipmapTelemetry;
 const PairStreamTarget = vfs.PairStreamTarget;
 const PhysicalDims = geom.PhysicalDims;
+const ScrollCadence = state_pkg.ScrollCadence;
 const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
@@ -1043,24 +1044,27 @@ pub const AppState = struct {
         try workers_mod.spawnDecode(args);
     }
 
-    /// Initiates loading a target path (file or directory). When opening a
+    /// Initiates loading a target path (file or directory), stamping cadence
+    /// and immediate startup decode timestamps with `now_ms`. When opening a
     /// regular image file that already resides in the active, fully scanned
     /// directory playlist, jumps directly to that entry while preserving the
     /// warm VRAM cache and classifications; otherwise performs a full reload.
-    pub fn openPath(self: *AppState, path: []const u8) !void {
-        return self.openPathInternal(path, true);
+    pub fn openPath(self: *AppState, path: []const u8, now_ms: u64) !void {
+        return self.openPathInternal(path, true, now_ms);
     }
 
     /// Forces a full directory re-scan and cache reload for `path` (used by
-    /// directory refresh and RAW+JPEG stacking toggles).
-    pub fn reloadPath(self: *AppState, path: []const u8) !void {
-        return self.openPathInternal(path, false);
+    /// directory refresh and RAW+JPEG stacking toggles), stamping immediate
+    /// startup decode timestamps with `now_ms`.
+    pub fn reloadPath(self: *AppState, path: []const u8, now_ms: u64) !void {
+        return self.openPathInternal(path, false, now_ms);
     }
 
     fn openPathInternal(
         self: *AppState,
         path: []const u8,
         reuse_loaded_dir: bool,
+        now_ms: u64,
     ) !void {
         // Copy `path` upfront because callers may pass a slice backed by
         // `directory_arena` (reset below) or `last_scanned_dir.items`
@@ -1119,7 +1123,7 @@ pub const AppState = struct {
                 }
                 _ = self.viewer.navigation.goToIndex(
                     idx,
-                    sdl.timer.getTicks(),
+                    now_ms,
                 );
                 self.resetViewportAndTransitions();
                 if (self.viewer.ui.palette.openMode()) |mode| switch (mode) {
@@ -1202,7 +1206,7 @@ pub const AppState = struct {
                     .{ .filesystem = .{ .path = dup } },
                     .full,
                     pair_target,
-                    sdl.timer.getTicks(),
+                    now_ms,
                 );
             }
         }
@@ -1458,7 +1462,7 @@ test "AppState.openPath preserves closing palette matches" {
     try std.testing.expect(initial_matches > 0);
 
     state.closePalette();
-    try state.openPath(tmp_path);
+    try state.openPath(tmp_path, 1000);
 
     // Matches must remain intact during the closing dissolve animation
     try std.testing.expectEqual(
@@ -1475,7 +1479,7 @@ test "AppState.openPath spawns immediate decode for single image file" {
     defer state.deinit();
 
     const sample_jpg = "testfiles/images/000_0_1024x682.jpg";
-    try state.openPath(sample_jpg);
+    try state.openPath(sample_jpg, 1000);
 
     // Slot 0 must be appended immediately in .decoding state
     const id0 = state.viewer.navigation.getIdAt(0).?;
@@ -1497,7 +1501,7 @@ test "AppState.openPath acquires job ticket and epoch for single image" {
     defer state.deinit();
 
     const sample_jpg = "testfiles/images/000_0_1024x682.jpg";
-    try state.openPath(sample_jpg);
+    try state.openPath(sample_jpg, 7777);
 
     const id0 = state.viewer.navigation.getIdAt(0).?;
     const entry0 = state.cache.get(state.cache.activeKey(id0)).?;
@@ -1508,6 +1512,7 @@ test "AppState.openPath acquires job ticket and epoch for single image" {
         },
     };
 
+    try std.testing.expectEqual(@as(u64, 7777), dec.start_time_ms);
     try std.testing.expect(dec.ticket.job_id < cache.MAX_DECODE_JOBS);
     try std.testing.expect(dec.ticket.epoch >= 1);
 
@@ -1567,7 +1572,7 @@ test "AppState.openPath reuses warm directory playlist and resets viewport" {
     state.viewer.viewport.mode = .manual;
     state.viewer.viewport.setPan(120.0, -80.0);
 
-    try state.openPath(img1);
+    try state.openPath(img1, 4200);
 
     // Must reuse the existing generation & cache and jump to index 1
     try std.testing.expectEqual(
@@ -1577,6 +1582,10 @@ test "AppState.openPath reuses warm directory playlist and resets viewport" {
     try std.testing.expectEqual(
         @as(?usize, 1),
         state.viewer.navigation.current_index,
+    );
+    try std.testing.expectEqual(
+        ScrollCadence{ .single_step = 4200 },
+        state.viewer.navigation.cadence,
     );
     try std.testing.expectEqual(@as(usize, 1), state.cache.count());
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_x);
