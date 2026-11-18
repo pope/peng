@@ -73,7 +73,7 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
     `ActivePaletteMode`, `DisplayState`, `DisplayBackend`, `ResidentAsset`,
     `ThumbnailState`, `InFlightState`, `RawMetadata`, `ArchiveTelemetry`,
     `UploadMode`, `MipmapTelemetry`, `ImageTransition`, `BlurResources`,
-    `RetainedResource`) via `union(enum)`
+    `RetainedBuffer`, `RetainedTransferBuffer`) via `union(enum)`
     and validation constructors (`PhysicalDims.initPositive`), never loose
     booleans, `0`/`0.0` dimension sentinels, interdependent optionals, or
     optional-surface event multiplexing (`dimensions_probed` vs

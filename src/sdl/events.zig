@@ -1,6 +1,8 @@
 const builtin = @import("builtin");
+const c_pkg = @import("c.zig");
 const std = @import("std");
-const c = @import("c.zig").c;
+
+const c = c_pkg.c;
 
 pub const Event = c.SDL_Event;
 
@@ -32,8 +34,6 @@ pub const event_type = struct {
     pub const quit = c.SDL_EVENT_QUIT;
     pub const window_shown = c.SDL_EVENT_WINDOW_SHOWN;
     pub const window_exposed = c.SDL_EVENT_WINDOW_EXPOSED;
-    pub const window_resized = c.SDL_EVENT_WINDOW_RESIZED;
-    pub const window_pixel_size_changed = c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
     pub const window_minimized = c.SDL_EVENT_WINDOW_MINIMIZED;
     pub const window_maximized = c.SDL_EVENT_WINDOW_MAXIMIZED;
     pub const window_restored = c.SDL_EVENT_WINDOW_RESTORED;
@@ -52,7 +52,6 @@ pub const event_type = struct {
     pub const finger_motion = c.SDL_EVENT_FINGER_MOTION;
     pub const pinch_begin = c.SDL_EVENT_PINCH_BEGIN;
     pub const pinch_update = c.SDL_EVENT_PINCH_UPDATE;
-    pub const pinch_end = c.SDL_EVENT_PINCH_END;
 };
 
 /// SDL configuration hints interface.

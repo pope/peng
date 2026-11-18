@@ -1,4 +1,6 @@
-const c = @import("c.zig").c;
+const c_pkg = @import("c.zig");
+
+const c = c_pkg.c;
 
 pub const Keycode = u32;
 

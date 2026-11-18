@@ -1,6 +1,7 @@
-const std = @import("std");
-const c = @import("c.zig").c;
+const c_pkg = @import("c.zig");
 const gpu = @import("gpu.zig");
+
+const c = c_pkg.c;
 
 /// Bitflags controlling window creation and behavior (hidden, resizable,
 /// high-DPI, borderless).

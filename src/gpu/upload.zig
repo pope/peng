@@ -520,13 +520,14 @@ pub fn uploadSurfaceToGpu(
         copy_pass.end();
 
         const compute_pass = cmd_wrapper.beginComputePass(
-            &[_]sdl.gpu.StorageTextureReadWriteBinding{.{
-                .texture = gpu_tex,
-                .mip_level = 0,
-                .layer = 0,
-                .cycle = false,
-            }},
-            null,
+            &[_]sdl.gpu.StorageTextureReadWriteBinding{
+                .{
+                    .texture = gpu_tex,
+                    .mip_level = 0,
+                    .layer = 0,
+                    .cycle = false,
+                },
+            },
         ) orelse {
             _ = cmd_wrapper.cancel();
             dev.releaseTexture(gpu_tex);

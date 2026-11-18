@@ -34,17 +34,15 @@ pub const TextureType = enum(c_int) {
 pub const TextureUsage = struct {
     pub const sampler: u32 = c.SDL_GPU_TEXTUREUSAGE_SAMPLER;
     pub const color_target: u32 = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-    pub const compute_storage_write: u32 = c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
-    pub const compute_storage_simultaneous_read_write: u32 =
-        c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
+    pub const compute_storage_write: u32 =
+        c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
 };
 
 /// Bitflag constants specifying GPU buffer bindings and capabilities.
 pub const BufferUsage = struct {
     pub const vertex: u32 = c.SDL_GPU_BUFFERUSAGE_VERTEX;
-    pub const index: u32 = c.SDL_GPU_BUFFERUSAGE_INDEX;
-    pub const compute_storage_read: u32 = c.SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
-    pub const compute_storage_write: u32 = c.SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE;
+    pub const compute_storage_read: u32 =
+        c.SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
 };
 
 pub const SampleCount = enum(c_int) {
@@ -80,10 +78,6 @@ pub const CompareOp = enum(c_int) {
     not_equal = c.SDL_GPU_COMPAREOP_NOT_EQUAL,
     greater_or_equal = c.SDL_GPU_COMPAREOP_GREATER_OR_EQUAL,
     always = c.SDL_GPU_COMPAREOP_ALWAYS,
-};
-
-pub const StencilOp = enum(c_int) {
-    keep = c.SDL_GPU_STENCILOP_KEEP,
 };
 
 pub const FillMode = enum(c_int) {
@@ -210,10 +204,7 @@ pub const TransferBuffer = struct {
     ptr: *c.SDL_GPUTransferBuffer,
 };
 
-/// Tagged union pairing an allocated GPU buffer or transfer buffer handle with
-/// its non-zero byte capacity, making `(handle == null, capacity > 0)` and
-/// `(handle != null, capacity == 0)` unrepresentable.
-pub fn RetainedResource(comptime Handle: type) type {
+fn RetainedResource(comptime Handle: type) type {
     return union(enum) {
         unallocated,
         allocated: struct {
@@ -223,7 +214,10 @@ pub fn RetainedResource(comptime Handle: type) type {
     };
 }
 
+/// Tagged union pairing a retained GPU buffer with its byte capacity.
 pub const RetainedBuffer = RetainedResource(Buffer);
+
+/// Tagged union pairing a retained GPU transfer buffer with its byte capacity.
 pub const RetainedTransferBuffer = RetainedResource(TransferBuffer);
 
 /// Opaque handle representing a GPU execution synchronization fence.
@@ -274,17 +268,16 @@ pub const ShaderCreateInfo = struct {
     props: u32 = 0,
 };
 
-/// Parameters, shader code, and resource bindings for creating a compute pipeline.
+/// Parameters, shader code, and resource bindings for creating a compute
+/// pipeline.
 pub const ComputePipelineCreateInfo = struct {
     code_size: usize,
     code: [*]const u8,
     entrypoint: [:0]const u8,
     format: u32,
     num_samplers: u32 = 0,
-    num_readonly_storage_textures: u32 = 0,
     num_readonly_storage_buffers: u32 = 0,
     num_readwrite_storage_textures: u32 = 0,
-    num_readwrite_storage_buffers: u32 = 0,
     num_uniform_buffers: u32 = 0,
     threadcount_x: u32 = 16,
     threadcount_y: u32 = 16,
@@ -300,13 +293,8 @@ pub const StorageTextureReadWriteBinding = struct {
     cycle: bool = false,
 };
 
-/// Binding descriptor for a read-write storage buffer in compute passes.
-pub const StorageBufferReadWriteBinding = struct {
-    buffer: Buffer,
-    cycle: bool = false,
-};
-
-/// Parameters configuring transfer buffer allocation size and direction (upload/download).
+/// Parameters configuring transfer buffer allocation size and direction
+/// (upload/download).
 pub const TransferBufferCreateInfo = struct {
     usage: TransferBufferUsage,
     size: u32,
@@ -389,37 +377,12 @@ pub const GraphicsPipelineCreateInfo = struct {
         fill_mode: FillMode = .fill,
         cull_mode: CullMode = .none,
         front_face: FrontFace = .counter_clockwise,
-        depth_bias_constant_factor: f32 = 0,
-        depth_bias_clamp: f32 = 0,
-        depth_bias_slope_factor: f32 = 0,
-        enable_depth_bias: bool = false,
-        enable_depth_clip: bool = false,
     } = .{},
     multisample_state: struct {
         sample_count: SampleCount = .count_1,
-        sample_mask: u32 = 0,
-        enable_mask: bool = false,
-        enable_alpha_to_coverage: bool = false,
     } = .{},
     depth_stencil_state: struct {
         compare_op: CompareOp = .always,
-        back_stencil_state: struct {
-            compare_op: CompareOp = .always,
-            fail_op: StencilOp = .keep,
-            pass_op: StencilOp = .keep,
-            depth_fail_op: StencilOp = .keep,
-        } = .{},
-        front_stencil_state: struct {
-            compare_op: CompareOp = .always,
-            fail_op: StencilOp = .keep,
-            pass_op: StencilOp = .keep,
-            depth_fail_op: StencilOp = .keep,
-        } = .{},
-        compare_mask: u8 = 0,
-        write_mask: u8 = 0,
-        enable_depth_test: bool = false,
-        enable_depth_write: bool = false,
-        enable_stencil_test: bool = false,
     } = .{},
     target_info: struct {
         num_color_targets: usize = 0,
@@ -741,14 +704,14 @@ pub const CommandBuffer = struct {
         c.SDL_PushGPUComputeUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
     }
 
-    /// Begins recording commands for a compute pass with optional read-write storage bindings.
+    /// Begins recording commands for a compute pass with optional read-write
+    /// storage texture bindings.
     pub fn beginComputePass(
         self: CommandBuffer,
         storage_textures: ?[]const StorageTextureReadWriteBinding,
-        storage_buffers: ?[]const StorageBufferReadWriteBinding,
     ) ?ComputePass {
-        // Stack arrays avoid per-pass allocation; size matches compute binding
-        // limits (4 slots each), asserted below.
+        // Stack array avoids per-pass allocation; size matches compute binding
+        // limits (4 slots), asserted below.
         var c_storage_tex: [4]c.SDL_GPUStorageTextureReadWriteBinding =
             undefined;
         var tex_count: u32 = 0;
@@ -764,23 +727,6 @@ pub const CommandBuffer = struct {
                     .cycle = b.cycle,
                     .padding1 = 0,
                     .padding2 = 0,
-                };
-            }
-        }
-
-        var c_storage_buf: [4]c.SDL_GPUStorageBufferReadWriteBinding =
-            undefined;
-        var buf_count: u32 = 0;
-        if (storage_buffers) |sbufs| {
-            buf_count = @intCast(sbufs.len);
-            std.debug.assert(buf_count <= 4);
-            for (0..buf_count) |i| {
-                const b = sbufs[i];
-                c_storage_buf[i] = .{
-                    .buffer = b.buffer.ptr,
-                    .cycle = b.cycle,
-                    .padding1 = 0,
-                    .padding2 = 0,
                     .padding3 = 0,
                 };
             }
@@ -790,8 +736,8 @@ pub const CommandBuffer = struct {
             self.ptr,
             if (tex_count > 0) &c_storage_tex else null,
             tex_count,
-            if (buf_count > 0) &c_storage_buf else null,
-            buf_count,
+            null,
+            0,
         );
         return if (raw) |r| .{ .ptr = r } else null;
     }
@@ -927,21 +873,23 @@ pub const Device = struct {
         c.SDL_ReleaseGPUShader(self.ptr, shader.ptr);
     }
 
-    /// Creates a compute pipeline state object from shader bytecode and thread dimensions.
+    /// Creates a compute pipeline state object from shader bytecode and thread
+    /// dimensions.
     pub fn createComputePipeline(
         self: Device,
         info: *const ComputePipelineCreateInfo,
     ) ?ComputePipeline {
+        const rw_tex_count = info.num_readwrite_storage_textures;
         const c_info = c.SDL_GPUComputePipelineCreateInfo{
             .code_size = info.code_size,
             .code = info.code,
             .entrypoint = info.entrypoint.ptr,
             .format = info.format,
             .num_samplers = info.num_samplers,
-            .num_readonly_storage_textures = info.num_readonly_storage_textures,
+            .num_readonly_storage_textures = 0,
             .num_readonly_storage_buffers = info.num_readonly_storage_buffers,
-            .num_readwrite_storage_textures = info.num_readwrite_storage_textures,
-            .num_readwrite_storage_buffers = info.num_readwrite_storage_buffers,
+            .num_readwrite_storage_textures = rw_tex_count,
+            .num_readwrite_storage_buffers = 0,
             .num_uniform_buffers = info.num_uniform_buffers,
             .threadcount_x = info.threadcount_x,
             .threadcount_y = info.threadcount_y,
@@ -958,14 +906,19 @@ pub const Device = struct {
     }
 
     /// Compiles and creates a complete graphics pipeline state object.
-    pub fn createPipeline(self: Device, info: *const GraphicsPipelineCreateInfo) ?Pipeline {
+    pub fn createPipeline(
+        self: Device,
+        info: *const GraphicsPipelineCreateInfo,
+    ) ?Pipeline {
         // Stack arrays avoid dynamic allocation during pipeline creation;
         // capacities match Vulkan/D3D12/Metal hardware limits (16 attrs, 16
         // buffers, 16 color targets), enforced by asserts below.
         var c_attributes: [16]c.SDL_GPUVertexAttribute = undefined;
         var c_attrib_count: u32 = 0;
         if (info.vertex_input_state.vertex_attributes) |attrs| {
-            c_attrib_count = @intCast(info.vertex_input_state.num_vertex_attributes);
+            c_attrib_count = @intCast(
+                info.vertex_input_state.num_vertex_attributes,
+            );
             std.debug.assert(c_attrib_count <= 16);
             for (0..c_attrib_count) |i| {
                 const a = attrs[i];
@@ -1030,73 +983,75 @@ pub const Device = struct {
         const rs = info.rasterizer_state;
         const ms = info.multisample_state;
         const dss = info.depth_stencil_state;
-        const back_st = dss.back_stencil_state;
-        const front_st = dss.front_stencil_state;
-        const back_df_op = @backingInt(back_st.depth_fail_op);
-        const front_df_op = @backingInt(front_st.depth_fail_op);
+        const noop_stencil = c.SDL_GPUStencilOpState{
+            .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS,
+            .fail_op = c.SDL_GPU_STENCILOP_KEEP,
+            .pass_op = c.SDL_GPU_STENCILOP_KEEP,
+            .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP,
+        };
 
         const c_info = c.SDL_GPUGraphicsPipelineCreateInfo{
             .vertex_shader = info.vertex_shader.ptr,
             .fragment_shader = info.fragment_shader.ptr,
             .vertex_input_state = .{
                 .num_vertex_attributes = c_attrib_count,
-                .vertex_attributes = if (c_attrib_count > 0) &c_attributes else null,
+                .vertex_attributes = if (c_attrib_count > 0)
+                    &c_attributes
+                else
+                    null,
                 .num_vertex_buffers = c_buf_count,
-                .vertex_buffer_descriptions = if (c_buf_count > 0) &c_buffers else null,
+                .vertex_buffer_descriptions = if (c_buf_count > 0)
+                    &c_buffers
+                else
+                    null,
             },
             .primitive_type = @intCast(@backingInt(info.primitive_type)),
             .rasterizer_state = .{
                 .fill_mode = @intCast(@backingInt(rs.fill_mode)),
                 .cull_mode = @intCast(@backingInt(rs.cull_mode)),
                 .front_face = @intCast(@backingInt(rs.front_face)),
-                .depth_bias_constant_factor = rs.depth_bias_constant_factor,
-                .depth_bias_clamp = rs.depth_bias_clamp,
-                .depth_bias_slope_factor = rs.depth_bias_slope_factor,
-                .enable_depth_bias = rs.enable_depth_bias,
-                .enable_depth_clip = rs.enable_depth_clip,
+                .depth_bias_constant_factor = 0,
+                .depth_bias_clamp = 0,
+                .depth_bias_slope_factor = 0,
+                .enable_depth_bias = false,
+                .enable_depth_clip = false,
                 .padding1 = 0,
                 .padding2 = 0,
             },
             .multisample_state = .{
                 .sample_count = @intCast(@backingInt(ms.sample_count)),
-                .sample_mask = ms.sample_mask,
-                .enable_mask = ms.enable_mask,
-                .enable_alpha_to_coverage = ms.enable_alpha_to_coverage,
+                .sample_mask = 0,
+                .enable_mask = false,
+                .enable_alpha_to_coverage = false,
                 .padding2 = 0,
                 .padding3 = 0,
             },
             .depth_stencil_state = .{
                 .compare_op = @intCast(@backingInt(dss.compare_op)),
-                .back_stencil_state = .{
-                    .compare_op = @intCast(@backingInt(back_st.compare_op)),
-                    .fail_op = @intCast(@backingInt(back_st.fail_op)),
-                    .pass_op = @intCast(@backingInt(back_st.pass_op)),
-                    .depth_fail_op = @intCast(back_df_op),
-                },
-                .front_stencil_state = .{
-                    .compare_op = @intCast(@backingInt(front_st.compare_op)),
-                    .fail_op = @intCast(@backingInt(front_st.fail_op)),
-                    .pass_op = @intCast(@backingInt(front_st.pass_op)),
-                    .depth_fail_op = @intCast(front_df_op),
-                },
-                .compare_mask = dss.compare_mask,
-                .write_mask = dss.write_mask,
-                .enable_depth_test = dss.enable_depth_test,
-                .enable_depth_write = dss.enable_depth_write,
-                .enable_stencil_test = dss.enable_stencil_test,
+                .back_stencil_state = noop_stencil,
+                .front_stencil_state = noop_stencil,
+                .compare_mask = 0,
+                .write_mask = 0,
+                .enable_depth_test = false,
+                .enable_depth_write = false,
+                .enable_stencil_test = false,
                 .padding1 = 0,
                 .padding2 = 0,
                 .padding3 = 0,
             },
             .target_info = .{
                 .num_color_targets = c_target_count,
-                .color_target_descriptions = if (c_target_count > 0) &c_color_targets else null,
+                .color_target_descriptions = if (c_target_count > 0)
+                    &c_color_targets
+                else
+                    null,
                 .has_depth_stencil_target = info.target_info.has_depth_stencil_target,
                 .depth_stencil_format = @intCast(
                     @backingInt(info.target_info.depth_stencil_format),
                 ),
                 .padding1 = 0,
                 .padding2 = 0,
+                .padding3 = 0,
             },
             .props = info.props,
         };

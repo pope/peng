@@ -4,14 +4,33 @@
 //! GPU command buffers, event polling, surfaces, and fonts.
 
 const builtin = @import("builtin");
-const std = @import("std");
-
+const c_pkg = @import("c.zig");
 pub const events = @import("events.zig");
 pub const font = @import("font.zig");
 pub const gpu = @import("gpu.zig");
 pub const keys = @import("keys.zig");
+const std = @import("std");
 pub const surface = @import("surface.zig");
 pub const window = @import("window.zig");
+
+const c = c_pkg.c;
+pub const disableScreenSaver = window.disableScreenSaver;
+pub const enableScreenSaver = window.enableScreenSaver;
+pub const Event = events.Event;
+pub const event_type = events.event_type;
+pub const Font = font.Font;
+pub const getError = events.getError;
+pub const hint = events.hint;
+pub const init = events.init;
+pub const init_flags = events.init_flags;
+pub const initTtf = font.initTtf;
+pub const mouse = events.mouse;
+pub const PixelFormat = surface.PixelFormat;
+pub const quit = events.quit;
+pub const quitTtf = font.quitTtf;
+pub const Surface = surface.Surface;
+pub const Window = window.Window;
+pub const window_flags = window.window_flags;
 
 const has_glibc_malloc_trim = builtin.link_libc and
     builtin.os.tag == .linux and
@@ -27,41 +46,19 @@ pub fn reclaimProcessHeap() void {
     }
 }
 
-pub const Color = font.Color;
-pub const disableScreenSaver = window.disableScreenSaver;
-pub const enableScreenSaver = window.enableScreenSaver;
-pub const Event = events.Event;
-pub const event_type = events.event_type;
-pub const Font = font.Font;
-pub const getError = events.getError;
-pub const hint = events.hint;
-pub const init = events.init;
-pub const init_flags = events.init_flags;
-pub const initTtf = font.initTtf;
-pub const mouse = events.mouse;
-pub const PixelFormat = surface.PixelFormat;
-pub const quit = events.quit;
-pub const quitTtf = font.quitTtf;
-pub const ScaleMode = surface.ScaleMode;
-pub const Surface = surface.Surface;
-pub const Window = window.Window;
-pub const window_flags = window.window_flags;
-
 test "sdl enum mapping and boundary sanity checks" {
-    const c = @import("c.zig").c;
-
     // ScaleMode roundtrip
     try std.testing.expectEqual(
         @as(c_int, c.SDL_SCALEMODE_NEAREST),
-        @backingInt(ScaleMode.nearest),
+        @backingInt(surface.ScaleMode.nearest),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_SCALEMODE_LINEAR),
-        @backingInt(ScaleMode.linear),
+        @backingInt(surface.ScaleMode.linear),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_SCALEMODE_PIXELART),
-        @backingInt(ScaleMode.pixel_art),
+        @backingInt(surface.ScaleMode.pixel_art),
     );
 
     // GPU Filter roundtrip
@@ -125,10 +122,10 @@ test "sdl enum mapping and boundary sanity checks" {
 }
 
 test {
-    _ = @import("surface.zig");
-    _ = @import("events.zig");
-    _ = @import("font.zig");
-    _ = @import("gpu.zig");
-    _ = @import("keys.zig");
-    _ = @import("window.zig");
+    _ = events;
+    _ = font;
+    _ = gpu;
+    _ = keys;
+    _ = surface;
+    _ = window;
 }
