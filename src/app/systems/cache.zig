@@ -1,6 +1,7 @@
 const app_state = @import("../state.zig");
 const cache = @import("cache");
 const context = @import("context.zig");
+const events = @import("../events.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -70,6 +71,37 @@ fn checkPairPromotion(
             std.log.err("Failed to spawn zoom promotion decode: {}", .{err});
         };
     }
+}
+
+fn checkDebugThumbReload(
+    state: *AppState,
+    key: cache.ImageCacheKey,
+    now: u64,
+) void {
+    if (!state.viewer.ui.overlays.debug_show_thumb) return;
+    if (state.gpu_device == null and !state.gpu_enabled) return;
+
+    const entry_val = state.cache.getEntry(key) orelse return;
+    if (!entry_val.inflight.isIdle()) return;
+    if (entry_val.resident.asset.isFailed()) return;
+
+    switch (entry_val.resident.thumbnail) {
+        .loaded, .staged_cpu, .not_available => return,
+        .none, .pending, .unloaded => {},
+    }
+    if (!state.workers.canSpawnDecode(.foreground)) return;
+
+    const media_item = state.viewer.navigation.getMediaEntryById(key.id) orelse
+        return;
+    state.spawnSlotDecode(
+        key.id,
+        media_item,
+        .speculative_thumb,
+        .adaptive,
+        now,
+    ) catch |err| {
+        std.log.err("Failed to spawn debug thumbnail decode: {}", .{err});
+    };
 }
 
 /// System Pass: Update image RAM/GPU texture cache and background preloading window.
@@ -262,6 +294,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
             if (is_active_slot) {
                 checkPairPromotion(state, key, ctx.now_ms);
+                checkDebugThumbReload(state, key, ctx.now_ms);
             }
         }
     }
@@ -1349,4 +1382,137 @@ test "sysUpdateCache clears current_image_cache_hit on OOM" {
         }),
     );
     try std.testing.expect(!state.cache.current_image_cache_hit);
+}
+
+test "sysUpdateCache - debug_show_thumb reloads unloaded thumb asynchronously" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+    state.gpu_enabled = true;
+
+    const fixture_path = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        fixture_path,
+        .{},
+    );
+    defer real_jpg.close(io);
+    const jpg_stat = try std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        io,
+        fixture_path,
+        .{},
+    );
+    const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
+    defer allocator.free(jpg_bytes);
+    var j_slices = [_][]u8{jpg_bytes};
+    _ = try real_jpg.readPositional(io, &j_slices, 0);
+
+    const tiff_buf = try probe.buildSyntheticSubIfdArwAlloc(
+        allocator,
+        6000,
+        4000,
+        6,
+        jpg_bytes,
+    );
+    defer allocator.free(tiff_buf);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "debug_thumb.arw", .{});
+    var wr_slices = [_][]const u8{tiff_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+
+    var path_buf: [128]u8 = undefined;
+    const raw_tmp_path = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}/debug_thumb.arw",
+        .{tmp.sub_path},
+    );
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const raw_path = try dir_alloc.dupe(u8, raw_tmp_path);
+    const png_path = try dir_alloc.dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
+    const id_raw = try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = raw_path } },
+    );
+    const id_png = try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = png_path } },
+    );
+    state.viewer.navigation.current_index = 0;
+
+    var raw_stub = cache.CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 6000.0, .h = 4000.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    );
+    raw_stub.resident.thumbnail = .{
+        .unloaded = .{
+            .w = 1024.0,
+            .h = 682.0,
+            .upload_time_ms = 0.0,
+            .dct_snapped = false,
+        },
+    };
+    const key_raw = try state.cache.appendSlot(allocator, id_raw, raw_stub);
+    const key_png = try state.cache.appendSlot(
+        allocator,
+        id_png,
+        cache.CacheEntry.stubLoadedGpuForTest(
+            .{ .w = 800.0, .h = 600.0 },
+            .{ .w = 0.0, .h = 0.0 },
+        ),
+    );
+    defer {
+        if (state.cache.get(key_raw)) |e| e.resident.asset = .none;
+        if (state.cache.get(key_png)) |e| e.resident.asset = .none;
+    }
+
+    // 1. Enabling debug_show_thumb on RAW with .unloaded thumb spawns worker
+    // and stages CPU thumbnail while keeping full asset .loaded_gpu and .idle
+    state.viewer.ui.overlays.debug_show_thumb = true;
+    try sysUpdateCache(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 2000,
+    });
+    try state.workers.group.await(io);
+    try std.testing.expect(events.drainWorkerEvents(&state, 2005));
+
+    const entry_raw = state.cache.getEntry(key_raw).?;
+    try std.testing.expect(entry_raw.inflight.isIdle());
+    try std.testing.expect(entry_raw.resident.asset.hasGpuTexture());
+    try std.testing.expect(entry_raw.resident.thumbnail.isStagedCpu());
+
+    // 2. Switching to PNG with no thumbnail probes once and settles on
+    // .not_available without re-spawning on subsequent frames
+    state.viewer.navigation.current_index = 1;
+    try sysUpdateCache(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 2010,
+    });
+    try state.workers.group.await(io);
+    try std.testing.expect(events.drainWorkerEvents(&state, 2015));
+
+    const entry_png = state.cache.getEntry(key_png).?;
+    try std.testing.expect(entry_png.inflight.isIdle());
+    try std.testing.expectEqual(
+        cache.ThumbnailState.not_available,
+        entry_png.resident.thumbnail,
+    );
+
+    try sysUpdateCache(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 2020,
+    });
+    try std.testing.expect(state.cache.getEntry(key_png).?.inflight.isIdle());
 }

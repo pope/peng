@@ -204,6 +204,15 @@ pub const AppState = struct {
             if (!entry.inflight.isIdle()) {
                 return false;
             }
+            if (self.gpu_device != null and
+                self.viewer.ui.overlays.debug_show_thumb and
+                !entry.resident.asset.isFailed())
+            {
+                switch (entry.resident.thumbnail) {
+                    .loaded, .not_available => {},
+                    .none, .pending, .staged_cpu, .unloaded => return false,
+                }
+            }
             return switch (entry.resident.asset) {
                 .none, .promoting_gpu => false,
                 .loaded_cpu => self.gpu_device == null,

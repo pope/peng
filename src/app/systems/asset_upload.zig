@@ -15,7 +15,6 @@ const CpuSurfaceComponent = cache_pkg.CpuSurfaceComponent;
 const FrameContext = context.FrameContext;
 const ImageCache = cache_pkg.ImageCache;
 const ImageCacheKey = cache_pkg.ImageCacheKey;
-const loadThumbnailSurface = cache_pkg.loadThumbnailSurface;
 const PhysicalDims = geom.PhysicalDims;
 const ThumbnailState = cache_pkg.ThumbnailState;
 const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
@@ -36,71 +35,6 @@ pub fn sysProcessAssetUploads(ctx: FrameContext) void {
             is_idle,
         );
     }
-}
-
-fn ensureCurrentThumbnailLoaded(state: *AppState) bool {
-    const cur_id = state.viewer.navigation.getCurrentMediaId() orelse
-        return false;
-    const key = state.cache.activeKey(cur_id);
-    const cur = state.cache.getEntry(key) orelse return false;
-    switch (cur.resident.thumbnail) {
-        .loaded, .not_available => return false,
-        .none, .pending, .staged_cpu, .unloaded => {},
-    }
-
-    const media = state.viewer.navigation.getCurrentImageEntry() orelse {
-        if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
-        return false;
-    };
-    const extracted = loadThumbnailSurface(
-        state.io,
-        state.allocator,
-        media,
-    ) orelse {
-        if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
-        return false;
-    };
-    defer extracted.surface.destroy();
-
-    const dev = state.gpu_device orelse return false;
-    const upload_res = uploadSurfaceToGpu(
-        state.io,
-        dev,
-        extracted.surface,
-        state.unpack_compute_pipeline,
-        &state.upload_staging,
-    ) orelse {
-        if (state.cache.get(key)) |e| e.resident.thumbnail = .not_available;
-        return false;
-    };
-
-    {
-        const e = state.cache.get(key) orelse {
-            dev.releaseTexture(upload_res.gpu_texture);
-            return true;
-        };
-        e.resident.thumbnail.deinit(dev);
-
-        e.applyProbedMetadata(
-            extracted.source_dims,
-            extracted.orientation,
-            extracted.raw_metadata,
-        );
-
-        e.resident.thumbnail = .{
-            .loaded = .{
-                .texture = upload_res.gpu_texture,
-                .info = .{
-                    .w = upload_res.w,
-                    .h = upload_res.h,
-                    .upload_time_ms = upload_res.ingest.upload_time_ms,
-                    .dct_snapped = extracted.dct_snapped,
-                },
-            },
-        };
-    }
-    state.updateCurrentRotation();
-    return true;
 }
 
 fn uploadActivePendingThumb(
@@ -124,7 +58,7 @@ fn uploadActivePendingThumb(
         const superseded = !debug_show_thumb and
             entry.resident.asset.isLoaded();
         if (superseded) {
-            entry.resident.thumbnail.discardStagedAndMarkUnavailable();
+            entry.resident.thumbnail.unloadSuperseded(false);
             return false;
         }
         entry.resident.thumbnail = .not_available;
@@ -198,32 +132,34 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
             const is_crossfading =
                 state.viewer.animations.isActive(.thumb_crossfade) and
                 is_cur;
+            const keep_debug_thumb =
+                state.viewer.ui.overlays.debug_show_thumb and
+                is_cur;
             switch (entry.resident.asset) {
                 .failed => {
                     entry.resident.thumbnail.discardStagedAndMarkUnavailable();
                 },
                 .loaded_gpu, .promoting_gpu => {
-                    if (!is_crossfading and
-                        !state.viewer.ui.overlays.debug_show_thumb)
-                    {
-                        switch (entry.resident.thumbnail) {
-                            .staged_cpu => |*st| {
-                                st.deinit();
-                                entry.resident.thumbnail = .not_available;
-                            },
-                            .loaded => |thumb| {
+                    if (!is_crossfading and !keep_debug_thumb) {
+                        const thumb = &entry.resident.thumbnail;
+                        switch (thumb.*) {
+                            .staged_cpu => thumb.unloadSuperseded(false),
+                            .loaded => |loaded| {
                                 if (state.gpu_device) |gpu_dev| {
-                                    gpu_dev.releaseTexture(thumb.texture);
+                                    gpu_dev.releaseTexture(loaded.texture);
                                 }
-                                entry.resident.thumbnail = .{
-                                    .unloaded = thumb.info,
-                                };
+                                thumb.* = .{ .unloaded = loaded.info };
                             },
                             .none, .pending, .not_available, .unloaded => {},
                         }
                     }
                 },
-                .none, .loaded_cpu => {},
+                .loaded_cpu => {
+                    if (!keep_debug_thumb) {
+                        entry.resident.thumbnail.unloadSuperseded(false);
+                    }
+                },
+                .none => {},
             }
         }
     }
@@ -249,19 +185,6 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
         )) {
             state.updateCurrentRotation();
             did_upload = true;
-        }
-    }
-
-    if (state.viewer.ui.overlays.debug_show_thumb) {
-        if (state.getCurrentEntry()) |cur_e| {
-            switch (cur_e.resident.thumbnail) {
-                .loaded, .not_available => {},
-                .none, .pending, .staged_cpu, .unloaded => {
-                    if (ensureCurrentThumbnailLoaded(state)) {
-                        did_upload = true;
-                    }
-                },
-            }
         }
     }
 

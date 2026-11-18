@@ -172,6 +172,7 @@ pub const ImageDecodedPayload = struct {
     raw_metadata: RawMetadata = .none,
     decode: state_pkg.DecodeTelemetry = .{},
     thumb_write_mtime_sec: ?i64 = null,
+    thumb_probed: bool = true,
 };
 
 /// Payload indicating image file decode failure or unrecoverable read error

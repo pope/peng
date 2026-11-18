@@ -48,6 +48,11 @@ pub fn drainWorkerEvents(state: *AppState, now_ms: u64) bool {
             },
             .thumb_decoded => |*t| {
                 if (t.resolve(&state.cache)) |r| {
+                    const is_current =
+                        if (state.viewer.navigation.getCurrentMediaId()) |cid|
+                            r.key.id == cid
+                        else
+                            false;
                     const skip_staging = hasSubsequentImageDecoded(
                         state.event_batch.items[evt_idx + 1 ..],
                         r.key,
@@ -58,12 +63,23 @@ pub fn drainWorkerEvents(state: *AppState, now_ms: u64) bool {
                         r.key,
                         r.payload.*,
                         skip_staging,
+                        is_current,
                     );
                 }
             },
             .image_decoded => |*d| {
                 if (d.resolve(&state.cache)) |r| {
-                    handleImageDecodedEvent(state, r.key, r.payload);
+                    const is_current =
+                        if (state.viewer.navigation.getCurrentMediaId()) |cid|
+                            r.key.id == cid
+                        else
+                            false;
+                    handleImageDecodedEvent(
+                        state,
+                        r.key,
+                        r.payload,
+                        is_current,
+                    );
                     if (r.payload.surface != null) {
                         destroyed_full_surface = true;
                     }
@@ -132,7 +148,7 @@ fn handleDecodeFailedEvent(
     entry.inflight = .idle;
     switch (entry.resident.asset) {
         .loaded_gpu, .loaded_cpu, .promoting_gpu => {
-            entry.resident.thumbnail.markNotAvailableIfUnresolved();
+            entry.resident.thumbnail.markNotAvailableOnMiss();
         },
         .none, .failed => {
             entry.resident.asset = .failed;
@@ -236,17 +252,22 @@ fn handleDimensionsProbedEvent(
             switch (entry.inflight) {
                 .decoding => |dec| {
                     state.cache.releaseJob(dec.ticket.job_id);
-                    entry.inflight = .{
-                        .queued_decode = .{
-                            .start_time_ms = dec.start_time_ms,
-                            .target = dec.target,
-                        },
-                    };
+                    entry.inflight = if (entry.resident.asset.isLoaded())
+                        .idle
+                    else
+                        .{
+                            .queued_decode = .{
+                                .start_time_ms = dec.start_time_ms,
+                                .target = dec.target,
+                            },
+                        };
                 },
                 .idle, .queued_decode, .uploading => {},
             }
+            entry.resident.thumbnail.markNotAvailableOnMiss();
+        } else {
+            entry.resident.thumbnail.markNotAvailableIfUnresolved();
         }
-        entry.resident.thumbnail.markNotAvailableIfUnresolved();
     }
     state.updateCurrentRotation();
 }
@@ -284,6 +305,7 @@ fn handleExifThumbnailEvent(
     key: cache.ImageCacheKey,
     thumb_data: events.ThumbDecodedPayload,
     skip_staging: bool,
+    is_current: bool,
 ) bool {
     const already_loaded = blk: {
         const entry = state.cache.get(key) orelse return false;
@@ -296,12 +318,15 @@ fn handleExifThumbnailEvent(
             switch (entry.inflight) {
                 .decoding => |dec| {
                     state.cache.releaseJob(dec.ticket.job_id);
-                    entry.inflight = .{
-                        .queued_decode = .{
-                            .start_time_ms = dec.start_time_ms,
-                            .target = dec.target,
-                        },
-                    };
+                    entry.inflight = if (entry.resident.asset.isLoaded())
+                        .idle
+                    else
+                        .{
+                            .queued_decode = .{
+                                .start_time_ms = dec.start_time_ms,
+                                .target = dec.target,
+                            },
+                        };
                 },
                 .idle, .queued_decode, .uploading => {},
             }
@@ -309,7 +334,19 @@ fn handleExifThumbnailEvent(
         break :blk entry.resident.asset.isLoaded();
     };
     state.updateCurrentRotation();
-    if (skip_staging or already_loaded) {
+
+    const want_debug_thumb = state.viewer.ui.overlays.debug_show_thumb and
+        is_current;
+    if ((skip_staging or already_loaded) and !want_debug_thumb) {
+        if (state.cache.get(key)) |e| {
+            e.resident.thumbnail.recordSupersededInfo(.{
+                .w = thumb_data.w,
+                .h = thumb_data.h,
+                .upload_time_ms = 0.0,
+                .dct_snapped = thumb_data.dct_snapped,
+                .source = thumb_data.source,
+            });
+        }
         return false;
     }
 
@@ -334,6 +371,7 @@ fn handleImageDecodedEvent(
     state: *AppState,
     key: cache.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
+    is_current: bool,
 ) void {
     const entry = state.cache.get(key) orelse return;
     switch (entry.inflight) {
@@ -343,7 +381,15 @@ fn handleImageDecodedEvent(
     entry.inflight = .idle;
     const surf = decoded_data.surface orelse return;
     applyDecodedMetadata(entry, decoded_data);
-    entry.resident.thumbnail.discardStagedAndMarkUnavailable();
+    const keep_debug_thumb = state.viewer.ui.overlays.debug_show_thumb and
+        is_current;
+    if (keep_debug_thumb) {
+        if (decoded_data.thumb_probed) {
+            entry.resident.thumbnail.markNotAvailableIfUnresolved();
+        }
+    } else {
+        entry.resident.thumbnail.unloadSuperseded(decoded_data.thumb_probed);
+    }
 
     const thumb_write: ?cache.DeferredThumbWrite =
         if (decoded_data.thumb_write_mtime_sec) |mtime_sec|
@@ -1729,7 +1775,7 @@ test "handleImageDecodedEvent - keeps loaded_gpu and stages promoting_gpu" {
     };
     defer if (decoded.surface) |s| s.destroy();
 
-    handleImageDecodedEvent(&state, key1, &decoded);
+    handleImageDecodedEvent(&state, key1, &decoded, false);
 
     // Slide 1 transitions to .promoting_gpu keeping 16x16 active GPU and
     // staging 32x32 CPU surface
@@ -1802,10 +1848,16 @@ test "drainWorkerEvents - stages staged_cpu and cancels on image_decoded" {
     });
 
     try std.testing.expect(drainWorkerEvents(&state, 1000));
-    try std.testing.expectEqual(
-        cache.ThumbnailState.not_available,
-        entry0.resident.thumbnail,
-    );
+    switch (entry0.resident.thumbnail) {
+        .unloaded => |info| {
+            try std.testing.expectEqual(@as(f32, 16.0), info.w);
+            try std.testing.expectEqual(@as(f32, 16.0), info.h);
+            try std.testing.expect(info.dct_snapped);
+        },
+        .none, .pending, .staged_cpu, .not_available, .loaded => {
+            return error.TestExpectedUnloaded;
+        },
+    }
     switch (entry0.resident.asset) {
         .loaded_cpu => |asset| {
             try std.testing.expectEqual(

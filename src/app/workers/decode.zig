@@ -703,6 +703,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     .archive = .none,
                 },
                 .thumb_write_mtime_sec = thumb_write_mtime_sec,
+                .thumb_probed = should_try_thumb,
             }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});
@@ -1316,6 +1317,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     .archive = payload.archive,
                 },
                 .thumb_write_mtime_sec = thumb_write_mtime_sec,
+                .thumb_probed = should_try_thumb,
             }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});

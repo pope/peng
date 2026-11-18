@@ -6,24 +6,16 @@ const std = @import("std");
 const triage = @import("triage");
 const vfs = @import("vfs");
 
-const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
 const DecodeTelemetry = state_pkg.DecodeTelemetry;
-const detectMimeType = probe.detectMimeType;
 const IngestTelemetry = state_pkg.IngestTelemetry;
-const isRawFile = vfs.isRawFile;
-const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
-const NoCancel = probe.NoCancel;
 const Orientation = probe.Orientation;
 const PairStreamTarget = vfs.PairStreamTarget;
-const parseImageDimensions = probe.parseImageDimensions;
 const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const RawMetadata = probe.RawMetadata;
-const readLocationBytes = probe.readLocationBytes;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
 const VisibleNeighbors = triage.VisibleNeighbors;
-const ZipSeekOffsets = vfs.ZipSeekOffsets;
 
 /// Decoded CPU software surface stored in host RAM.
 pub const CpuSurfaceComponent = struct {
@@ -58,6 +50,18 @@ pub const PendingThumbSurface = struct {
     surface: sdl.Surface,
     dct_snapped: bool = false,
     source: state_pkg.ThumbnailSource = .embedded_header,
+
+    /// Extracts `ThumbnailInfo` dimensions and metadata for `.unloaded`
+    /// retention before destroying a superseded CPU surface.
+    pub fn toUnloadedInfo(self: PendingThumbSurface) ThumbnailInfo {
+        return .{
+            .w = @floatFromInt(@max(0, self.surface.w())),
+            .h = @floatFromInt(@max(0, self.surface.h())),
+            .upload_time_ms = 0.0,
+            .dct_snapped = self.dct_snapped,
+            .source = self.source,
+        };
+    }
 
     /// Destroys the staged thumbnail SDL surface.
     pub fn deinit(self: *PendingThumbSurface) void {
@@ -281,6 +285,54 @@ pub const ThumbnailState = union(enum) {
         switch (self.*) {
             .none, .pending => self.* = .not_available,
             .staged_cpu, .loaded, .unloaded, .not_available => {},
+        }
+    }
+
+    /// Transitions `.none`, `.pending`, or `.unloaded` to `.not_available`
+    /// when a thumbnail-only worker probe confirms no thumbnail can be loaded.
+    pub fn markNotAvailableOnMiss(self: *ThumbnailState) void {
+        switch (self.*) {
+            .none, .pending, .unloaded => self.* = .not_available,
+            .staged_cpu, .loaded, .not_available => {},
+        }
+    }
+
+    /// Records `.unloaded` metadata when a decoded thumbnail surface is
+    /// skipped because the full-resolution image is already resident or queued
+    /// in the same event batch, destroying any prior `.staged_cpu` surface.
+    pub fn recordSupersededInfo(
+        self: *ThumbnailState,
+        info: ThumbnailInfo,
+    ) void {
+        switch (self.*) {
+            .staged_cpu => |*st| {
+                st.deinit();
+                self.* = .{ .unloaded = info };
+            },
+            .none, .pending => self.* = .{ .unloaded = info },
+            .loaded, .unloaded, .not_available => {},
+        }
+    }
+
+    /// Destroys any `.staged_cpu` surface while retaining its `.unloaded`
+    /// metadata, and marks `.none` or `.pending` as `.not_available` when
+    /// `mark_unresolved_unavailable` indicates thumbnail probing completed.
+    pub fn unloadSuperseded(
+        self: *ThumbnailState,
+        mark_unresolved_unavailable: bool,
+    ) void {
+        switch (self.*) {
+            .staged_cpu => |*st| {
+                const info = st.toUnloadedInfo();
+                st.deinit();
+                self.* = .{ .unloaded = info };
+            },
+            .none, .pending => {
+                if (mark_unresolved_unavailable) {
+                    self.* = .not_available;
+                }
+            },
+            .loaded, .unloaded, .not_available => {},
         }
     }
 
@@ -925,16 +977,6 @@ pub const ImageCache = struct {
     }
 };
 
-/// Extracted thumbnail surface along with orientation, full-resolution
-/// dimensions, RAW metadata, and DCT block snapping detection.
-pub const ExtractedThumbnail = struct {
-    surface: sdl.Surface,
-    orientation: Orientation = .normal,
-    source_dims: ?PhysicalDims = null,
-    raw_metadata: RawMetadata = .none,
-    dct_snapped: bool = false,
-};
-
 /// Inspects the decoded thumbnail CPU surface to detect whether letterbox (or
 /// pillarbox) black bars have been padded and snapped to 8-pixel DCT block
 /// boundaries by in-camera preview encoders (e.g. Fujifilm RAF, Ricoh GR IIIx
@@ -1035,230 +1077,6 @@ pub fn detectThumbnailDctPadding(
     }
 
     return false;
-}
-
-fn loadThumbnailFromLocation(
-    io: std.Io,
-    alloc: std.mem.Allocator,
-    file: *std.Io.File,
-    file_size: u64,
-    header_slice: []const u8,
-    loc: probe.ThumbnailLocation,
-) ?sdl.Surface {
-    var loc_bytes = (readLocationBytes(
-        alloc,
-        file.*,
-        io,
-        NoCancel{},
-        header_slice,
-        file_size,
-        loc,
-        2 * 1024 * 1024,
-    ) catch |err| {
-        std.log.warn(
-            "loadThumbnailFromLocation: read failed: {any}",
-            .{err},
-        );
-        return null;
-    }) orelse return null;
-    defer loc_bytes.deinit(alloc);
-    return sdl.Surface.loadConstMemOpt(loc_bytes.bytes);
-}
-
-fn loadStoredZipThumbnail(
-    io: std.Io,
-    a: ArchiveMediaEntry,
-    seek: ZipSeekOffsets,
-) ?ExtractedThumbnail {
-    if (seek.compression_method != .store) return null;
-
-    var file = std.Io.Dir.openFile(
-        std.Io.Dir.cwd(),
-        io,
-        a.archive_path,
-        .{},
-    ) catch |err| {
-        std.log.warn(
-            "loadThumbnailSurface: openFile failed for '{s}': {any}",
-            .{ a.archive_path, err },
-        );
-        return null;
-    };
-    defer file.close(io);
-
-    var header_buf: [128 * 1024]u8 = undefined;
-    var slices = [_][]u8{&header_buf};
-    const n = file.readPositional(
-        io,
-        &slices,
-        seek.file_offset,
-    ) catch |err| {
-        std.log.warn(
-            "loadThumbnailSurface: readPositional failed for '{s}': {any}",
-            .{ a.archive_path, err },
-        );
-        return null;
-    };
-    if (n == 0) return null;
-
-    const image_slice = probe.skipZipLocalFileHeader(header_buf[0..n]) orelse
-        return null;
-    const mime_type = detectMimeType(image_slice, a.entry_name);
-    if (!std.mem.eql(u8, mime_type, "image/jpeg")) return null;
-
-    const loc = probe.extractJpegThumbnailLocation(image_slice) orelse
-        return null;
-    if (loc.file_offset +| loc.length > image_slice.len) return null;
-    const off: usize = @intCast(loc.file_offset);
-    const len: usize = @intCast(loc.length);
-
-    const surf = sdl.Surface.loadConstMemOpt(
-        image_slice[off .. off + len],
-    ) orelse return null;
-
-    const orientation = probe.parseExifOrientation(image_slice) orelse .normal;
-    const source_dims = parseImageDimensions(image_slice, mime_type);
-    const dct_snapped = if (source_dims) |sd|
-        detectThumbnailDctPadding(surf, sd.w, sd.h)
-    else
-        false;
-
-    return ExtractedThumbnail{
-        .surface = surf,
-        .orientation = orientation,
-        .source_dims = source_dims,
-        .raw_metadata = .none,
-        .dct_snapped = dct_snapped,
-    };
-}
-
-/// Extracts the embedded preview thumbnail surface and orientation metadata
-/// for a media entry. Supports Camera RAW formats (.arw, .raf, .cr2, .nef,
-/// .dng, .orf, .rw2, .pef), standard JPEGs, and CBZ entries.
-pub fn loadThumbnailSurface(
-    io: std.Io,
-    alloc: std.mem.Allocator,
-    media: MediaEntry,
-) ?ExtractedThumbnail {
-    switch (media) {
-        .filesystem => |f| {
-            var file = std.Io.Dir.openFile(
-                std.Io.Dir.cwd(),
-                io,
-                f.path,
-                .{},
-            ) catch |err| {
-                std.log.warn(
-                    "loadThumbnailSurface: openFile failed for '{s}': {any}",
-                    .{ f.path, err },
-                );
-                return null;
-            };
-            defer file.close(io);
-
-            const file_size = file.length(io) catch |err| {
-                std.log.warn(
-                    "loadThumbnailSurface: length failed for '{s}': {any}",
-                    .{ f.path, err },
-                );
-                return null;
-            };
-            const is_raw_ext = isRawFile(f.path);
-            var header_buf: [256 * 1024]u8 = undefined;
-            const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
-            var slices = [_][]u8{header_buf[0..target_read]};
-            const header_n = file.readPositional(io, &slices, 0) catch |err| {
-                std.log.warn(
-                    "loadThumbnailSurface: readPositional failed '{s}': {any}",
-                    .{ f.path, err },
-                );
-                return null;
-            };
-            if (header_n == 0) return null;
-            const header_slice = header_buf[0..header_n];
-
-            const mime_type = detectMimeType(header_slice, f.path);
-            const is_raw = is_raw_ext or
-                probe.isRawContainer(header_slice, mime_type);
-
-            var thumb_surf: ?sdl.Surface = null;
-            var orientation: Orientation = .normal;
-            var source_dims: ?PhysicalDims = null;
-
-            if (is_raw) {
-                const raw_probe = probe.probeRawFileHeader(
-                    io,
-                    &file,
-                    file_size,
-                    header_slice,
-                    mime_type,
-                );
-                source_dims = raw_probe.sensor_dims;
-                orientation = raw_probe.orientation;
-                if (raw_probe.selectPlaceholder(true, file_size)) |tloc| {
-                    thumb_surf = loadThumbnailFromLocation(
-                        io,
-                        alloc,
-                        &file,
-                        file_size,
-                        header_slice,
-                        tloc,
-                    );
-                }
-            } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                orientation =
-                    probe.parseExifOrientation(header_slice) orelse .normal;
-                source_dims = parseImageDimensions(header_slice, mime_type);
-                if (probe.extractValidJpegThumbnailLocation(
-                    header_slice,
-                    mime_type,
-                    file_size,
-                    2 * 1024 * 1024,
-                )) |loc| {
-                    thumb_surf = loadThumbnailFromLocation(
-                        io,
-                        alloc,
-                        &file,
-                        file_size,
-                        header_slice,
-                        loc,
-                    );
-                }
-            }
-
-            const surf = thumb_surf orelse return null;
-            const dct_snapped = if (source_dims) |sd|
-                detectThumbnailDctPadding(surf, sd.w, sd.h)
-            else
-                false;
-            return ExtractedThumbnail{
-                .surface = surf,
-                .orientation = orientation,
-                .source_dims = source_dims,
-                .raw_metadata = if (is_raw)
-                    (if (source_dims) |sd|
-                        RawMetadata.fromDims(sd)
-                    else
-                        .none)
-                else
-                    .none,
-                .dct_snapped = dct_snapped,
-            };
-        },
-        .archive_entry => |a| {
-            switch (a.seek_info) {
-                .indexed => |seek| return loadStoredZipThumbnail(io, a, seek),
-                .unindexed => return null,
-            }
-        },
-        .pair => |p| {
-            return loadThumbnailSurface(
-                io,
-                alloc,
-                .{ .filesystem = .{ .path = p.raw_path } },
-            );
-        },
-    }
 }
 
 /// Return payload containing converted/scaled surface and elapsed time in ms.
@@ -1668,85 +1486,6 @@ test "ImageCache - atomic generation advance and activeKey" {
     const key = cache.activeKey(id5);
     try std.testing.expectEqual(id5, key.id);
     try std.testing.expectEqual(@as(usize, 1), key.generation);
-}
-
-test "loadThumbnailSurface - filesystem TIFF RAW mock" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    // Read real JPEG from committed fixtures
-    const fixture_path = "testfiles/images/000_0_1024x682.jpg";
-    var real_jpg = try std.Io.Dir.openFile(
-        std.Io.Dir.cwd(),
-        io,
-        fixture_path,
-        .{},
-    );
-    defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(
-        std.Io.Dir.cwd(),
-        io,
-        fixture_path,
-        .{},
-    );
-    const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
-    defer allocator.free(jpg_bytes);
-    var j_slices = [_][]u8{jpg_bytes};
-    _ = try real_jpg.readPositional(io, &j_slices, 0);
-
-    const tiff_buf = try probe.buildSyntheticSubIfdArwAlloc(
-        allocator,
-        6000,
-        4000,
-        6,
-        jpg_bytes,
-    );
-    defer allocator.free(tiff_buf);
-
-    // Write mock file in isolated temp directory
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var mock_file = try tmp.dir.createFile(io, "mock_thumb_test.arw", .{});
-    var wr_slices = [_][]const u8{tiff_buf};
-    _ = try mock_file.writePositional(io, &wr_slices, 0);
-    mock_file.close(io);
-
-    var path_buf: [128]u8 = undefined;
-    const mock_path = try std.mem.print(
-        &path_buf,
-        ".zig-cache/tmp/{s}/mock_thumb_test.arw",
-        .{tmp.sub_path},
-    );
-
-    const media = MediaEntry{ .filesystem = .{ .path = mock_path } };
-    const thumb = loadThumbnailSurface(io, allocator, media);
-    try std.testing.expect(thumb != null);
-    if (thumb) |t| {
-        defer t.surface.destroy();
-        try std.testing.expect(t.surface.w() > 0);
-        try std.testing.expect(t.surface.h() > 0);
-        try std.testing.expectEqual(Orientation.rotate_90, t.orientation);
-        try std.testing.expect(t.raw_metadata.isRaw());
-        try std.testing.expectEqual(
-            PhysicalDims{ .w = 6000.0, .h = 4000.0 },
-            t.source_dims.?,
-        );
-    }
-}
-
-test "loadThumbnailSurface - filesystem non-existent file returns null" {
-    const prev_level = std.testing.log_level;
-    std.testing.log_level = .err;
-    defer std.testing.log_level = prev_level;
-
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "testfiles/images/non_existent_file.raf",
-        },
-    };
-    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
-    try std.testing.expectEqual(@as(?ExtractedThumbnail, null), thumb);
 }
 
 test "detectThumbnailDctPadding - matching aspect ratio returns false" {
