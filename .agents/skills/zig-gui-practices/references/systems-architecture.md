@@ -185,14 +185,23 @@ ______________________________________________________________________
   - **L1 Cache Line Density**: Dense 1-byte arrays stream 64 items per 64-byte L1 cache line (a 64x density improvement over AoS structs), enabling sub-microsecond SIMD filtering across 10,000+ items.
   - **Read-Only Snapshot Slice**: Slicing via `nav.items.slice()` creates a zero-allocation `MediaItemSlice = std.MultiArrayList(MediaItem).Slice` passed into Phase 3 (Render) `UiViewModel`.
   - **Encapsulation & Triage Export**: State mutations go through encapsulating
-    methods (`appendEntry`, `clearEntries`, `clearAllClassifications`), UI view
-    models access items via bounds-checked inline accessors
-    (`getMediaEntry(idx)`, `getClassification(idx)`), persistent path flags are
-    tracked in `StringArrayHashMapUnmanaged(Classification)` (keying
-    `.archive_entry` items as `<archive_path>#<entry_name>`), live selections
-    are streamed as JSON via `writeSelectionsJson` (`peng-msg ... selections`),
-    and picked/rejected paths are exported to `stdout` on clean exit
+    methods (`appendEntry`, `appendEntryWithId`, `clearEntries`,
+    `trimExcessCapacity`, `clearAllClassifications`), UI view models access
+    items via bounds-checked inline accessors (`getMediaEntry(idx)`,
+    `getClassification(idx)`), persistent path flags are tracked in
+    `StringArrayHashMapUnmanaged(Classification)` (keying `.archive_entry` items
+    as `<archive_path>#<entry_name>`), live selections are streamed as JSON via
+    `writeSelectionsJson` (`peng-msg ... selections`), and picked/rejected
+    paths are exported to `stdout` on clean exit
     (`exportClassificationsToStdout`).
+  - **O(1) `MediaId` Resolution & SIMD Fallback (`posOfId`)**:
+    `NavigationState` maintains `first_seq_id` and `out_of_order_slot` hints
+    in `appendEntryWithId` (committed only after all `try` steps succeed) and
+    resets them in `clearEntries`/`trimExcessCapacity`. `posOfId` checks
+    `out_of_order_slot`, then sequential (`delta = id -% first_seq_id`) and
+    single-file shifted (`delta +| 1`) probes, before falling back to an
+    8-wide `@Vector(8, u32)` SIMD scan (`raw_ids[i..][0..8].*`, `@bitCast` to
+    `u8`, `@ctz(mask)`) and scalar tail.
 
 ______________________________________________________________________
 

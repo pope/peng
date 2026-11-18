@@ -31,10 +31,21 @@ pub const NavDirection = enum {
 /// Maximum memory bytes retained across directory arena resets (256 KiB).
 const MAX_RETAINED_DIR_ARENA_BYTES: usize = 256 * 1024;
 
+const Vec8 = @Vector(8, u32);
+
+/// Tracks the first non-sequential `MediaId` slot (such as retained
+/// `MediaId(1)` embedded mid-playlist) for O(1) `posOfId` lookup.
+const OutOfOrderSlot = struct {
+    id: MediaId,
+    index: usize,
+};
+
 /// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     items: std.MultiArrayList(MediaItem) = .empty,
     next_media_id: u32 = 1,
+    first_seq_id: u32 = 0,
+    out_of_order_slot: ?OutOfOrderSlot = null,
     triage: TriageMap,
     anchor_index: usize = 0,
     current_index: ?usize = null,
@@ -89,6 +100,8 @@ pub const NavigationState = struct {
             const target_cap = @max(64, self.items.len);
             if (self.items.len == 0) {
                 self.items.clearAndFree(gpa);
+                self.first_seq_id = 0;
+                self.out_of_order_slot = null;
             } else {
                 self.items.setCapacity(gpa, target_cap) catch {};
             }
@@ -122,6 +135,7 @@ pub const NavigationState = struct {
         entry: MediaEntry,
     ) !void {
         const initial_class = self.triage.lookupEntry(entry);
+        const idx = self.items.len;
         try self.items.append(gpa, .{
             .id = id,
             .entry = entry,
@@ -134,6 +148,18 @@ pub const NavigationState = struct {
             self.next_media_id = id.toU32() +% 1;
             if (self.next_media_id == 0) self.next_media_id = 1;
         }
+        if (idx == 0) {
+            self.first_seq_id = id.toU32();
+            self.out_of_order_slot = null;
+        } else if (self.out_of_order_slot == null) {
+            const expected = self.first_seq_id +% @as(u32, @truncate(idx));
+            if (id.toU32() != expected) {
+                self.out_of_order_slot = .{
+                    .id = id,
+                    .index = idx,
+                };
+            }
+        }
     }
 
     /// Clears active media list, preserving persistent path flags and
@@ -143,6 +169,8 @@ pub const NavigationState = struct {
         self.triage.resetActiveCounts();
         self.current_index = null;
         self.anchor_index = 0;
+        self.first_seq_id = 0;
+        self.out_of_order_slot = null;
     }
 
     /// Returns the effective navigation prefetch direction. If no user
@@ -215,8 +243,41 @@ pub const NavigationState = struct {
     pub fn posOfId(self: *const NavigationState, id: MediaId) ?usize {
         if (!id.isValid()) return null;
         const ids = self.items.items(.id);
-        for (ids, 0..) |cand, i| {
-            if (cand == id) return i;
+        if (ids.len == 0) return null;
+
+        if (self.out_of_order_slot) |slot| {
+            if (slot.id == id and
+                slot.index < ids.len and
+                ids[slot.index] == id)
+            {
+                return slot.index;
+            }
+        }
+
+        const raw_target = id.toU32();
+        const delta: usize = raw_target -% self.first_seq_id;
+        if (delta < ids.len and ids[delta] == id) return delta;
+        const shifted = delta +| 1;
+        if (shifted < ids.len and ids[shifted] == id) return shifted;
+
+        comptime {
+            if (@sizeOf(MediaId) != @sizeOf(u32) or
+                @alignOf(MediaId) != @alignOf(u32))
+            {
+                @compileError("MediaId layout must match u32 for SIMD");
+            }
+        }
+        const raw_ids: [*]const u32 = @ptrCast(ids.ptr);
+        const target_vec: Vec8 = @splat(raw_target);
+        var i: usize = 0;
+        while (i + 8 <= ids.len) : (i += 8) {
+            const chunk: Vec8 = raw_ids[i..][0..8].*;
+            const matches: @Vector(8, bool) = chunk == target_vec;
+            const mask: u8 = @bitCast(matches);
+            if (mask != 0) return i + @ctz(mask);
+        }
+        while (i < ids.len) : (i += 1) {
+            if (ids[i] == id) return i;
         }
         return null;
     }
@@ -1106,4 +1167,309 @@ test "NavigationState trimExcessCapacity safely handles 0 items" {
 
     try std.testing.expectEqual(@as(usize, 0), nav.items.capacity);
     try std.testing.expectEqual(@as(usize, 0), nav.items.len);
+    try std.testing.expectEqual(@as(u32, 0), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+}
+
+test "NavigationState posOfId empty, none, and sequential > 64" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try std.testing.expectEqual(@as(?usize, null), nav.posOfId(MediaId.none));
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        nav.posOfId(MediaId.fromU32(1)),
+    );
+
+    const n: usize = 75;
+    var ids: [75]MediaId = undefined;
+    for (0..n) |i| {
+        ids[i] = try nav.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = "seq.jpg" } },
+        );
+    }
+
+    try std.testing.expectEqual(@as(u32, 1), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+    try std.testing.expectEqual(@as(?usize, null), nav.posOfId(MediaId.none));
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        nav.posOfId(MediaId.fromU32(999)),
+    );
+    for (0..n) |i| {
+        try std.testing.expectEqual(@as(?usize, i), nav.posOfId(ids[i]));
+    }
+}
+
+test "NavigationState posOfId single-file MediaId(1) embedded positions" {
+    const allocator = std.testing.allocator;
+    const total: usize = 70;
+    const positions = [_]usize{ 0, 1, 50, total - 1 };
+
+    for (positions) |target_idx| {
+        var nav = try NavigationState.init(allocator);
+        defer nav.deinit(allocator);
+
+        const initial_id = try nav.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = "target.jpg" } },
+        );
+        try std.testing.expectEqual(@as(u32, 1), initial_id.toU32());
+        nav.clearEntries();
+        try std.testing.expectEqual(@as(u32, 0), nav.first_seq_id);
+        try std.testing.expectEqual(
+            @as(?OutOfOrderSlot, null),
+            nav.out_of_order_slot,
+        );
+
+        var expected_ids: [70]MediaId = undefined;
+        for (0..total) |i| {
+            if (i == target_idx) {
+                try nav.appendEntryWithId(
+                    allocator,
+                    initial_id,
+                    .{ .filesystem = .{ .path = "target.jpg" } },
+                );
+                expected_ids[i] = initial_id;
+            } else {
+                expected_ids[i] = try nav.appendEntry(
+                    allocator,
+                    .{ .filesystem = .{ .path = "other.jpg" } },
+                );
+            }
+        }
+
+        if (target_idx == 0) {
+            try std.testing.expectEqual(@as(u32, 1), nav.first_seq_id);
+            try std.testing.expectEqual(
+                @as(?OutOfOrderSlot, null),
+                nav.out_of_order_slot,
+            );
+        } else {
+            try std.testing.expectEqual(@as(u32, 2), nav.first_seq_id);
+            try std.testing.expectEqual(
+                @as(?OutOfOrderSlot, .{
+                    .id = initial_id,
+                    .index = target_idx,
+                }),
+                nav.out_of_order_slot,
+            );
+        }
+
+        for (0..total) |i| {
+            try std.testing.expectEqual(
+                @as(?usize, i),
+                nav.posOfId(expected_ids[i]),
+            );
+        }
+        try std.testing.expectEqual(
+            @as(?usize, null),
+            nav.posOfId(MediaId.fromU32(500)),
+        );
+    }
+}
+
+test "NavigationState posOfId SIMD lanes 0..7 and scalar tail 0..7" {
+    const allocator = std.testing.allocator;
+    for (16..24) |len| {
+        var nav = try NavigationState.init(allocator);
+        defer nav.deinit(allocator);
+
+        // Odd capacity tests non-32-byte-aligned MultiArrayList .id slices.
+        try nav.items.ensureTotalCapacity(allocator, len + 1);
+
+        var ids: [24]MediaId = undefined;
+        for (0..len) |i| {
+            // Scramble IDs so items after index 1 miss fast paths 1 and 2.
+            const raw: u32 = @intCast(1000 - i * 17);
+            const id = MediaId.fromU32(raw);
+            ids[i] = id;
+            try nav.appendEntryWithId(
+                allocator,
+                id,
+                .{ .filesystem = .{ .path = "scrambled.jpg" } },
+            );
+        }
+
+        for (0..len) |i| {
+            try std.testing.expectEqual(@as(?usize, i), nav.posOfId(ids[i]));
+        }
+        try std.testing.expectEqual(
+            @as(?usize, null),
+            nav.posOfId(MediaId.fromU32(424242)),
+        );
+    }
+}
+
+test "NavigationState posOfId handles u32 wraparound across zero" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    nav.next_media_id = std.math.maxInt(u32) - 1;
+    var ids: [20]MediaId = undefined;
+    for (0..20) |i| {
+        ids[i] = try nav.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = "wrap.jpg" } },
+        );
+    }
+
+    try std.testing.expectEqual(std.math.maxInt(u32) - 1, ids[0].toU32());
+    try std.testing.expectEqual(std.math.maxInt(u32), ids[1].toU32());
+    try std.testing.expectEqual(@as(u32, 1), ids[2].toU32());
+    try std.testing.expectEqual(@as(u32, 2), ids[3].toU32());
+
+    for (0..20) |i| {
+        try std.testing.expectEqual(@as(?usize, i), nav.posOfId(ids[i]));
+    }
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        nav.posOfId(MediaId.fromU32(99)),
+    );
+}
+
+test "NavigationState posOfId hint reset on clearEntries and trim" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try nav.items.ensureTotalCapacity(allocator, 128);
+    const id_a = MediaId.fromU32(10);
+    const id_b = MediaId.fromU32(50);
+    try nav.appendEntryWithId(
+        allocator,
+        id_a,
+        .{ .filesystem = .{ .path = "a.jpg" } },
+    );
+    try nav.appendEntryWithId(
+        allocator,
+        id_b,
+        .{ .filesystem = .{ .path = "b.jpg" } },
+    );
+    try std.testing.expectEqual(@as(u32, 10), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, .{ .id = id_b, .index = 1 }),
+        nav.out_of_order_slot,
+    );
+
+    nav.clearEntries();
+    try std.testing.expectEqual(@as(u32, 0), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+    try std.testing.expectEqual(@as(?usize, null), nav.posOfId(id_a));
+    try std.testing.expectEqual(@as(?usize, null), nav.posOfId(id_b));
+
+    nav.trimExcessCapacity(allocator);
+    try std.testing.expectEqual(@as(usize, 0), nav.items.capacity);
+    try std.testing.expectEqual(@as(u32, 0), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+
+    const id_c = try nav.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "c.jpg" } },
+    );
+    try std.testing.expectEqual(@as(u32, 51), nav.first_seq_id);
+    try std.testing.expectEqual(@as(?usize, 0), nav.posOfId(id_c));
+    try std.testing.expectEqual(@as(?usize, null), nav.posOfId(id_a));
+}
+
+test "NavigationState appendEntryWithId preserves hints on triage OOM" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    const initial_cap = nav.triage.path_classifications.entries.capacity;
+    var path_buf: [32]u8 = undefined;
+    for (0..initial_cap) |i| {
+        const p = try std.mem.print(&path_buf, "pick_{d}.jpg", .{i});
+        _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = p } });
+        nav.current_index = i;
+        _ = try nav.markCurrentPick(allocator);
+    }
+
+    nav.clearEntries();
+    try nav.items.ensureTotalCapacity(allocator, 8);
+
+    var fail_state = std.testing.FailingAllocator.init(
+        allocator,
+        .{ .fail_index = 0 },
+    );
+    const fail_alloc = fail_state.allocator();
+
+    // Index 0 OOM in triage.registerEntry must not corrupt first_seq_id.
+    try std.testing.expectError(
+        error.OutOfMemory,
+        nav.appendEntryWithId(
+            fail_alloc,
+            MediaId.fromU32(777),
+            .{
+                .pair = .{
+                    .raw_path = "oom_zero.ARW",
+                    .jpeg_path = "pick_0.jpg",
+                },
+            },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), nav.count());
+    try std.testing.expectEqual(@as(u32, 0), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+
+    const id_ok = MediaId.fromU32(800);
+    try nav.appendEntryWithId(
+        allocator,
+        id_ok,
+        .{ .filesystem = .{ .path = "unflagged_ok.jpg" } },
+    );
+    try std.testing.expectEqual(@as(u32, 800), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+
+    // path_classifications remains full; fail_index = 0 fails on resize.
+    fail_state = std.testing.FailingAllocator.init(
+        allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(
+        error.OutOfMemory,
+        nav.appendEntryWithId(
+            fail_state.allocator(),
+            MediaId.fromU32(999),
+            .{
+                .pair = .{
+                    .raw_path = "oom_second.ARW",
+                    .jpeg_path = "pick_0.jpg",
+                },
+            },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), nav.count());
+    try std.testing.expectEqual(@as(u32, 800), nav.first_seq_id);
+    try std.testing.expectEqual(
+        @as(?OutOfOrderSlot, null),
+        nav.out_of_order_slot,
+    );
+    try std.testing.expectEqual(@as(?usize, 0), nav.posOfId(id_ok));
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        nav.posOfId(MediaId.fromU32(999)),
+    );
 }

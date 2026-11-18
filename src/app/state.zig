@@ -644,9 +644,7 @@ pub const AppState = struct {
         }
         self.clearRotationMap();
         self.viewer.navigation.clearEntries();
-        if (self.viewer.navigation.items.capacity > 64) {
-            self.viewer.navigation.items.shrinkAndFree(self.allocator, 0);
-        }
+        self.viewer.navigation.trimExcessCapacity(self.allocator);
         self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
         _ = self.viewer.navigation.directory_arena.reset(.free_all);
 
