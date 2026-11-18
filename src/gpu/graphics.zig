@@ -2,12 +2,15 @@ const builtin = @import("builtin");
 const geom = @import("geom");
 const geometry = @import("geometry.zig");
 const sdl = @import("sdl");
+const state = @import("state");
 const std = @import("std");
 const text_cache = @import("text_cache.zig");
 
 const FontMeasurer = text_cache.FontMeasurer;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const TextCache = text_cache.TextCache;
+const UiRenderMetrics = state.UiRenderMetrics;
+const UiRenderMetricsSnapshot = state.UiRenderMetricsSnapshot;
 
 /// Initialized window handle, SDL GPU device, and DPI scale factor.
 pub const GraphicsSetup = struct {
@@ -481,6 +484,27 @@ pub const RenderResources = struct {
     // Font text texture cache & font
     text_cache: TextCache = .{},
     fonts: [1]?sdl.Font = .{null},
+    metrics: UiRenderMetrics = .{},
+
+    /// Snapshots rolling UI render timing statistics, vertex/batch counts,
+    /// and live font-atlas metrics for HUD overlay display.
+    pub fn snapshotMetrics(
+        self: *const RenderResources,
+    ) UiRenderMetricsSnapshot {
+        const stats = self.metrics.ui_render_stats.getMeanAndStdev();
+        return .{
+            .mean_render_time_ms = stats.mean,
+            .stdev_render_time_ms = stats.stdev,
+            .last_ui_vertex_count = self.metrics.last_ui_vertex_count,
+            .last_ui_batch_count = self.metrics.last_ui_batch_count,
+            .atlas_shelf_x = self.text_cache.packer.cur_x,
+            .atlas_shelf_y = self.text_cache.packer.cur_y,
+            .atlas_used_h = self.text_cache.usedHeight(),
+            .atlas_page_count = self.text_cache.page_count,
+            .atlas_ascii_glyphs = self.text_cache.countCachedAsciiGlyphs(),
+            .atlas_unicode_glyphs = self.text_cache.glyphs.count(),
+        };
+    }
 
     /// Returns a `FontMeasurer` bound to this resource context's loaded fonts
     /// and glyph cache.
@@ -614,6 +638,7 @@ pub const RenderResources = struct {
                 },
             }
         }
+        self.metrics = .{};
         return released;
     }
 
@@ -1268,4 +1293,73 @@ test "StaticInitPayload packs fullscreen quad and 4-byte aligned white pixel" {
         &payload.white_pixel,
     );
     try std.testing.expectEqual(@as(usize, 6), payload.fullscreen_verts.len);
+}
+
+test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
+    initSdlCore(true) catch return;
+    defer quitSdlCore();
+
+    const setup = initGraphicsAndWindow(
+        "gpu-metrics-test",
+        .{ .headless = true, .debug_mode = false },
+    ) catch return;
+    defer {
+        setup.gpu_device.destroy();
+        setup.window.destroy();
+    }
+
+    const allocator = std.testing.allocator;
+    var gpu_res = initGpuResources(
+        setup.gpu_device,
+        setup.window,
+        setup.initial_dpi_scale,
+        true,
+    ) catch return;
+    defer gpu_res.deinit(allocator);
+
+    gpu_res.metrics.ui_render_stats.addSample(4.0);
+    gpu_res.metrics.ui_render_stats.addSample(8.0);
+    gpu_res.metrics.last_ui_vertex_count = 360;
+    gpu_res.metrics.last_ui_batch_count = 6;
+    gpu_res.text_cache.packer.cur_x = 128;
+    gpu_res.text_cache.packer.cur_y = 64;
+    gpu_res.text_cache.page_count = 1;
+
+    const snap = gpu_res.snapshotMetrics();
+    try std.testing.expectEqual(@as(f64, 6.0), snap.mean_render_time_ms);
+    try std.testing.expect(snap.stdev_render_time_ms > 0.0);
+    try std.testing.expectEqual(@as(usize, 360), snap.last_ui_vertex_count);
+    try std.testing.expectEqual(@as(usize, 6), snap.last_ui_batch_count);
+    try std.testing.expectEqual(@as(u32, 128), snap.atlas_shelf_x);
+    try std.testing.expectEqual(@as(u32, 64), snap.atlas_shelf_y);
+    try std.testing.expectEqual(
+        gpu_res.text_cache.usedHeight(),
+        snap.atlas_used_h,
+    );
+    try std.testing.expectEqual(@as(usize, 1), snap.atlas_page_count);
+
+    // First call releases text_cache (page_count == 1) and resets metrics.
+    try std.testing.expect(gpu_res.releaseTransientResources(allocator));
+    const reset_snap = gpu_res.snapshotMetrics();
+    try std.testing.expectEqual(@as(f64, 0.0), reset_snap.mean_render_time_ms);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        reset_snap.last_ui_vertex_count,
+    );
+    try std.testing.expectEqual(@as(usize, 0), reset_snap.last_ui_batch_count);
+
+    // Subsequent call with only metrics populated must return false while
+    // still resetting metrics.
+    gpu_res.metrics.ui_render_stats.addSample(5.0);
+    gpu_res.metrics.last_ui_vertex_count = 42;
+    try std.testing.expect(!gpu_res.releaseTransientResources(allocator));
+    const second_snap = gpu_res.snapshotMetrics();
+    try std.testing.expectEqual(
+        @as(f64, 0.0),
+        second_snap.mean_render_time_ms,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        second_snap.last_ui_vertex_count,
+    );
 }

@@ -12,7 +12,6 @@ pub const context = @import("context.zig");
 pub const input = @import("input.zig");
 pub const intents = @import("intents.zig");
 pub const ipc = @import("ipc.zig");
-pub const metrics = @import("metrics.zig");
 pub const palette_input = @import("palette_input.zig");
 pub const slideshow = @import("slideshow.zig");
 pub const ui_interactions = @import("ui_interactions.zig");
@@ -26,7 +25,6 @@ pub const sysProcessAssetUploads = asset_upload.sysProcessAssetUploads;
 pub const sysProcessInput = input.sysProcessInput;
 pub const sysProcessPaletteInput = palette_input.sysProcessPaletteInput;
 pub const sysProcessUiInteractions = ui_interactions.sysProcessUiInteractions;
-pub const sysSyncMetrics = metrics.sysSyncMetrics;
 pub const sysSyncWindow = window.sysSyncWindow;
 pub const sysSyncWindowVisibility = window.sysSyncWindowVisibility;
 pub const sysUpdateAnimations = animation.sysUpdateAnimations;
@@ -97,9 +95,6 @@ pub fn runUpdatePhase(
         std.log.err("Failed to update cache: {}", .{err});
     };
 
-    // Metrics & Telemetry System
-    sysSyncMetrics(ctx);
-
     const is_suspended = app_state.display.isSuspended();
     if (parsed_test_mode or is_suspended) {
         app_state.viewer.animations.settleAll();
@@ -144,7 +139,6 @@ test {
     _ = @import("input.zig");
     _ = @import("intents.zig");
     _ = @import("ipc.zig");
-    _ = @import("metrics.zig");
     _ = @import("palette_input.zig");
     _ = @import("slideshow.zig");
     _ = @import("ui_interactions.zig");

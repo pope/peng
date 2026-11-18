@@ -33,7 +33,7 @@ guidelines (read only what is not already in context):
    `ImageCacheKey` + `job_epochs`, 64-bit saturating `+|` bounds, and error logging.
 3. **[`02_concurrency_and_architecture.md`](../rules/02_concurrency_and_architecture.md)**:
    `AppState` / `ViewerState` / `UiViewModel` split, 3-phase frame pipeline,
-   12-step `runUpdatePhase`, `AppIntent` queue, main-thread GPU exclusivity,
+   11-step `runUpdatePhase`, `AppIntent` queue, main-thread GPU exclusivity,
    `DecodeMode` worker header probing, and `DecodePriority` headroom gating.
 4. **[`03_c_abi_and_module_hygiene.md`](../rules/03_c_abi_and_module_hygiene.md)**:
    `src/sdl/c.zig` encapsulation, `extern struct` hot-reload boundaries,

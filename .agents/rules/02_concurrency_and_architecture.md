@@ -19,8 +19,9 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
   non-arena lists/searcher, while `navigation` and `palette` (`dir_items`
   backing buffer + strings in `dir_arena`) own bounded CPU arenas).
 - **`UiViewModel` (`src/ui/view_model.zig`)**: Immutable snapshot built in
-  `src/viewer.zig` (`buildUiViewModel(*const AppState, now_ms)`) at the Phase 2
-  -> Phase 3 boundary. Phase 3 (`renderFrame` -> `buildRenderPacket` ->
+  `src/viewer.zig`
+  (`buildUiViewModel(*const AppState, *const RenderResources, now_ms)`) at the
+  Phase 2 -> Phase 3 boundary. Phase 3 (`renderFrame` -> `buildRenderPacket` ->
   `executeFrame`) is strictly read-only (never mutates state, window, or intents).
 
 ## 2. 3-Phase Frame Pipeline & Intent Registry
@@ -42,8 +43,7 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `sysExecuteIntents` (`defer self.clearIntents()` right after empty check;
     `defer self.flushPendingSelectionStreams()`) $\\to$
     `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
-    `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`) $\\to$
-    `sysSyncMetrics`.
+    `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`).
 - **Intentional Pipeline Trade-Offs (Preserve)**:
   1. *Pre-Render Sync*: `sysProcessAssetUploads` and `sysUpdateCache` run right
      *before* `renderFrame` (not after) so staged CPU surfaces/thumbnails promote

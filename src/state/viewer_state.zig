@@ -3,7 +3,6 @@ const geom = @import("geom");
 const intents = @import("intents");
 const navigation = @import("navigation.zig");
 const std = @import("std");
-const telemetry = @import("telemetry.zig");
 const types = @import("types.zig");
 const ui_state = @import("ui_state.zig");
 const viewport = @import("viewport.zig");
@@ -16,7 +15,6 @@ const NavigationState = navigation.NavigationState;
 const PanController = viewport.PanController;
 const TouchTracker = types.TouchTracker;
 const UiState = ui_state.UiState;
-const ViewerStats = telemetry.ViewerStats;
 const ViewportParams = viewport.ViewportParams;
 const ZoomController = viewport.ZoomController;
 const ZoomPreset = intents.ZoomPreset;
@@ -45,7 +43,6 @@ pub const ViewerState = struct {
     navigation: NavigationState,
     ui: UiState,
     animations: AnimationState,
-    stats: ViewerStats = .{},
     rotation_map: std.StringHashMapUnmanaged(f32) = .empty,
 
     drag_state: DragState = .none,
@@ -77,7 +74,6 @@ pub const ViewerState = struct {
         self.ui.snackbar = .{
             .enabled = self.defaults.snackbar_enabled,
         };
-        self.ui.metrics = .{};
 
         self.animations = .{};
         if (self.defaults.show_title) {
@@ -92,7 +88,6 @@ pub const ViewerState = struct {
         self.navigation.direction = .forward;
         self.navigation.triage.view_mode = .default;
 
-        self.stats = .{};
         self.image_transition = .none;
         self.drag_state = .none;
         self.pan_controller.reset();

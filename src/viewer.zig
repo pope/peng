@@ -116,7 +116,7 @@ pub fn updateFrame(
         return;
     }
 
-    const ui_model = buildUiViewModel(app_state, input.now_ms);
+    const ui_model = buildUiViewModel(app_state, resources, input.now_ms);
 
     // Draw / Render
     const capture_filename = switch (app_state.viewer.ui.screenshot_mode) {
@@ -142,7 +142,6 @@ pub fn updateFrame(
         .{
             .target = frame_target,
             .scale = input.dpiScale(),
-            .metrics = &app_state.viewer.ui.metrics,
             .capture_filename = capture_filename,
         },
     ) catch |err| {
@@ -154,7 +153,11 @@ pub fn updateFrame(
 
 /// Constructs a read-only snapshot view-model consumed by the UI layout
 /// and rendering subsystems for the current frame.
-fn buildUiViewModel(app_state: *const AppState, now_ms: u64) UiViewModel {
+fn buildUiViewModel(
+    app_state: *const AppState,
+    resources: *const RenderResources,
+    now_ms: u64,
+) UiViewModel {
     const nav = &app_state.viewer.navigation;
     const nav_slice = nav.items.slice();
     const visible_cnt = nav.getVisibleCount();
@@ -180,6 +183,7 @@ fn buildUiViewModel(app_state: *const AppState, now_ms: u64) UiViewModel {
         }
     };
 
+    const overlays = &app_state.viewer.ui.overlays;
     return .{
         .is_fullscreen = app_state.isFullscreen(),
         .total_images = nav_slice.len,
@@ -267,8 +271,15 @@ fn buildUiViewModel(app_state: *const AppState, now_ms: u64) UiViewModel {
             }
         },
         .current_time_ms = now_ms,
-        .stats = app_state.viewer.stats,
-        .render_metrics = app_state.viewer.ui.metrics.toSnapshot(),
+        .stats = if (overlays.stats_panel.visible)
+            app_state.snapshotStats()
+        else
+            .{},
+        .render_metrics = if (overlays.stats_panel.visible or
+            overlays.atlas_panel.visible)
+            resources.snapshotMetrics()
+        else
+            .{},
     };
 }
 

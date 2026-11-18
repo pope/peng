@@ -15,7 +15,6 @@
     09. `sysSyncWindow(ctx)` — Syncs OS window title and display state.
     10. `sysProcessAssetUploads(ctx)` — Updates EXIF rotation, paces GPU texture uploads, and decays oversized staging buffers (> 32 MiB after 5s idle).
     11. `sysUpdateCache(ctx)` — Enforces VRAM budget, evicts slots, and spawns `DecodeMode` / `DecodePriority` workers.
-    12. `sysSyncMetrics(ctx)` — Snapshots worker counters & telemetry into `ViewerStats`.
 
 ______________________________________________________________________
 
@@ -125,8 +124,9 @@ ______________________________________________________________________
     zero `@import("ui")` in `src/app/`.
   - Prior to calling `ui.layout.renderFrame`, `src/viewer.zig`
     (`buildUiViewModel`) constructs `UiViewModel` (`src/ui/view_model.zig`)
-    from `*const AppState` as a fully immutable snapshot struct containing
-    const pointers and value types.
+    from `*const AppState` and `*const RenderResources` as a fully immutable
+    snapshot struct containing const pointers and value types (gathering
+    `snapshotStats()` / `snapshotMetrics()` only when HUD panels are visible).
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 

@@ -79,11 +79,19 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     state.updateCurrentRotation();
 
     const len = state.viewer.navigation.count();
-    if (len == 0) return;
-
-    const neighbors = state.viewer.navigation.getVisibleNeighbors() orelse
+    if (len == 0) {
+        state.cache.current_image_cache_hit = false;
         return;
-    const cur_id = state.viewer.navigation.getCurrentMediaId() orelse return;
+    }
+
+    const neighbors = state.viewer.navigation.getVisibleNeighbors() orelse {
+        state.cache.current_image_cache_hit = false;
+        return;
+    };
+    const cur_id = state.viewer.navigation.getCurrentMediaId() orelse {
+        state.cache.current_image_cache_hit = false;
+        return;
+    };
     const dev_opt = state.gpu_device;
 
     state.cache.enforceVramBudget(
@@ -143,9 +151,6 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         state.pending_wait_load_streams.items.len == 0 and
         state.viewer.navigation.cadence.isFastScrolling(ctx.now_ms);
 
-    state.viewer.stats.max_decode_threads =
-        state.workers.getMaxConcurrentDecodes();
-
     // Resource protection: check whether the current image is fully ready or
     // failed. When false, background decode workers are restricted strictly
     // to the active image `cur_id`. In headless/mock mode (no GPU device),
@@ -184,6 +189,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         neighbors.next_1;
 
     // 3. Mark missing slots as decoding in cache map
+    state.cache.current_image_cache_hit = false;
     const SpawnRequest = struct {
         id: MediaId,
         entry: MediaEntry,
@@ -259,7 +265,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             }
         }
     }
-    state.viewer.stats.current_image_cache_hit = hit;
+    state.cache.current_image_cache_hit = hit;
 
     // 4. Spawn worker threads
     for (to_spawn.items) |req| {
@@ -481,11 +487,12 @@ test "sysUpdateCache max decode threads telemetry" {
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);
+    const stats = state.snapshotStats();
     try std.testing.expectEqual(
         state.workers.getMaxConcurrentDecodes(),
-        state.viewer.stats.max_decode_threads,
+        stats.max_decode_threads,
     );
-    try std.testing.expect(state.viewer.stats.max_decode_threads >= 1);
+    try std.testing.expect(stats.max_decode_threads >= 1);
 }
 
 test "sysUpdateCache - directional speculative preloading during fast scrolling" {
@@ -1311,4 +1318,35 @@ test "sysUpdateCache - brisk scroll keeps staged thumb until settled" {
         if (ev.* == .image_decoded) full_seen = true;
     }
     try std.testing.expect(full_seen);
+}
+
+test "sysUpdateCache clears current_image_cache_hit on OOM" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
+    _ = try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = dup } },
+    );
+    state.viewer.navigation.current_index = 0;
+    state.cache.current_image_cache_hit = true;
+
+    var failing = std.testing.FailingAllocator.init(
+        allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(
+        error.OutOfMemory,
+        sysUpdateCache(.{
+            .state = &state,
+            .frame_allocator = failing.allocator(),
+        }),
+    );
+    try std.testing.expect(!state.cache.current_image_cache_hit);
 }

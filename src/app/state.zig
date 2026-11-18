@@ -14,6 +14,7 @@ const workers_mod = @import("workers/root.zig");
 
 const ActivePaletteMode = intents.ActivePaletteMode;
 const AppIntent = intents.AppIntent;
+const ArchiveTelemetry = state_pkg.ArchiveTelemetry;
 const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = cache.CacheEntry;
 const DecodeMode = workers_mod.DecodeMode;
@@ -23,14 +24,18 @@ const InFlightState = cache.InFlightState;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
+const MipmapTelemetry = state_pkg.MipmapTelemetry;
 const PairStreamTarget = vfs.PairStreamTarget;
 const PhysicalDims = geom.PhysicalDims;
 const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
+const ThumbnailSource = state_pkg.ThumbnailSource;
+const UploadMode = state_pkg.UploadMode;
 const UploadStagingBuffer = gpu.UploadStagingBuffer;
 const ViewerState = state_pkg.ViewerState;
+const ViewerStats = state_pkg.ViewerStats;
 const view_transform = state_pkg.view_transform;
 const ZoomFactor = state_pkg.ZoomFactor;
 
@@ -522,6 +527,63 @@ pub const AppState = struct {
         const cur_id = self.viewer.navigation.getCurrentMediaId() orelse
             return null;
         return self.cache.getEntry(self.cache.activeKey(cur_id));
+    }
+
+    /// Snapshots live worker atomics, cache status, and active image
+    /// decode/ingest telemetry into a read-only `ViewerStats` value.
+    pub fn snapshotStats(self: *const AppState) ViewerStats {
+        const active_threads =
+            self.workers.active_decode_threads.load(.acquire);
+        var stats = ViewerStats{
+            .thumbs = self.workers.snapshotThumbStats(),
+            .current_image_cache_hit = self.cache.current_image_cache_hit,
+            .cached_slot_count = self.cache.count(),
+            .total_vram_bytes = self.cache.getTotalVramBytes(),
+            .active_decode_threads = active_threads,
+            .max_decode_threads = self.workers.getMaxConcurrentDecodes(),
+        };
+
+        if (self.getCurrentEntry()) |entry| {
+            const thumb_info = entry.resident.thumbnail.getInfo();
+            const has_thumb = thumb_info != null;
+            const thumb_upload_time_ms: f64 =
+                if (thumb_info) |info| info.upload_time_ms else 0.0;
+            const thumb_source: ThumbnailSource =
+                if (thumb_info) |info| info.source else .embedded_header;
+
+            stats.active_image = switch (entry.resident.asset) {
+                .loaded_gpu => |gpu_comp| .{
+                    .decode = gpu_comp.decode,
+                    .ingest = gpu_comp.ingest,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
+                },
+                .promoting_gpu => |promo| .{
+                    .decode = promo.active.decode,
+                    .ingest = promo.active.ingest,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
+                },
+                .loaded_cpu => |asset| .{
+                    .decode = asset.cpu.decode,
+                    .ingest = null,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
+                },
+                .none, .failed => .{
+                    .decode = null,
+                    .ingest = null,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
+                },
+            };
+        }
+
+        return stats;
     }
 
     /// Releases all GPU textures and resets status across all cache slots.
@@ -1666,4 +1728,138 @@ test "AppState.isWaitLoadReady blocks during directory_navigator scan" {
 
     state.viewer.ui.palette.active_dir_scans.store(0, .release);
     try std.testing.expect(state.isWaitLoadReady());
+}
+
+test "AppState.snapshotStats maps CPU, GPU, and promoting_gpu telemetry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "test.jpg" },
+    });
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+
+    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = surf,
+                        .w = 10.0,
+                        .h = 10.0,
+                        .size_bytes = 400,
+                        .decode = .{
+                            .read_time_ms = 1.25,
+                            .decode_time_ms = 3.5,
+                            .conversion_time_ms = 0.5,
+                            .archive = .none,
+                        },
+                    },
+                },
+            },
+        },
+    });
+
+    const cpu_snap = state.snapshotStats();
+    try std.testing.expect(!cpu_snap.current_image_cache_hit);
+    try std.testing.expect(cpu_snap.active_image.decode != null);
+    try std.testing.expect(cpu_snap.active_image.ingest == null);
+    const dec = cpu_snap.active_image.decode.?;
+    try std.testing.expectEqual(@as(f64, 1.25), dec.read_time_ms);
+    try std.testing.expectEqual(@as(f64, 3.5), dec.decode_time_ms);
+    try std.testing.expectEqual(ArchiveTelemetry.none, dec.archive);
+
+    // GPU-loaded asset + cache hit toggle
+    const stub = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 10.0, .h = 10.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    );
+    var gpu_comp = switch (stub.resident.asset) {
+        .loaded_gpu => |g| g,
+        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
+    };
+    gpu_comp.size_bytes = 400;
+    gpu_comp.decode = .{
+        .read_time_ms = 1.25,
+        .decode_time_ms = 3.5,
+        .conversion_time_ms = 0.5,
+        .archive = ArchiveTelemetry.init(4.2, 2048),
+    };
+    gpu_comp.ingest = .{
+        .upload_time_ms = 0.8,
+        .memory_size_bytes = 1024,
+        .mode = .direct,
+        .mipmaps = MipmapTelemetry.init(3, 1.1),
+    };
+    state.cache.setResidentAsset(key0, .{ .loaded_gpu = gpu_comp }, null);
+    state.cache.current_image_cache_hit = true;
+
+    const gpu_snap = state.snapshotStats();
+    try std.testing.expect(gpu_snap.current_image_cache_hit);
+    try std.testing.expect(gpu_snap.active_image.decode != null);
+    try std.testing.expect(gpu_snap.active_image.ingest != null);
+    const gpu_ing = gpu_snap.active_image.ingest.?;
+    try std.testing.expectEqual(@as(f64, 0.8), gpu_ing.upload_time_ms);
+    try std.testing.expectEqual(@as(usize, 1024), gpu_ing.memory_size_bytes);
+    try std.testing.expectEqual(UploadMode.direct, gpu_ing.mode);
+    switch (gpu_ing.mipmaps) {
+        .disabled => return error.TestExpectedGenerated,
+        .generated => |g| {
+            try std.testing.expectEqual(@as(u32, 3), g.num_levels);
+            try std.testing.expectEqual(@as(f64, 1.1), g.generate_time_ms);
+        },
+    }
+
+    // Promoting GPU asset with loaded thumbnail metadata
+    const staged_surf =
+        sdl.Surface.create(4, 4, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    state.cache.setResidentAsset(
+        key0,
+        .{
+            .promoting_gpu = .{
+                .active = gpu_comp,
+                .staged = .{
+                    .cpu = .{
+                        .surface = staged_surf,
+                        .w = 4.0,
+                        .h = 4.0,
+                        .size_bytes = 64,
+                    },
+                },
+            },
+        },
+        null,
+    );
+    state.cache.get(key0).?.resident.thumbnail = .{
+        .unloaded = .{
+            .w = 4.0,
+            .h = 4.0,
+            .upload_time_ms = 2.4,
+            .source = .freedesktop_cache,
+        },
+    };
+
+    const promo_snap = state.snapshotStats();
+    try std.testing.expect(promo_snap.active_image.decode != null);
+    try std.testing.expect(promo_snap.active_image.ingest != null);
+    try std.testing.expectEqual(
+        @as(usize, 1024),
+        promo_snap.active_image.ingest.?.memory_size_bytes,
+    );
+    try std.testing.expect(promo_snap.active_image.has_thumb);
+    try std.testing.expectEqual(
+        @as(f64, 2.4),
+        promo_snap.active_image.thumb_upload_time_ms,
+    );
+    try std.testing.expectEqual(
+        ThumbnailSource.freedesktop_cache,
+        promo_snap.active_image.thumb_source,
+    );
 }

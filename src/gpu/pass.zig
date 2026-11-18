@@ -27,7 +27,6 @@ const PositiveDimsU32 = geom.PositiveDimsU32;
 const Rect = geom.Rect;
 const RenderResources = graphics.RenderResources;
 const saveTextureToPng = graphics.saveTextureToPng;
-const UiRenderMetrics = state.UiRenderMetrics;
 const UiUniforms = render_image.UiUniforms;
 const Vertex = geometry.Vertex;
 const ViewportParams = state.ViewportParams;
@@ -56,7 +55,6 @@ pub const FrameTargetOptions = struct {
     target: FrameTarget,
     scale: DpiScale = .{},
     needs_blur: bool = false,
-    metrics: ?*UiRenderMetrics = null,
     capture_filename: ?[:0]const u8 = null,
 };
 
@@ -1011,17 +1009,9 @@ pub fn executeFrame(
         const end_render = sdl.timer.getTicksNs();
         const render_time_ms =
             @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
-        if (target.metrics) |m| {
-            m.ui_render_stats.addSample(render_time_ms);
-            m.last_ui_vertex_count = vertex_count;
-            m.last_ui_batch_count = batch_count;
-            m.atlas_shelf_x = gpu_res.text_cache.packer.cur_x;
-            m.atlas_shelf_y = gpu_res.text_cache.packer.cur_y;
-            m.atlas_used_h = gpu_res.text_cache.usedHeight();
-            m.atlas_page_count = gpu_res.text_cache.page_count;
-            m.atlas_ascii_glyphs = gpu_res.text_cache.countCachedAsciiGlyphs();
-            m.atlas_unicode_glyphs = gpu_res.text_cache.glyphs.count();
-        }
+        gpu_res.metrics.ui_render_stats.addSample(render_time_ms);
+        gpu_res.metrics.last_ui_vertex_count = vertex_count;
+        gpu_res.metrics.last_ui_batch_count = batch_count;
         gpu_res.frame_index += 1;
 
         if (target.capture_filename) |filename| {

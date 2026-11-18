@@ -13,7 +13,7 @@ description: >-
 Read only the specific reference file needed for your current task:
 
 - **[Systems Architecture & Execution Patterns](references/systems-architecture.md)**:
-  3-phase frame loop, 12-step `runUpdatePhase`, `FrameContext` arena lifetimes,
+  3-phase frame loop, 11-step `runUpdatePhase`, `FrameContext` arena lifetimes,
   `ImageCacheKey` & `SlotBound` generation envelopes, `Orientation` `enum(u2)`
   math, `actions.zig` 4-way projections, `MultiArrayList` 256-bit SIMD triage
   scans, `SnackbarState`, `AdjustIntent`/`PaletteMode`, and overlapped startup.

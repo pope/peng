@@ -520,6 +520,7 @@ pub const ImageCache = struct {
     vram_capped_neighbors: ?VisibleNeighbors = null,
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
+    current_image_cache_hit: bool = false,
 
     /// Pinned array of atomic job epochs for zero-allocation cancellation.
     job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32) = @splat(.init(1)),
@@ -585,6 +586,7 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
+        self.current_image_cache_hit = false;
         return self.generation.fetchAdd(1, .release) +% 1;
     }
 
@@ -615,6 +617,7 @@ pub const ImageCache = struct {
             entry.deinit(gpu_device);
         }
         self.slots.deinit(allocator);
+        self.current_image_cache_hit = false;
     }
 
     /// Deinitializes all slot resources and clears the cache while retaining
@@ -629,6 +632,7 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
+        self.current_image_cache_hit = false;
     }
 
     /// Clears all slots without releasing underlying capacity.
@@ -638,6 +642,7 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
+        self.current_image_cache_hit = false;
     }
 
     /// Finds the dense array index of the slot matching `key`, or null if not
@@ -2168,4 +2173,26 @@ test "ImageCache - promoting_gpu and staged_cpu readiness and deinit" {
     });
     try std.testing.expect(!cache.hasPendingCpuUploads(true));
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
+}
+
+test "ImageCache resets current_image_cache_hit across lifecycle methods" {
+    const allocator = std.testing.allocator;
+    var cache = ImageCache{};
+    try std.testing.expect(!cache.current_image_cache_hit);
+
+    cache.current_image_cache_hit = true;
+    _ = cache.advanceGeneration();
+    try std.testing.expect(!cache.current_image_cache_hit);
+
+    cache.current_image_cache_hit = true;
+    cache.clear(null);
+    try std.testing.expect(!cache.current_image_cache_hit);
+
+    cache.current_image_cache_hit = true;
+    cache.clearRetainingCapacity();
+    try std.testing.expect(!cache.current_image_cache_hit);
+
+    cache.current_image_cache_hit = true;
+    cache.deinit(allocator, null);
+    try std.testing.expect(!cache.current_image_cache_hit);
 }

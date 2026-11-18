@@ -51,8 +51,10 @@ ______________________________________________________________________
     **2a. Reduce Intents** (input/IPC/UI/motion systems push `AppIntent`s reduced
     by `sysExecuteIntents`, zero render-thread disk I/O) $\\to$ **2b. Sync
     Hardware & Workers** (`sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
-    `sysUpdateCache`) $\\to$ **3. Render Snapshot** (`buildUiViewModel(*const AppState)` $\\to$ `ui.layout.renderFrame`, recording next-frame hit rects on
-    explicit `*InteractionState`).
+    `sysUpdateCache`) $\\to$ **3. Render Snapshot**
+    (`buildUiViewModel(*const AppState, *const RenderResources, now_ms)` $\\to$
+    `ui.layout.renderFrame`, recording next-frame hit rects on explicit
+    `*InteractionState`).
   - **Intentional Nuances**: (a) Phase 2b runs *before* `renderFrame` so staged
     thumbnails/surfaces promote to GPU and draw with **0-frame lag**; (b)
     data-plane worker surfaces stage directly on CPU cache unions while only
@@ -76,7 +78,8 @@ ______________________________________________________________________
     shaders, `TextCache`, `UploadStagingBuffer`, `pass.zig`), `app` (`state.zig`,
     `events.zig`, `systems/`, `workers/` — **zero `@import("ui")`**).
   - `src/viewer.zig`: Composition root bridging `app` and `ui` via
-    `buildUiViewModel(*const AppState, now_ms)` (static or `-Dhot_reload=true`).
+    `buildUiViewModel(*const AppState, *const RenderResources, now_ms)`
+    (static or `-Dhot_reload=true`).
 - **Boundary Rules**: Pure/engine packages MUST NOT import `app`. Never import
   across modules by relative file path (use `@import("<mod>")`), and never add
   cross-module `pub const` proxy re-exports or `OldName = NewName` aliases.

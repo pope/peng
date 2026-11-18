@@ -60,30 +60,6 @@ pub const UiRenderMetrics = struct {
     ui_render_stats: RenderStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
-    atlas_shelf_x: u32 = 0,
-    atlas_shelf_y: u32 = 0,
-    atlas_used_h: u32 = 0,
-    atlas_page_count: usize = 0,
-    atlas_ascii_glyphs: usize = 0,
-    atlas_unicode_glyphs: usize = 0,
-
-    /// Creates an immutable performance snapshot containing calculated
-    /// mean/stdev and element counts.
-    pub fn toSnapshot(self: UiRenderMetrics) UiRenderMetricsSnapshot {
-        const stats = self.ui_render_stats.getMeanAndStdev();
-        return .{
-            .mean_render_time_ms = stats.mean,
-            .stdev_render_time_ms = stats.stdev,
-            .last_ui_vertex_count = self.last_ui_vertex_count,
-            .last_ui_batch_count = self.last_ui_batch_count,
-            .atlas_shelf_x = self.atlas_shelf_x,
-            .atlas_shelf_y = self.atlas_shelf_y,
-            .atlas_used_h = self.atlas_used_h,
-            .atlas_page_count = self.atlas_page_count,
-            .atlas_ascii_glyphs = self.atlas_ascii_glyphs,
-            .atlas_unicode_glyphs = self.atlas_unicode_glyphs,
-        };
-    }
 };
 
 /// Container extraction metrics for compressed images (CBZ / ZIP archives).
@@ -327,16 +303,20 @@ test "RenderStats, UiRenderMetrics, and Thumbnail telemetry" {
     try std.testing.expectEqual(@as(f64, 15.0), ms.mean);
     try std.testing.expect(ms.stdev > 0.0);
 
-    // 3. UiRenderMetrics toSnapshot
-    var metrics = UiRenderMetrics{
+    // 3. UiRenderMetrics & UiRenderMetricsSnapshot defaults
+    const metrics = UiRenderMetrics{
         .ui_render_stats = rs,
         .last_ui_vertex_count = 120,
         .last_ui_batch_count = 4,
     };
-    const snap = metrics.toSnapshot();
-    try std.testing.expectEqual(@as(f64, 15.0), snap.mean_render_time_ms);
-    try std.testing.expectEqual(@as(usize, 120), snap.last_ui_vertex_count);
-    try std.testing.expectEqual(@as(usize, 4), snap.last_ui_batch_count);
+    const stats = metrics.ui_render_stats.getMeanAndStdev();
+    try std.testing.expectEqual(@as(f64, 15.0), stats.mean);
+    try std.testing.expectEqual(@as(usize, 120), metrics.last_ui_vertex_count);
+    try std.testing.expectEqual(@as(usize, 4), metrics.last_ui_batch_count);
+
+    const empty_snap = UiRenderMetricsSnapshot{};
+    try std.testing.expectEqual(@as(f64, 0.0), empty_snap.mean_render_time_ms);
+    try std.testing.expectEqual(@as(u32, 0), empty_snap.atlas_used_h);
 
     // 4. ThumbnailSource properties
     try std.testing.expect(!ThumbnailSource.embedded_header.isPreOriented());
