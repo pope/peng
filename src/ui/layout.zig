@@ -767,7 +767,7 @@ fn renderImageCanvas(
                     rotation_angle,
                 );
                 try list.addImage(canvas_rect, .{
-                    .image_data = thumb_tex.asOpaque(),
+                    .texture = .{ .tex = thumb_tex },
                     .uv = thumb_uv,
                 });
             },
@@ -791,7 +791,7 @@ fn renderImageCanvas(
                     rotation_angle,
                 );
                 try list.addImage(canvas_rect, .{
-                    .image_data = thumb_tex.asOpaque(),
+                    .texture = .{ .tex = thumb_tex },
                     .uv = uv_crop,
                 });
             }
@@ -820,7 +820,7 @@ fn renderImageCanvas(
                 .source_h = auth.h,
             };
             try list.addImage(canvas_rect, .{
-                .image_data = tex.asOpaque(),
+                .texture = .{ .tex = tex },
                 .uv = uv,
             });
         },
@@ -938,7 +938,7 @@ fn renderDissolvePrevQuad(
         .w = prev_dims.w,
         .h = prev_dims.h,
     }, .{
-        .image_data = prev_tex.asOpaque(),
+        .texture = .{ .tex = prev_tex },
         .uv = prev_uv,
     });
 }
@@ -1354,4 +1354,182 @@ test "renderImageCanvas loading grace period across InFlightState variants" {
             => return error.TestExpectedLoadingText,
         }
     }
+}
+
+test "renderViewport emits TextureRef commands for dissolve, thumb, and full" {
+    var interaction_inst: state.InteractionState = .{};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var data = MeasureTextUserData{};
+    const prev_entry = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 400.0, .h = 300.0 },
+        .{ .w = 80.0, .h = 60.0 },
+    );
+    const entry = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 800.0, .h = 600.0 },
+        .{ .w = 160.0, .h = 120.0 },
+    );
+    const prev_tex = switch (prev_entry.resident.asset) {
+        .loaded_gpu => |g| g.gpu_texture,
+        .promoting_gpu, .loaded_cpu, .none, .failed => unreachable,
+    };
+    const thumb_tex = switch (entry.resident.thumbnail) {
+        .loaded => |t| t.texture,
+        .none,
+        .pending,
+        .staged_cpu,
+        .not_available,
+        .unloaded,
+        => unreachable,
+    };
+    const full_tex = switch (entry.resident.asset) {
+        .loaded_gpu => |g| g.gpu_texture,
+        .promoting_gpu, .loaded_cpu, .none, .failed => unreachable,
+    };
+
+    var pal_state = try PaletteState.init(std.testing.allocator);
+    defer pal_state.deinit(std.testing.allocator);
+    var model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 2,
+        .current_index = 1,
+        .current_image_entry = null,
+        .current_entry = entry,
+        .current_classification = .unflagged,
+        .view_mode = .default,
+        .visible_state = .empty_directory,
+        .visible_count = 2,
+        .visible_position = 2,
+        .is_loading_files = false,
+        .slideshow = .inactive,
+        .manga_mode = false,
+        .overlays = .{},
+        .window_title = "test",
+        .viewport = .{},
+        .palette = &pal_state,
+        .snackbar = .none,
+        .anim_values = @splat(0.5),
+        .debug_show_thumb = false,
+        .is_thumb_crossfading = true,
+        .image_dissolve = .{
+            .active = .{
+                .prev_entry = prev_entry,
+                .prev_rotation = 0.0,
+                .prev_zoom = 1.0,
+                .prev_pan_x = 0.0,
+                .prev_pan_y = 0.0,
+            },
+        },
+        .current_time_ms = 100,
+    };
+
+    const Helper = struct {
+        fn collectImages(
+            commands: []const renderer.UiCommand,
+            out: *[4]renderer.ImageConfig,
+        ) !usize {
+            var count: usize = 0;
+            for (commands) |cmd| {
+                switch (cmd.payload) {
+                    .image => |img| {
+                        try std.testing.expect(count < out.len);
+                        out[count] = img;
+                        count += 1;
+                    },
+                    .scissor_start,
+                    .scissor_end,
+                    .rectangle,
+                    .border,
+                    .text,
+                    .text_runs,
+                    .atlas_preview,
+                    => {},
+                }
+            }
+            return count;
+        }
+    };
+
+    var draw_list = UiDrawList{ .allocator = arena.allocator() };
+    interaction_inst.beginFrameLayout();
+    try renderViewport(
+        &interaction_inst,
+        &draw_list,
+        model,
+        model.current_entry,
+        .{ .w = 800.0, .h = 600.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+        .{ .x = 1.0, .y = 1.0 },
+        2,
+        arena.allocator(),
+        &data,
+    );
+
+    var images_buf: [4]renderer.ImageConfig = undefined;
+    const count_a = try Helper.collectImages(
+        draw_list.commands.items,
+        &images_buf,
+    );
+    try std.testing.expectEqual(@as(usize, 3), count_a);
+    try std.testing.expect(images_buf[0].texture.tex.eql(prev_tex));
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.75),
+        images_buf[0].uv.alpha,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 400.0),
+        images_buf[0].uv.source_w.?,
+        0.001,
+    );
+    try std.testing.expect(images_buf[1].texture.tex.eql(thumb_tex));
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        images_buf[1].uv.alpha,
+        0.001,
+    );
+    try std.testing.expect(images_buf[2].texture.tex.eql(full_tex));
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.5),
+        images_buf[2].uv.alpha,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 800.0),
+        images_buf[2].uv.source_w.?,
+        0.001,
+    );
+
+    // Case B: debug_show_thumb suppresses full GPU quad and emits only thumb.
+    draw_list.commands.clearRetainingCapacity();
+    model.is_thumb_crossfading = false;
+    model.image_dissolve = .none;
+    model.debug_show_thumb = true;
+    interaction_inst.beginFrameLayout();
+    try renderViewport(
+        &interaction_inst,
+        &draw_list,
+        model,
+        model.current_entry,
+        .{ .w = 800.0, .h = 600.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+        .{ .x = 1.0, .y = 1.0 },
+        2,
+        arena.allocator(),
+        &data,
+    );
+
+    const count_b = try Helper.collectImages(
+        draw_list.commands.items,
+        &images_buf,
+    );
+    try std.testing.expectEqual(@as(usize, 1), count_b);
+    try std.testing.expect(images_buf[0].texture.tex.eql(thumb_tex));
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        images_buf[0].uv.alpha,
+        0.001,
+    );
 }

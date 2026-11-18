@@ -178,11 +178,6 @@ pub const Texture = struct {
     pub fn eql(self: Texture, other: Texture) bool {
         return self.ptr == other.ptr;
     }
-
-    /// Returns the underlying raw texture pointer as a type-erased opaque pointer.
-    pub fn asOpaque(self: Texture) *anyopaque {
-        return @ptrCast(self.ptr);
-    }
 };
 
 /// Opaque handle representing a GPU data buffer.

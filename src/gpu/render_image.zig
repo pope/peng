@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const geom = @import("geom");
 const geometry = @import("geometry.zig");
 const sdl = @import("sdl");
@@ -83,6 +84,12 @@ pub const BatchItem = struct {
     scissor: ?Rect,
 };
 
+/// Non-null GPU texture handle passed across module boundaries without
+/// exposing `sdl` types directly to presentation modules.
+pub const TextureRef = struct {
+    tex: sdl.gpu.Texture,
+};
+
 /// Appends image viewer vertex geometry for the current image texture, applying
 /// pan, zoom factor, and rotation.
 pub fn appendImageCommand(
@@ -91,18 +98,12 @@ pub fn appendImageCommand(
     addBatchFn: anytype,
     allocator: std.mem.Allocator,
     rect: FRect,
-    image_data: ?*anyopaque,
+    texture: TextureRef,
     view_params: ViewportParams,
     win_dims: PhysicalDims,
     scissor: ?Rect,
     uv_rect: UvRect,
 ) !void {
-    const texture: ?sdl.gpu.Texture = if (image_data) |ptr|
-        sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) }
-    else
-        null;
-    const tex = texture orelse return;
-
     const angle = uv_rect.rotation_angle orelse view_params.rotation_angle;
     const is_90_or_270 = state.view_transform.isAngle90or270(angle);
 
@@ -193,5 +194,138 @@ pub fn appendImageCommand(
         .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color },
     });
 
-    try addBatchFn(batches, allocator, start, 6, tex, .image_viewer, scissor);
+    try addBatchFn(
+        batches,
+        allocator,
+        start,
+        6,
+        texture.tex,
+        .image_viewer,
+        scissor,
+    );
+}
+
+test "appendImageCommand emits rotated batches and preserves TextureRef" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .windows) {
+        _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
+    }
+    if (!sdl.init(sdl.init_flags.video)) return;
+    defer sdl.quit();
+
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    const tex_info = sdl.gpu.TextureCreateInfo{
+        .format = .rgba8_unorm,
+        .usage = sdl.gpu.TextureUsage.sampler,
+        .width = 1,
+        .height = 1,
+    };
+    const tex_a = dev.createTexture(&tex_info) orelse return;
+    defer dev.releaseTexture(tex_a);
+    const tex_b = dev.createTexture(&tex_info) orelse return;
+    defer dev.releaseTexture(tex_b);
+    try std.testing.expect(!tex_a.eql(tex_b));
+
+    const BatchRecorder = struct {
+        fn add(
+            batches: *std.ArrayList(BatchItem),
+            alloc: std.mem.Allocator,
+            vertex_start: u32,
+            vertex_count: u32,
+            texture: sdl.gpu.Texture,
+            material: MaterialType,
+            scissor: ?Rect,
+        ) !void {
+            try batches.append(alloc, .{
+                .vertex_start = vertex_start,
+                .vertex_count = vertex_count,
+                .texture = texture,
+                .material = material,
+                .scissor = scissor,
+            });
+        }
+    };
+
+    const alloc = std.testing.allocator;
+    var vertices: std.ArrayList(Vertex) = .empty;
+    defer vertices.deinit(alloc);
+    var batches: std.ArrayList(BatchItem) = .empty;
+    defer batches.deinit(alloc);
+
+    const view_params = ViewportParams{};
+    const win_dims = PhysicalDims{ .w = 800.0, .h = 600.0 };
+    const scissor = Rect{ .x = 10, .y = 20, .w = 300, .h = 200 };
+
+    // Case A: Degenerate quad emits zero vertices and zero batches.
+    try appendImageCommand(
+        &vertices,
+        &batches,
+        BatchRecorder.add,
+        alloc,
+        .{ .x = 0.0, .y = 0.0, .w = 0.0, .h = 100.0 },
+        .{ .tex = tex_a },
+        view_params,
+        win_dims,
+        scissor,
+        .{},
+    );
+    try std.testing.expectEqual(@as(usize, 0), vertices.items.len);
+    try std.testing.expectEqual(@as(usize, 0), batches.items.len);
+
+    // Case B: Rotated image with alpha emits 6 vertices and 1 batch.
+    try appendImageCommand(
+        &vertices,
+        &batches,
+        BatchRecorder.add,
+        alloc,
+        .{ .x = 0.0, .y = 0.0, .w = 200.0, .h = 100.0 },
+        .{ .tex = tex_a },
+        view_params,
+        win_dims,
+        scissor,
+        .{
+            .alpha = 0.5,
+            .rotation_angle = 90.0,
+            .source_w = 100.0,
+            .source_h = 50.0,
+        },
+    );
+    try std.testing.expectEqual(@as(usize, 6), vertices.items.len);
+    try std.testing.expectEqual(@as(usize, 1), batches.items.len);
+    try std.testing.expect(batches.items[0].texture.eql(tex_a));
+    try std.testing.expectEqual(
+        MaterialType.image_viewer,
+        batches.items[0].material,
+    );
+    try std.testing.expectEqual(@as(u32, 0), batches.items[0].vertex_start);
+    try std.testing.expectEqual(@as(u32, 6), batches.items[0].vertex_count);
+    try std.testing.expectEqual(@as(i32, 10), batches.items[0].scissor.?.x);
+    try std.testing.expectEqual(
+        @as(u8, 127),
+        @as(u8, @truncate(vertices.items[0].color >> 24)),
+    );
+
+    // Case C: Distinct TextureRef preserves handle identity in next batch.
+    try appendImageCommand(
+        &vertices,
+        &batches,
+        BatchRecorder.add,
+        alloc,
+        .{ .x = 10.0, .y = 10.0, .w = 100.0, .h = 100.0 },
+        .{ .tex = tex_b },
+        view_params,
+        win_dims,
+        null,
+        .{},
+    );
+    try std.testing.expectEqual(@as(usize, 12), vertices.items.len);
+    try std.testing.expectEqual(@as(usize, 2), batches.items.len);
+    try std.testing.expectEqual(@as(u32, 6), batches.items[1].vertex_start);
+    try std.testing.expectEqual(@as(u32, 6), batches.items[1].vertex_count);
+    try std.testing.expect(batches.items[1].texture.eql(tex_b));
 }

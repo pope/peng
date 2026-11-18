@@ -26,6 +26,10 @@ pub const upload = @import("upload.zig");
 /// ingestion telemetry.
 pub const GpuUploadResult = upload.GpuUploadResult;
 
+/// Non-null GPU texture handle passed across module boundaries without
+/// exposing `sdl` types to pure presentation modules.
+pub const TextureRef = render_image.TextureRef;
+
 /// Reusable GPU staging buffers for texture uploads, retaining buffers up to
 /// 32 MiB warm across frames and decaying oversized buffers after 5s idle.
 pub const UploadStagingBuffer = upload.UploadStagingBuffer;

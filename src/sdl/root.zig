@@ -113,13 +113,16 @@ test "sdl enum mapping and boundary sanity checks" {
         @backingInt(gpu.BlendFactor.zero),
     );
 
-    // GPU Texture handle equality & opaque conversion
+    // GPU Texture handle equality
     var dummy_val: usize = 42;
+    var dummy_val2: usize = 43;
     const dummy_ptr: *c.SDL_GPUTexture = @ptrCast(&dummy_val);
+    const dummy_ptr2: *c.SDL_GPUTexture = @ptrCast(&dummy_val2);
     const t1 = gpu.Texture{ .ptr = dummy_ptr };
     const t2 = gpu.Texture{ .ptr = dummy_ptr };
+    const t3 = gpu.Texture{ .ptr = dummy_ptr2 };
     try std.testing.expect(t1.eql(t2));
-    try std.testing.expectEqual(@as(*anyopaque, @ptrCast(dummy_ptr)), t1.asOpaque());
+    try std.testing.expect(!t1.eql(t3));
 }
 
 test {

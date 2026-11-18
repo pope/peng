@@ -16,6 +16,10 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
      transfer buffers, runs lazy 2-pass quarter-res Dual Kawase blur
      (`BlurResources`: `tex.scene` -> `tex.blur_down` -> `tex.blur` when
      `enable_blur` and `.blurred_surface` batches exist), and submits draws.
+  - `ImageConfig` (`src/ui/renderer.zig`) and `appendImageCommand`
+    (`src/gpu/render_image.zig`) pass non-null `gpu.TextureRef` handles
+    (`src/gpu/root.zig`) without `*anyopaque` erasure or `@import("sdl")` in
+    `src/ui/`.
 - **Unified `1024x1024` UI + Per-Glyph Atlas (`src/gpu/text_cache.zig`)**:
   - Reserve top-left `4x4` opaque white (`0xFFFFFFFF`) at `uv = (0, 0)` for solid
     UI primitives (`gpu_res.uiTexture()`) so chrome and text merge into single

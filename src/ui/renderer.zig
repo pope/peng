@@ -23,6 +23,7 @@ const Rect = geom.Rect;
 const render_image = gpu_pkg.render_image;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
 const RenderResources = gpu_pkg.graphics.RenderResources;
+const TextureRef = gpu_pkg.TextureRef;
 const UvRect = geom.UvRect;
 const Vertex = gpu_pkg.geometry.Vertex;
 const ViewportParams = state.ViewportParams;
@@ -101,7 +102,7 @@ pub const TextRunsConfig = struct {
 
 /// Configuration for textured image quad render commands.
 pub const ImageConfig = struct {
-    image_data: ?*anyopaque,
+    texture: TextureRef,
     uv: UvRect = .{},
 };
 
@@ -910,7 +911,7 @@ fn buildGeometryFromCommands(
                     addBatch,
                     build_ctx.frame_allocator,
                     rect,
-                    config.image_data,
+                    config.texture,
                     view_params,
                     win_dims,
                     current_scissor,
@@ -1000,4 +1001,98 @@ test "UiDrawList command accumulation" {
         .tag = .blurred_surface,
     });
     try std.testing.expect(hasBlurredSurface(list.commands.items));
+}
+
+test "buildRenderPacket and executeFrame emit TextureRef image batch" {
+    gpu_pkg.graphics.initSdlCore(true) catch return;
+    defer gpu_pkg.graphics.quitSdlCore();
+
+    const setup = gpu_pkg.graphics.initGraphicsAndWindow(
+        "ui-renderer-test",
+        .{ .headless = true, .debug_mode = false },
+    ) catch return;
+    defer {
+        setup.gpu_device.destroy();
+        setup.window.destroy();
+    }
+
+    const allocator = std.testing.allocator;
+    var gpu_res = gpu_pkg.graphics.initGpuResources(
+        setup.gpu_device,
+        setup.window,
+        setup.initial_dpi_scale,
+        true,
+    ) catch return;
+    defer gpu_res.deinit(allocator);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var list = UiDrawList{ .allocator = allocator };
+    defer list.commands.deinit(allocator);
+
+    try list.addImage(.{ .x = 10, .y = 20, .w = 200, .h = 100 }, .{
+        .texture = .{ .tex = gpu_res.white_texture },
+        .uv = .{ .alpha = 0.5 },
+    });
+
+    const ProbeCtx = struct {
+        commands: []const UiCommand,
+        view_params: ViewportParams,
+        vertex_count: usize = 0,
+        batch_count: usize = 0,
+        material: ?render_image.MaterialType = null,
+        matches_white: bool = false,
+        alpha_byte: u8 = 0,
+
+        fn build(
+            ctx: *@This(),
+            build_ctx: PacketBuildContext,
+        ) anyerror!RenderPacket {
+            const pkt = try buildRenderPacket(
+                ctx.view_params,
+                build_ctx,
+                ctx.commands,
+            );
+            ctx.vertex_count = pkt.vertices.items.len;
+            ctx.batch_count = pkt.batches.items.len;
+            if (pkt.batches.items.len > 0) {
+                ctx.material = pkt.batches.items[0].material;
+                ctx.matches_white = pkt.batches.items[0].texture.eql(
+                    build_ctx.gpu_res.white_texture,
+                );
+            }
+            if (pkt.vertices.items.len > 0) {
+                ctx.alpha_byte = @truncate(pkt.vertices.items[0].color >> 24);
+            }
+            return pkt;
+        }
+    };
+
+    var probe = ProbeCtx{
+        .commands = list.commands.items,
+        .view_params = .{},
+    };
+    try gpu_pkg.pass.executeFrame(
+        &gpu_res,
+        .{},
+        allocator,
+        arena.allocator(),
+        .{
+            .target = .{
+                .headless = .{ .w = 320.0, .h = 240.0 },
+            },
+        },
+        &probe,
+        ProbeCtx.build,
+    );
+
+    try std.testing.expectEqual(@as(usize, 6), probe.vertex_count);
+    try std.testing.expectEqual(@as(usize, 1), probe.batch_count);
+    try std.testing.expectEqual(
+        @as(?render_image.MaterialType, .image_viewer),
+        probe.material,
+    );
+    try std.testing.expect(probe.matches_white);
+    try std.testing.expectEqual(@as(u8, 127), probe.alpha_byte);
 }
