@@ -31,13 +31,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Enable Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
 
       - name: Check formatting and lints
         if: matrix.target == 'x86_64-linux'
@@ -68,13 +70,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Enable Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
 
       - name: Build static binaries
         run: nix build .#peng-static -L
@@ -94,7 +98,7 @@ jobs:
             "${{ matrix.artifact_name }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_name }}.tar.gz
@@ -110,7 +114,7 @@ jobs:
 
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
