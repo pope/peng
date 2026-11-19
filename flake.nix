@@ -132,7 +132,42 @@
             );
           };
           formatter.${system} = treefmt-eval.config.build.wrapper;
-          checks.${system}.treefmt = treefmt-eval.config.build.check self;
+          checks.${system} = {
+            treefmt = treefmt-eval.config.build.check self;
+            unit-tests = pkgs.peng.overrideAttrs {
+              pname = "peng-unit-tests";
+              desktopItems = [ ];
+              env = {
+                SDL_VIDEO_DRIVER = "dummy";
+              };
+              zigBuildFlags = [
+                "test-unit"
+                "--system"
+                ".zig-cache/p"
+                "-Dcpu=baseline"
+              ];
+              installPhase = ''
+                runHook preInstall
+                touch "$out"
+                runHook postInstall
+              '';
+            };
+            hot-reload = pkgs.peng.overrideAttrs {
+              pname = "peng-hot-reload";
+              desktopItems = [ ];
+              zigBuildFlags = [
+                "--system"
+                ".zig-cache/p"
+                "-Dcpu=baseline"
+                "-Dhot_reload=true"
+              ];
+              installPhase = ''
+                runHook preInstall
+                touch "$out"
+                runHook postInstall
+              '';
+            };
+          };
         };
     in
     builtins.foldl' nixpkgs.lib.recursiveUpdate {
