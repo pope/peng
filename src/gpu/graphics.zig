@@ -660,6 +660,14 @@ pub const RenderResources = struct {
     }
 };
 
+// Zig's test runner fails tests on any `std.log.err`; headless CI tests
+// expect SDL/GPU init to fail and skip cleanly.
+fn logInitErr(comptime fmt: []const u8, args: anytype) void {
+    if (!builtin.is_test) {
+        std.log.err(fmt, args);
+    }
+}
+
 /// Initializes SDL3 subsystems (video and events) and TTF engine.
 /// Must be called before background workers start pushing SDL events or loading
 /// surfaces.
@@ -682,13 +690,13 @@ pub fn initSdlCore(headless: bool) !void {
     _ = sdl.hint.set("SDL_APP_NAME", "Peng");
 
     if (!sdl.init(sdl.init_flags.video | sdl.init_flags.events)) {
-        std.log.err("SDL_Init Error: {s}", .{sdl.getError()});
+        logInitErr("SDL_Init Error: {s}", .{sdl.getError()});
         return error.SDLInitFailed;
     }
     errdefer sdl.quit();
 
     sdl.initTtf() catch |err| {
-        std.log.err("TTF_Init Error: {}", .{err});
+        logInitErr("TTF_Init Error: {}", .{err});
         return error.TTFInitFailed;
     };
 }
@@ -720,7 +728,7 @@ pub fn initGraphicsAndWindow(
     }
     const window =
         sdl.Window.createZ(window_title, 1024, 768, win_flags) orelse {
-            std.log.err("SDL_CreateWindow Error: {s}", .{sdl.getError()});
+            logInitErr("SDL_CreateWindow Error: {s}", .{sdl.getError()});
             return error.WindowCreationFailed;
         };
     errdefer window.destroy();
@@ -737,7 +745,7 @@ pub fn initGraphicsAndWindow(
     // Create GPU Device
     const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
     const dev = sdl.gpu.Device.create(shader_flags, options.debug_mode) orelse {
-        std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
+        logInitErr("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
         return error.DeviceCreationFailed;
     };
     errdefer dev.destroy();
@@ -745,7 +753,7 @@ pub fn initGraphicsAndWindow(
     // Claim window for GPU
     if (!options.headless) {
         if (!window.claimForGpu(dev)) {
-            std.log.err(
+            logInitErr(
                 "SDL_ClaimWindowForGPUDevice failed: {s}",
                 .{sdl.getError()},
             );
