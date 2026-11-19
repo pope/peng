@@ -137,6 +137,9 @@
             unit-tests = pkgs.peng.overrideAttrs {
               pname = "peng-unit-tests";
               desktopItems = [ ];
+              env = {
+                SDL_VIDEO_DRIVER = "dummy";
+              };
               zigBuildFlags = [
                 "test-unit"
                 "--system"
