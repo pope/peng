@@ -598,6 +598,7 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
 
         const spv_cmd = b.addSystemCommand(&.{
             "glslangValidator",
+            "--quiet",
             "-V",
             "-Os",
             "-S",
@@ -616,6 +617,7 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
         const msl_spv_in = if (is_comp) blk: {
             const msl_spv_cmd = b.addSystemCommand(&.{
                 "glslangValidator",
+                "--quiet",
                 "-V",
                 "-Os",
                 "-DTARGET_MSL",
