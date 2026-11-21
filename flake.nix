@@ -3,10 +3,6 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    jailed-antigravity = {
-      url = "git+https://p0.pe/my-git-repos/jailed-antigravity.git";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -15,7 +11,6 @@
 
   outputs =
     {
-      jailed-antigravity,
       nixpkgs,
       self,
       treefmt-nix,
@@ -113,17 +108,6 @@
               ++ lib.optionals stdenv.hostPlatform.isLinux [
                 perf
                 poop
-                (jailed-antigravity.lib.${system}.makeJailedAntigravity (
-                  { agy, ... }: {
-                    inherit pkgs;
-                    package = agy.google-antigravity-cli;
-                    fwdEnv = [
-                      "LD_LIBRARY_PATH"
-                      "PATH"
-                      "PKG_CONFIG_PATH"
-                    ];
-                  }
-                ))
               ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
               pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
