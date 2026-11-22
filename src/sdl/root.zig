@@ -11,6 +11,7 @@ pub const gpu = @import("gpu.zig");
 pub const keys = @import("keys.zig");
 const std = @import("std");
 pub const surface = @import("surface.zig");
+const wayland_shm = @import("wayland_shm.zig");
 pub const window = @import("window.zig");
 
 const c = c_pkg.c;
@@ -28,6 +29,7 @@ pub const mouse = events.mouse;
 pub const PixelFormat = surface.PixelFormat;
 pub const quit = events.quit;
 pub const quitTtf = font.quitTtf;
+pub const SoftwarePresenter = window.SoftwarePresenter;
 pub const Surface = surface.Surface;
 pub const Window = window.Window;
 pub const window_flags = window.window_flags;
@@ -127,5 +129,6 @@ test {
     _ = gpu;
     _ = keys;
     _ = surface;
+    _ = wayland_shm;
     _ = window;
 }

@@ -262,6 +262,119 @@ pub const Surface = struct {
         return resampleDirectToRgba32(4, false, converted, target_w, target_h);
     }
 
+    /// Fills the entire surface with an opaque RGB color.
+    pub fn fillRgb(self: Surface, r: u8, g: u8, b: u8) bool {
+        const mapped = c.SDL_MapSurfaceRGB(self.ptr, r, g, b);
+        return c.SDL_FillSurfaceRect(self.ptr, null, mapped);
+    }
+
+    /// Resamples the normalized sub-rectangle `[u_min..u_max] x [v_min..v_max]`
+    /// of this surface into a `target_w x target_h` `RGBA32` surface using
+    /// exact floating-point bilinear UV coordinates matching GPU texture
+    /// sampling (zero integer `src_rect` rounding drift on small thumbnails).
+    pub fn scaleUvRectRgba32(
+        self: Surface,
+        u_min: f32,
+        v_min: f32,
+        u_max: f32,
+        v_max: f32,
+        target_w: i32,
+        target_h: i32,
+    ) ?Surface {
+        if (target_w <= 0 or target_h <= 0) return null;
+        if (!std.math.isFinite(u_min) or !std.math.isFinite(v_min) or
+            !std.math.isFinite(u_max) or !std.math.isFinite(v_max) or
+            u_max <= u_min or v_max <= v_min)
+        {
+            return null;
+        }
+        if (self.ptr.pixels == null or self.pitch() <= 0) return null;
+        const src_w_i = self.w();
+        const src_h_i = self.h();
+        if (src_w_i <= 0 or src_h_i <= 0) return null;
+
+        const fmt = self.format();
+        if (fmt == PixelFormat.rgb24) {
+            return resampleUvToRgba32(
+                3,
+                false,
+                self,
+                u_min,
+                v_min,
+                u_max,
+                v_max,
+                target_w,
+                target_h,
+            );
+        }
+        if (fmt == PixelFormat.bgr24) {
+            return resampleUvToRgba32(
+                3,
+                true,
+                self,
+                u_min,
+                v_min,
+                u_max,
+                v_max,
+                target_w,
+                target_h,
+            );
+        }
+        if (fmt == PixelFormat.rgba32) {
+            return resampleUvToRgba32(
+                4,
+                false,
+                self,
+                u_min,
+                v_min,
+                u_max,
+                v_max,
+                target_w,
+                target_h,
+            );
+        }
+
+        const converted = self.convert(PixelFormat.rgba32) orelse return null;
+        defer converted.destroy();
+        return resampleUvToRgba32(
+            4,
+            false,
+            converted,
+            u_min,
+            v_min,
+            u_max,
+            v_max,
+            target_w,
+            target_h,
+        );
+    }
+
+    /// Scales and blits this surface into the specified destination rectangle
+    /// on `dst` using `mode`.
+    pub fn blitScaledTo(
+        self: Surface,
+        dst: Surface,
+        dst_x: i32,
+        dst_y: i32,
+        dst_w: i32,
+        dst_h: i32,
+        mode: ScaleMode,
+    ) bool {
+        var dst_rect = c.SDL_Rect{
+            .x = dst_x,
+            .y = dst_y,
+            .w = dst_w,
+            .h = dst_h,
+        };
+        return c.SDL_BlitSurfaceScaled(
+            self.ptr,
+            null,
+            dst.ptr,
+            &dst_rect,
+            @backingInt(mode),
+        );
+    }
+
     /// Destroys and frees the underlying `SDL_Surface`.
     pub fn destroy(self: Surface) void {
         c.SDL_DestroySurface(self.ptr);
@@ -693,6 +806,48 @@ test "Surface.encodePngAlloc and rotateOrthogonal roundtrip" {
     try std.testing.expectEqual(@as(i32, 4), decoded.h());
 }
 
+test "Surface.scaleUvRectRgba32 resamples UV rect and guards invalid inputs" {
+    const src = Surface.create(4, 4, PixelFormat.rgba32) orelse return;
+    defer src.destroy();
+
+    const pitch: usize = @intCast(src.pitch());
+    const px = src.pixels();
+    // Fill top half red (200, 10, 20, 255), bottom half blue (10, 20, 220, 255)
+    for (0..4) |y| {
+        const is_bottom = y >= 2;
+        for (0..4) |x| {
+            const p = px + y * pitch + x * 4;
+            p[0] = if (is_bottom) 10 else 200;
+            p[1] = if (is_bottom) 20 else 10;
+            p[2] = if (is_bottom) 220 else 20;
+            p[3] = 255;
+        }
+    }
+
+    // Invalid / non-finite UV bounds return null cleanly
+    try std.testing.expect(
+        src.scaleUvRectRgba32(std.math.nan(f32), 0.0, 1.0, 1.0, 4, 4) == null,
+    );
+    try std.testing.expect(
+        src.scaleUvRectRgba32(0.5, 0.0, 0.5, 1.0, 4, 4) == null,
+    );
+    try std.testing.expect(
+        src.scaleUvRectRgba32(0.0, 0.0, 1.0, 1.0, 0, 4) == null,
+    );
+
+    // Sampling strictly the bottom half [0.5..1.0] produces pure blue pixels
+    const cropped = src.scaleUvRectRgba32(0.0, 0.5, 1.0, 1.0, 4, 2) orelse
+        return error.ScaleUvFailed;
+    defer cropped.destroy();
+    try std.testing.expectEqual(@as(i32, 4), cropped.w());
+    try std.testing.expectEqual(@as(i32, 2), cropped.h());
+    const out_px = cropped.pixels();
+    try std.testing.expectEqual(@as(u8, 10), out_px[0]);
+    try std.testing.expectEqual(@as(u8, 20), out_px[1]);
+    try std.testing.expectEqual(@as(u8, 220), out_px[2]);
+    try std.testing.expectEqual(@as(u8, 255), out_px[3]);
+}
+
 inline fn readPixelRgbaU32(
     comptime bpp: u8,
     comptime swap_rb: bool,
@@ -804,6 +959,98 @@ fn resampleDirectToRgba32(
     const step_y_fp: i64 = @divTrunc(src_h_i64 << 16, dst_h_i64);
     const start_x_fp: i64 = (step_x_fp >> 1) - 32768;
     var sy_fp: i64 = (step_y_fp >> 1) - 32768;
+
+    for (0..dst_h) |dy| {
+        defer sy_fp += step_y_fp;
+        const y0_raw = sy_fp >> 16;
+        const fy: u32 = if (y0_raw < 0 or y0_raw >= max_y)
+            0
+        else
+            @intCast((sy_fp >> 8) & 0xFF);
+        const y0: usize = @intCast(std.math.clamp(y0_raw, 0, max_y));
+        const y1: usize = if (y0 + 1 < src_h) y0 + 1 else y0;
+        const inv_fy: u32 = 256 - fy;
+
+        const row0 = src_base + y0 * src_pitch;
+        const row1 = src_base + y1 * src_pitch;
+        const dst_row = dst_base + dy * dst_pitch;
+
+        var sx_fp: i64 = start_x_fp;
+        for (0..dst_w) |dx| {
+            defer sx_fp += step_x_fp;
+            const x0_raw = sx_fp >> 16;
+            const fx: u32 = if (x0_raw < 0 or x0_raw >= max_x)
+                0
+            else
+                @intCast((sx_fp >> 8) & 0xFF);
+            const x0: usize = @intCast(std.math.clamp(x0_raw, 0, max_x));
+            const x1: usize = if (x0 + 1 < src_w) x0 + 1 else x0;
+            const inv_fx: u32 = 256 - fx;
+
+            const w00: Vec4u32 = @splat(inv_fx * inv_fy);
+            const w10: Vec4u32 = @splat(fx * inv_fy);
+            const w01: Vec4u32 = @splat(inv_fx * fy);
+            const w11: Vec4u32 = @splat(fx * fy);
+
+            const p00 = readPixelRgbaU32(bpp, swap_rb, row0, x0);
+            const p10 = readPixelRgbaU32(bpp, swap_rb, row0, x1);
+            const p01 = readPixelRgbaU32(bpp, swap_rb, row1, x0);
+            const p11 = readPixelRgbaU32(bpp, swap_rb, row1, x1);
+
+            const top_sum = p00 * w00 + p10 * w10;
+            const bot_sum = p01 * w01 + p11 * w11;
+            const sum = top_sum + bot_sum + round_bias;
+            const out_px: Vec4u8 = @intCast(sum >> shift16);
+            dst_row[dx * 4 ..][0..4].* = out_px;
+        }
+    }
+    return dst;
+}
+
+fn resampleUvToRgba32(
+    comptime bpp: u8,
+    comptime swap_rb: bool,
+    src: Surface,
+    u_min: f32,
+    v_min: f32,
+    u_max: f32,
+    v_max: f32,
+    dst_w_i: i32,
+    dst_h_i: i32,
+) ?Surface {
+    const dst = Surface.create(dst_w_i, dst_h_i, PixelFormat.rgba32) orelse
+        return null;
+    const src_w: usize = @intCast(src.w());
+    const src_h: usize = @intCast(src.h());
+    const dst_w: usize = @intCast(dst_w_i);
+    const dst_h: usize = @intCast(dst_h_i);
+    const src_pitch: usize = @intCast(src.pitch());
+    const dst_pitch: usize = @intCast(dst.pitch());
+    const src_base = src.pixels();
+    const dst_base = dst.pixels();
+
+    const max_x: i64 = @intCast(src_w - 1);
+    const max_y: i64 = @intCast(src_h - 1);
+    const src_w_f: f64 = @floatFromInt(src_w);
+    const src_h_f: f64 = @floatFromInt(src_h);
+    const dst_w_f: f64 = @floatFromInt(dst_w);
+    const dst_h_f: f64 = @floatFromInt(dst_h);
+
+    const du: f64 = (@as(f64, u_max) - @as(f64, u_min)) / dst_w_f;
+    const dv: f64 = (@as(f64, v_max) - @as(f64, v_min)) / dst_h_f;
+    const step_x_fp: i64 = @intFromFloat(@round(du * src_w_f * 65536.0));
+    const step_y_fp: i64 = @intFromFloat(@round(dv * src_h_f * 65536.0));
+    const start_x_fp: i64 = @intFromFloat(
+        @round(((@as(f64, u_min) + 0.5 * du) * src_w_f - 0.5) * 65536.0),
+    );
+    var sy_fp: i64 = @intFromFloat(
+        @round(((@as(f64, v_min) + 0.5 * dv) * src_h_f - 0.5) * 65536.0),
+    );
+
+    const Vec4u8 = @Vector(4, u8);
+    const Vec4u32 = @Vector(4, u32);
+    const round_bias: Vec4u32 = @splat(32768);
+    const shift16: @Vector(4, u5) = @splat(16);
 
     for (0..dst_h) |dy| {
         defer sy_fp += step_y_fp;
