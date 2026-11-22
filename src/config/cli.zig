@@ -94,6 +94,12 @@ pub const process_flags = [_]intents.CliOption{
         .long = "--update-baselines",
         .description = "Update golden baseline screenshots during tests",
     },
+    .{
+        .id = .profile_startup,
+        .target = .main,
+        .long = "--profile-startup",
+        .description = "Log cold-start milestone timings in milliseconds",
+    },
 };
 
 /// Centralized declarative registry of all supported command-line options.
@@ -301,6 +307,7 @@ pub const ParsedArgs = struct {
     default_scale: ZoomPreset = .full,
     test_mode: bool = false,
     update_baselines: bool = false,
+    profile_startup: bool = false,
     headless: bool = false,
     server_mode: bool = false,
     ipc_mode: IpcMode = .disabled,
@@ -380,6 +387,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var default_scale: ZoomPreset = .full;
     var test_mode = false;
     var update_baselines = false;
+    var profile_startup = false;
     var headless = false;
     var server_mode = false;
     var ipc_mode: IpcMode = .disabled;
@@ -407,6 +415,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .test_mode => test_mode = true,
                     .headless => headless = true,
                     .update_baselines => update_baselines = true,
+                    .profile_startup => profile_startup = true,
                     .server => {
                         server_mode = true;
                         switch (ipc_mode) {
@@ -520,6 +529,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .default_scale = default_scale,
         .test_mode = test_mode,
         .update_baselines = update_baselines,
+        .profile_startup = profile_startup,
         .headless = headless,
         .server_mode = server_mode,
         .ipc_mode = ipc_mode,
@@ -610,6 +620,7 @@ pub fn parseIpcArgsIterator(
                     .headless,
                     .test_mode,
                     .update_baselines,
+                    .profile_startup,
                     .windowless,
                     .stack_raw_jpeg,
                     .no_stack_raw_jpeg,

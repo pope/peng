@@ -839,6 +839,11 @@ pub fn initSdlCore(headless: bool) !void {
         "Viewing a slideshow",
     );
     _ = sdl.hint.set("SDL_APP_NAME", "Peng");
+    // Disable 3D acceleration for `SDL_GetWindowSurface` so software-first
+    // startup stays pure CPU for fast first-frame display (no OpenGL/EGL
+    // init). Rendering upgrades to the hardware-accelerated SDL GPU pipeline
+    // (Vulkan/Metal) once background device initialization finishes.
+    _ = sdl.hint.set("SDL_FRAMEBUFFER_ACCELERATION", "0");
 
     if (!sdl.init(sdl.init_flags.video | sdl.init_flags.events)) {
         logInitErr("SDL_Init Error: {s}", .{sdl.getError()});
