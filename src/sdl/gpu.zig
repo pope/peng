@@ -753,10 +753,50 @@ pub const Device = struct {
     ptr: *c.SDL_GPUDevice,
 
     /// Creates a new GPU device supporting the requested shader formats,
-    /// optionally enabling debug validation.
-    pub fn create(format_flags: u32, debug_mode: bool) ?Device {
+    /// optionally enabling debug validation and low-power GPU preference.
+    pub fn createWithOptions(
+        format_flags: u32,
+        debug_mode: bool,
+        prefer_low_power: bool,
+    ) ?Device {
+        const props = c.SDL_CreateProperties();
+        if (props != 0) {
+            defer c.SDL_DestroyProperties(props);
+            if ((format_flags & ShaderFormat.spirv) != 0) {
+                _ = c.SDL_SetBooleanProperty(
+                    props,
+                    c.SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN,
+                    true,
+                );
+            }
+            if ((format_flags & ShaderFormat.msl) != 0) {
+                _ = c.SDL_SetBooleanProperty(
+                    props,
+                    c.SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN,
+                    true,
+                );
+            }
+            _ = c.SDL_SetBooleanProperty(
+                props,
+                c.SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN,
+                debug_mode,
+            );
+            _ = c.SDL_SetBooleanProperty(
+                props,
+                c.SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN,
+                prefer_low_power,
+            );
+            const raw = c.SDL_CreateGPUDeviceWithProperties(props);
+            return if (raw) |r| .{ .ptr = r } else null;
+        }
         const raw = c.SDL_CreateGPUDevice(format_flags, debug_mode, null);
         return if (raw) |r| .{ .ptr = r } else null;
+    }
+
+    /// Creates a new GPU device supporting the requested shader formats,
+    /// optionally enabling debug validation.
+    pub fn create(format_flags: u32, debug_mode: bool) ?Device {
+        return createWithOptions(format_flags, debug_mode, true);
     }
 
     /// Destroys the GPU device and frees associated backend resources.

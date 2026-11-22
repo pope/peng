@@ -118,6 +118,11 @@ pub const Font = struct {
         return .{ .ptr = raw };
     }
 
+    /// Returns true if a fallback font is already attached to `self`.
+    pub fn hasFallback(self: Font) bool {
+        return self.fallback_ptr != null;
+    }
+
     /// Closes and deallocates the underlying `TTF_Font` and any attached
     /// fallback font.
     pub fn close(self: Font) void {
