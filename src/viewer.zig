@@ -191,6 +191,15 @@ pub fn updateFrame(
         .gpu_encode_ms = pass_timings.gpu_encode_ms,
         .swapchain_wait_ms = pass_timings.swapchain_wait_ms,
     }, pass_timings.swapchain_present_ts);
+
+    // Lazily warm the RGB24 compute unpack pipeline after Frame 0 has been
+    // presented so cold-start time-to-first-pixel is never blocked on it.
+    if (resources.frame_index == 1 and
+        resources.unpack_compute_pipeline == .uninitialized)
+    {
+        app_state.unpack_compute_pipeline =
+            resources.ensureUnpackComputePipeline();
+    }
 }
 
 /// Constructs a read-only snapshot view-model consumed by the UI layout

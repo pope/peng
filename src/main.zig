@@ -320,7 +320,8 @@ const AppGraphicsAndState = struct {
 
         // 6. Bind graphics device and window handle to state
         self.state.gpu_device = self.setup.gpu_device;
-        self.state.unpack_compute_pipeline = self.resources.unpack_compute_pipeline;
+        self.state.unpack_compute_pipeline =
+            self.resources.unpack_compute_pipeline.get();
         if (!parsed.headless) {
             self.state.display.backendPtr().* = .{
                 .windowed = .{
