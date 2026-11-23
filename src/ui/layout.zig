@@ -93,6 +93,7 @@ pub fn renderFrame(
     const width = input.win_w;
     const height = input.win_h;
     const dpi_scale = input.dpiScale();
+    measure_data.measurer.dpi_scale = dpi_scale.x;
     const current_entry = ui_model.current_entry;
     const total_images = ui_model.total_images;
 

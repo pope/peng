@@ -278,6 +278,7 @@ pub const FontMeasurer = struct {
     fonts: []?sdl.Font = &.{},
     fallback_attempted: ?*bool = null,
     cache: ?*const TextCache = null,
+    dpi_scale: f32 = 1.0,
 
     /// Default empty font measurer for headless tests without loaded TTFs.
     pub const empty: FontMeasurer = .{};
@@ -287,25 +288,65 @@ pub const FontMeasurer = struct {
         return self.fonts.len > 0 and self.fonts[0] != null;
     }
 
-    /// Measures the pixel width and height of `text` using `fonts[font_id]`
-    /// scaled to `target_size`. Consults the cached `FontSizePage` first to
-    /// avoid C-FFI calls on warm glyphs.
+    const PhysicalScale = struct {
+        scale: f32,
+        inv_scale: f32,
+        physical_size: f32,
+        size_u16: u16,
+    };
+
+    fn resolvePhysicalScale(
+        self: FontMeasurer,
+        target_size: f32,
+    ) ?PhysicalScale {
+        if (!std.math.isFinite(target_size) or !(target_size > 0.0)) {
+            return null;
+        }
+        const scale: f32 = if (std.math.isFinite(self.dpi_scale) and
+            self.dpi_scale > 0.0)
+            self.dpi_scale
+        else
+            1.0;
+        const physical_size: f32 = target_size * scale;
+        if (!std.math.isFinite(physical_size) or !(physical_size > 0.0)) {
+            return null;
+        }
+        const max_u16_f: f32 = @floatFromInt(std.math.maxInt(u16));
+        const clamped = std.math.clamp(@round(physical_size), 0.0, max_u16_f);
+        return .{
+            .scale = scale,
+            .inv_scale = 1.0 / scale,
+            .physical_size = physical_size,
+            .size_u16 = @intFromFloat(clamped),
+        };
+    }
+
+    /// Measures the logical pixel width and height of `text` using
+    /// `fonts[font_id]` at logical `target_size`. Looks up the warm physical
+    /// `FontSizePage` at `target_size * dpi_scale` first to avoid C-FFI calls
+    /// on HiDPI and standard displays, then divides back into logical pixels.
     pub fn measure(
         self: FontMeasurer,
         font_id: usize,
         target_size: f32,
         text: []const u8,
     ) LogicalDims {
-        if (text.len == 0 or font_id >= self.fonts.len) {
+        if (text.len == 0) return .{ .w = 0, .h = 0 };
+        const font_id_u16 = std.math.cast(u16, font_id) orelse
             return .{ .w = 0, .h = 0 };
-        }
-        if (self.fonts[font_id] == null) return .{ .w = 0, .h = 0 };
-        const font = &self.fonts[font_id].?;
-        const size_u16: u16 = @intFromFloat(@round(target_size));
-        const page_opt = if (self.cache) |c|
-            c.findPage(@intCast(font_id), size_u16)
+        const phys = self.resolvePhysicalScale(target_size) orelse
+            return .{ .w = 0, .h = 0 };
+        const font_opt: ?*sdl.Font = if (font_id < self.fonts.len)
+            if (self.fonts[font_id]) |*f| f else null
         else
             null;
+        const page_opt = if (self.cache) |c|
+            c.findPage(font_id_u16, phys.size_u16)
+        else
+            null;
+        if (font_opt == null and page_opt == null) {
+            return .{ .w = 0, .h = 0 };
+        }
 
         var font_size_set = false;
         var total_w: f32 = 0.0;
@@ -321,14 +362,16 @@ pub const FontMeasurer = struct {
                         continue;
                     }
                 }
-                if (!font_size_set) {
-                    if (font.getFontSize() != target_size) {
-                        _ = font.setFontSize(target_size);
+                if (font_opt) |font| {
+                    if (!font_size_set) {
+                        if (font.getFontSize() != phys.physical_size) {
+                            _ = font.setFontSize(phys.physical_size);
+                        }
+                        font_size_set = true;
                     }
-                    font_size_set = true;
-                }
-                if (font.getGlyphMetrics(first_byte)) |m| {
-                    total_w += @floatFromInt(m.advance);
+                    if (font.getGlyphMetrics(first_byte)) |m| {
+                        total_w += @floatFromInt(m.advance);
+                    }
                 }
             } else {
                 const cp_len = std.unicode.utf8ByteSequenceLength(
@@ -344,25 +387,27 @@ pub const FontMeasurer = struct {
 
                 if (self.cache) |c| {
                     if (c.glyphs.get(.{
-                        .font_id = @intCast(font_id),
-                        .font_size = size_u16,
+                        .font_id = font_id_u16,
+                        .font_size = phys.size_u16,
                         .codepoint = cp,
                     })) |entry| {
                         total_w += entry.advance;
                         continue;
                     }
                 }
-                if (self.fallback_attempted) |attempted| {
-                    ensureFallbackFont(font, attempted);
-                }
-                if (!font_size_set) {
-                    if (font.getFontSize() != target_size) {
-                        _ = font.setFontSize(target_size);
+                if (font_opt) |font| {
+                    if (self.fallback_attempted) |attempted| {
+                        ensureFallbackFont(font, attempted);
                     }
-                    font_size_set = true;
-                }
-                if (font.getGlyphMetrics(cp)) |m| {
-                    total_w += @floatFromInt(m.advance);
+                    if (!font_size_set) {
+                        if (font.getFontSize() != phys.physical_size) {
+                            _ = font.setFontSize(phys.physical_size);
+                        }
+                        font_size_set = true;
+                    }
+                    if (font.getGlyphMetrics(cp)) |m| {
+                        total_w += @floatFromInt(m.advance);
+                    }
                 }
             }
         }
@@ -371,20 +416,25 @@ pub const FontMeasurer = struct {
             if (page_opt) |page| {
                 if (page.line_height > 0.0) break :blk page.line_height;
             }
-            if (!font_size_set and font.getFontSize() != target_size) {
-                _ = font.setFontSize(target_size);
+            if (font_opt) |font| {
+                if (!font_size_set and
+                    font.getFontSize() != phys.physical_size)
+                {
+                    _ = font.setFontSize(phys.physical_size);
+                }
+                break :blk @floatFromInt(@max(0, font.getHeight()));
             }
-            break :blk @floatFromInt(font.getHeight());
+            break :blk 0.0;
         };
 
         return .{
-            .w = total_w,
-            .h = line_h,
+            .w = total_w * phys.inv_scale,
+            .h = line_h * phys.inv_scale,
         };
     }
 
-    /// Measures how many bytes of `text` fit within `max_w` pixels using
-    /// `fonts[font_id]` at `target_size`.
+    /// Measures how many bytes of `text` fit within `max_w` logical pixels
+    /// using `fonts[font_id]` at logical `target_size`.
     pub fn measurePrefix(
         self: FontMeasurer,
         font_id: usize,
@@ -392,16 +442,19 @@ pub const FontMeasurer = struct {
         text: []const u8,
         max_w: f32,
     ) ?MeasuredPrefix {
-        if (text.len == 0 or font_id >= self.fonts.len or max_w <= 0) {
-            return null;
-        }
-        if (self.fonts[font_id] == null) return null;
-        const font = &self.fonts[font_id].?;
-        const size_u16: u16 = @intFromFloat(@round(target_size));
-        const page_opt = if (self.cache) |c|
-            c.findPage(@intCast(font_id), size_u16)
+        if (text.len == 0 or !(max_w > 0.0)) return null;
+        const font_id_u16 = std.math.cast(u16, font_id) orelse return null;
+        const phys = self.resolvePhysicalScale(target_size) orelse return null;
+        const physical_max_w: f32 = max_w * phys.scale;
+        const font_opt: ?*sdl.Font = if (font_id < self.fonts.len)
+            if (self.fonts[font_id]) |*f| f else null
         else
             null;
+        const page_opt = if (self.cache) |c|
+            c.findPage(font_id_u16, phys.size_u16)
+        else
+            null;
+        if (font_opt == null and page_opt == null) return null;
 
         var font_size_set = false;
         var total_w: f32 = 0.0;
@@ -421,14 +474,16 @@ pub const FontMeasurer = struct {
                     }
                 }
                 if (!hit) {
-                    if (!font_size_set) {
-                        if (font.getFontSize() != target_size) {
-                            _ = font.setFontSize(target_size);
+                    if (font_opt) |font| {
+                        if (!font_size_set) {
+                            if (font.getFontSize() != phys.physical_size) {
+                                _ = font.setFontSize(phys.physical_size);
+                            }
+                            font_size_set = true;
                         }
-                        font_size_set = true;
-                    }
-                    if (font.getGlyphMetrics(first_byte)) |m| {
-                        step_w = @floatFromInt(m.advance);
+                        if (font.getGlyphMetrics(first_byte)) |m| {
+                            step_w = @floatFromInt(m.advance);
+                        }
                     }
                 }
             } else {
@@ -446,8 +501,8 @@ pub const FontMeasurer = struct {
                 var hit = false;
                 if (self.cache) |c| {
                     if (c.glyphs.get(.{
-                        .font_id = @intCast(font_id),
-                        .font_size = size_u16,
+                        .font_id = font_id_u16,
+                        .font_size = phys.size_u16,
                         .codepoint = cp,
                     })) |entry| {
                         step_w = entry.advance;
@@ -455,28 +510,30 @@ pub const FontMeasurer = struct {
                     }
                 }
                 if (!hit) {
-                    if (self.fallback_attempted) |attempted| {
-                        ensureFallbackFont(font, attempted);
-                    }
-                    if (!font_size_set) {
-                        if (font.getFontSize() != target_size) {
-                            _ = font.setFontSize(target_size);
+                    if (font_opt) |font| {
+                        if (self.fallback_attempted) |attempted| {
+                            ensureFallbackFont(font, attempted);
                         }
-                        font_size_set = true;
-                    }
-                    if (font.getGlyphMetrics(cp)) |m| {
-                        step_w = @floatFromInt(m.advance);
+                        if (!font_size_set) {
+                            if (font.getFontSize() != phys.physical_size) {
+                                _ = font.setFontSize(phys.physical_size);
+                            }
+                            font_size_set = true;
+                        }
+                        if (font.getGlyphMetrics(cp)) |m| {
+                            step_w = @floatFromInt(m.advance);
+                        }
                     }
                 }
             }
 
-            if (total_w + step_w > max_w) break;
+            if (total_w + step_w > physical_max_w) break;
             total_w += step_w;
             byte_idx = next_idx;
         }
         return .{
             .len = byte_idx,
-            .w = total_w,
+            .w = total_w * phys.inv_scale,
         };
     }
 };
@@ -581,4 +638,77 @@ test "FontMeasurer.empty returns zero dimensions and null prefixes" {
     try std.testing.expectEqual(@as(f32, 0.0), dims.h);
     const prefix = measurer.measurePrefix(0, 16.0, "hello", 100.0);
     try std.testing.expect(prefix == null);
+}
+
+test "FontMeasurer maps logical sizes to HiDPI physical TextCache pages" {
+    const alloc = std.testing.allocator;
+    var cache: TextCache = .{};
+    defer cache.deinit(alloc, null);
+
+    // Populate physical size 26 (logical 13 * 2.0x HiDPI scale)
+    _ = cache.getOrCreatePage(0, 26, 32.0);
+    try cache.putGlyph(alloc, .{
+        .font_id = 0,
+        .font_size = 26,
+        .codepoint = 'A',
+    }, .{ .advance = 16.0 });
+    try cache.putGlyph(alloc, .{
+        .font_id = 0,
+        .font_size = 26,
+        .codepoint = 'B',
+    }, .{ .advance = 14.0 });
+    try cache.putGlyph(alloc, .{
+        .font_id = 0,
+        .font_size = 26,
+        .codepoint = 0x00E9, // 'é'
+    }, .{ .advance = 12.0 });
+
+    const measurer = FontMeasurer{
+        .cache = &cache,
+        .dpi_scale = 2.0,
+    };
+
+    const dims = measurer.measure(0, 13.0, "AB\xC3\xA9");
+    try std.testing.expectApproxEqAbs(@as(f32, 21.0), dims.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 16.0), dims.h, 0.001);
+
+    const prefix = measurer.measurePrefix(0, 13.0, "ABA", 16.0).?;
+    try std.testing.expectEqual(@as(usize, 2), prefix.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 15.0), prefix.w, 0.001);
+
+    // Fractional 1.5x scale: round(13 * 1.5) == 20
+    _ = cache.getOrCreatePage(0, 20, 24.0);
+    try cache.putGlyph(alloc, .{
+        .font_id = 0,
+        .font_size = 20,
+        .codepoint = 'A',
+    }, .{ .advance = 12.0 });
+    const frac_measurer = FontMeasurer{
+        .cache = &cache,
+        .dpi_scale = 1.5,
+    };
+    const frac_dims = frac_measurer.measure(0, 13.0, "AA");
+    try std.testing.expectApproxEqAbs(@as(f32, 16.0), frac_dims.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 16.0), frac_dims.h, 0.001);
+
+    // Non-finite and out-of-range inputs must not panic
+    const inf_measurer = FontMeasurer{
+        .cache = &cache,
+        .dpi_scale = std.math.inf(f32),
+    };
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        inf_measurer.measure(0, 13.0, "A").w,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        measurer.measure(0, std.math.nan(f32), "A").w,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        measurer.measure(std.math.maxInt(usize), 13.0, "A").w,
+    );
+    try std.testing.expect(
+        measurer.measurePrefix(0, 13.0, "A", std.math.nan(f32)) == null,
+    );
 }

@@ -101,6 +101,7 @@
               [
                 hyperfine
                 lldb
+                samply
                 self.formatter.${system}
                 updateNixDeps
                 zls
