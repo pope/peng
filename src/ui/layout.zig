@@ -265,6 +265,7 @@ fn renderTitlePill(
     progress: f32,
     measure_data: *const MeasureTextUserData,
 ) !void {
+    try list.addDropShadow(rect, .all(10), 12.0, 4.0, 0.32 * progress);
     try list.addRect(rect, .{
         .background_color = theme.withAlpha(theme.mantle, 0.75 * progress),
         .corner_radius = .all(10),
@@ -387,6 +388,7 @@ fn renderSnackbarPill(
     enable_blur: bool,
     measure_data: *const MeasureTextUserData,
 ) !void {
+    try list.addDropShadow(rect, .all(10), 12.0, 4.0, 0.32 * progress);
     try list.addRect(rect, .{
         .background_color = theme.withAlpha(theme.mantle, 0.75 * progress),
         .corner_radius = .all(10),

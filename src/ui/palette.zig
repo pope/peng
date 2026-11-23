@@ -1468,6 +1468,7 @@ pub fn renderPalette(
 
     interaction.setPaletteModalRect(modal_rect, palette.isAcceptingInput());
 
+    try list.addDropShadow(modal_rect, .all(10), 16.0, 6.0, 0.40 * progress);
     try list.addRect(modal_rect, .{
         .background_color = theme.withAlpha(theme.base_translucent, progress),
         .corner_radius = .all(10),

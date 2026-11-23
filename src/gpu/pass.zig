@@ -587,7 +587,7 @@ fn drawBatches(
 
         const VertexBatchKind = enum { image, blit, glyph };
         const batch_kind: VertexBatchKind = switch (batch.material) {
-            .sdf_ui, .blurred_surface => {
+            .sdf_ui, .blurred_surface, .overlay_shadow => {
                 if (last_pipeline == null or
                     last_pipeline.?.ptr != gpu.sdf_pipeline.ptr)
                 {
@@ -747,9 +747,17 @@ fn findBlurSplit(
         .initialized => |res| res,
         .uninitialized, .failed, .pipelines_ready => return null,
     };
+    var first_shadow_idx: ?usize = null;
     for (batches, 0..) |batch, i| {
-        if (batch.material == .blurred_surface) {
-            return .{ .blur = init_res, .split_idx = i };
+        switch (batch.material) {
+            .overlay_shadow => {
+                if (first_shadow_idx == null) first_shadow_idx = i;
+            },
+            .blurred_surface => {
+                const split_idx = if (first_shadow_idx) |s| @min(s, i) else i;
+                return .{ .blur = init_res, .split_idx = split_idx };
+            },
+            .ui_element, .glyph, .image_viewer, .sdf_ui => {},
         }
     }
     return null;
@@ -805,7 +813,7 @@ fn runBlurFilterPass(
     const target = sdl.gpu.ColorTargetAttachment{
         .texture = target_tex,
         .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-        .load_op = .clear,
+        .load_op = .dont_care,
         .store_op = .store,
         .cycle = false,
     };
@@ -881,21 +889,35 @@ fn executeRenderPass(
         return;
     }
 
-    // Pass 2: Downsample scene into blur_down (Dual Kawase pass 1)
+    // Pass 2a: Downsample scene into blur (full -> 1/2 res)
     if (!runBlurFilterPass(
         cmd_buf,
         gpu,
-        tex.blur_down,
+        tex.blur,
         tex.scene,
         pipes.down,
         tex.target_dims,
-        tex.down_dims,
-        2.0,
+        tex.half_dims,
+        1.0,
     )) {
         return;
     }
 
-    // Pass 3: Upsample blur_down into blur (Dual Kawase pass 2)
+    // Pass 2b: Downsample blur into blur_down (1/2 -> 1/4 res)
+    if (!runBlurFilterPass(
+        cmd_buf,
+        gpu,
+        tex.blur_down,
+        tex.blur,
+        pipes.down,
+        tex.half_dims,
+        tex.down_dims,
+        1.5,
+    )) {
+        return;
+    }
+
+    // Pass 3: Upsample blur_down into blur (1/4 -> 1/2 res)
     if (!runBlurFilterPass(
         cmd_buf,
         gpu,
@@ -903,8 +925,8 @@ fn executeRenderPass(
         tex.blur_down,
         pipes.up,
         tex.down_dims,
-        tex.down_dims,
-        2.5,
+        tex.half_dims,
+        2.0,
     )) {
         return;
     }
@@ -1405,6 +1427,7 @@ test "findBlurSplit pairs initialized resources with blurred_surface index" {
             .blur = .{ .ptr = @ptrFromInt(0x2005) },
             .target_dims = .{ .w = 800, .h = 600 },
             .target_format = .rgba8_unorm,
+            .half_dims = .{ .w = 400, .h = 300 },
             .down_dims = .{ .w = 200, .h = 150 },
         },
     };
@@ -1449,4 +1472,64 @@ test "buildPassTimings subtracts swapchain wait saturating safely" {
         @as(?std.Io.Timestamp, null),
         clamped.swapchain_present_ts,
     );
+}
+
+test "findBlurSplit includes leading overlay_shadow in Pass 4b" {
+    const dummy_tex = sdl.gpu.Texture{ .ptr = @ptrFromInt(0x1000) };
+    const init_res = BlurResources.Initialized{
+        .pipelines = .{
+            .down = .{ .ptr = @ptrFromInt(0x2001) },
+            .up = .{ .ptr = @ptrFromInt(0x2002) },
+        },
+        .textures = .{
+            .scene = .{ .ptr = @ptrFromInt(0x2003) },
+            .blur_down = .{ .ptr = @ptrFromInt(0x2004) },
+            .blur = .{ .ptr = @ptrFromInt(0x2005) },
+            .target_dims = .{ .w = 800, .h = 600 },
+            .target_format = .rgba8_unorm,
+            .half_dims = .{ .w = 400, .h = 300 },
+            .down_dims = .{ .w = 200, .h = 150 },
+        },
+    };
+    const blur_res: BlurResources = .{ .initialized = init_res };
+
+    const shadow_only = [_]BatchItem{
+        .{
+            .vertex_start = 0,
+            .vertex_count = 1,
+            .texture = dummy_tex,
+            .material = .overlay_shadow,
+            .scissor = null,
+        },
+    };
+    try std.testing.expectEqual(
+        @as(?BlurSplit, null),
+        findBlurSplit(&shadow_only, blur_res),
+    );
+
+    const shadow_then_blur = [_]BatchItem{
+        .{
+            .vertex_start = 0,
+            .vertex_count = 6,
+            .texture = dummy_tex,
+            .material = .image_viewer,
+            .scissor = null,
+        },
+        .{
+            .vertex_start = 0,
+            .vertex_count = 1,
+            .texture = dummy_tex,
+            .material = .overlay_shadow,
+            .scissor = null,
+        },
+        .{
+            .vertex_start = 1,
+            .vertex_count = 1,
+            .texture = dummy_tex,
+            .material = .blurred_surface,
+            .scissor = null,
+        },
+    };
+    const split = findBlurSplit(&shadow_then_blur, blur_res).?;
+    try std.testing.expectEqual(@as(usize, 1), split.split_idx);
 }

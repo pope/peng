@@ -139,7 +139,7 @@ const sdf_vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
     },
 };
 
-/// Manages pipelines and offscreen textures for the 2-pass Dual Kawase
+/// Manages pipelines and offscreen textures for the 2-level, 3-pass Dual Kawase
 /// backdrop blur. State is modeled as a tagged union to guarantee that callers
 /// can never observe or assume partially-initialized resources, with no
 /// non-null assertions required.
@@ -161,14 +161,15 @@ pub const BlurResources = union(enum) {
         }
     };
 
-    /// Window-sized scene texture and quarter-resolution Kawase ping-pong
-    /// render targets.
+    /// Window-sized scene texture and 2-level Kawase ping-pong render targets
+    /// (`blur` at half resolution, `blur_down` at quarter resolution).
     pub const Textures = struct {
         scene: sdl.gpu.Texture,
         blur_down: sdl.gpu.Texture,
         blur: sdl.gpu.Texture,
         target_dims: PositiveDimsU32,
         target_format: sdl.gpu.TextureFormat,
+        half_dims: PositiveDimsU32,
         down_dims: PositiveDimsU32,
 
         /// Releases the scene and downsample/upsample textures from `dev`.
@@ -371,11 +372,27 @@ pub const BlurResources = union(enum) {
         }) orelse return error.SceneTextureCreationFailed;
         errdefer dev.releaseTexture(scene_tex);
 
+        const half_dims = PositiveDimsU32{
+            .w = @max(1, @divCeil(dims.w, 2)),
+            .h = @max(1, @divCeil(dims.h, 2)),
+        };
         const down_dims = PositiveDimsU32{
             .w = @max(1, @divCeil(dims.w, 4)),
             .h = @max(1, @divCeil(dims.h, 4)),
         };
 
+        const half_info = sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = .rgba8_unorm,
+            .usage = sdl.gpu.TextureUsage.color_target |
+                sdl.gpu.TextureUsage.sampler,
+            .width = half_dims.w,
+            .height = half_dims.h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        };
         const down_info = sdl.gpu.TextureCreateInfo{
             .type = .type_2d,
             .format = .rgba8_unorm,
@@ -393,7 +410,7 @@ pub const BlurResources = union(enum) {
             return error.BlurTextureCreationFailed;
         errdefer dev.releaseTexture(blur_down_tex);
 
-        const blur_tex = dev.createTexture(&down_info) orelse
+        const blur_tex = dev.createTexture(&half_info) orelse
             return error.BlurTextureCreationFailed;
 
         return .{
@@ -402,6 +419,7 @@ pub const BlurResources = union(enum) {
             .blur = blur_tex,
             .target_dims = dims,
             .target_format = target_format,
+            .half_dims = half_dims,
             .down_dims = down_dims,
         };
     }
@@ -1486,6 +1504,7 @@ test "BlurResources tagged union lifecycle and failure latching" {
                 .blur = .{ .ptr = @ptrFromInt(0x2005) },
                 .target_dims = .{ .w = 800, .h = 600 },
                 .target_format = .rgba8_unorm,
+                .half_dims = .{ .w = 400, .h = 300 },
                 .down_dims = .{ .w = 200, .h = 150 },
             },
         },

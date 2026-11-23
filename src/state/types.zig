@@ -143,6 +143,7 @@ pub const ElementTag = enum(usize) {
     image_viewer = 1,
     drop_zone_box = 2,
     blurred_surface = 3,
+    overlay_shadow = 4,
 
     /// Converts element tag enum to raw integer index.
     pub fn toInt(self: ElementTag) usize {
@@ -155,6 +156,7 @@ pub const ElementTag = enum(usize) {
             1 => .image_viewer,
             2 => .drop_zone_box,
             3 => .blurred_surface,
+            4 => .overlay_shadow,
             else => .none,
         };
     }

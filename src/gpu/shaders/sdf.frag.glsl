@@ -55,7 +55,10 @@ void main() {
     if (!is_border_only) {
         if (is_blur) {
             vec4 tex_col = texture(texSampler, inScreenUv);
-            vec3 frosted = mix(tex_col.rgb, inFillColor.rgb, inFillColor.a);
+            // Intentional sRGB-space vibrancy boost under translucent tint.
+            float luma = dot(tex_col.rgb, vec3(0.2126, 0.7152, 0.0722));
+            vec3 vibrant = clamp(mix(vec3(luma), tex_col.rgb, 1.28), 0.0, 1.0);
+            vec3 frosted = mix(vibrant, inFillColor.rgb, inFillColor.a);
             float frosted_a = min(1.0, inFillColor.a * (255.0 / 191.0));
             col = vec4(frosted, frosted_a * outer_cov);
         } else {

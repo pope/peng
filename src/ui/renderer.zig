@@ -68,6 +68,8 @@ pub const BorderWidth = struct {
 pub const RectConfig = struct {
     background_color: Color,
     corner_radius: CornerRadius = .{},
+    /// Edge softness / drop-shadow blur radius in logical UI points.
+    softness: f32 = 0.0,
     tag: ElementTag = .none,
 };
 
@@ -169,6 +171,31 @@ pub const UiDrawList = struct {
         try self.append(.{
             .rect = rect,
             .payload = .{ .rectangle = config },
+        });
+    }
+
+    /// Appends a soft analytic SDF drop shadow behind `rect`.
+    /// `rect`, `corner_radius`, `blur_radius`, and `y_offset` are in logical
+    /// UI points; `alpha` is normalized (`0.0..1.0`).
+    pub fn addDropShadow(
+        self: *UiDrawList,
+        rect: FRect,
+        corner_radius: CornerRadius,
+        blur_radius: f32,
+        y_offset: f32,
+        alpha: f32,
+    ) !void {
+        if (alpha <= 0.001) return;
+        try self.addRect(.{
+            .x = rect.x,
+            .y = rect.y + y_offset,
+            .w = rect.w,
+            .h = rect.h,
+        }, .{
+            .background_color = .{ 0, 0, 0, alpha * 255.0 },
+            .corner_radius = corner_radius,
+            .softness = blur_radius,
+            .tag = .overlay_shadow,
         });
     }
 
@@ -326,6 +353,7 @@ fn appendRectangleCommand(
             @min(config.corner_radius.bottom_left * scale_x, min_radius),
         },
         .fill_color = packRgba255(config.background_color),
+        .softness = config.softness * scale_x,
         .flags = if (is_blurred) UiQuadInstance.flag_blur else 0.0,
     });
 
@@ -340,13 +368,15 @@ fn appendRectangleCommand(
             scissor,
         );
     } else {
+        const mat: gpu_pkg.render_image.MaterialType =
+            if (config.tag == .overlay_shadow) .overlay_shadow else .sdf_ui;
         try addBatch(
             batches,
             allocator,
             start,
             1,
             gpu_res.uiTexture(),
-            .sdf_ui,
+            mat,
             scissor,
         );
     }

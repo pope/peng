@@ -20,6 +20,7 @@ pub const MaterialType = enum {
     glyph,
     image_viewer,
     blurred_surface,
+    overlay_shadow,
     sdf_ui,
 };
 
