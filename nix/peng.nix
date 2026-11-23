@@ -28,6 +28,10 @@
   zigTarget ? null,
   # Optional runtime library path exposed via passthru for running portable static builds on NixOS
   linuxDlopenLibraryPath ? "",
+  # Launch desktop entry through resident server (`peng-msg --spawn open %f`) instead of standalone `peng`
+  useServer ? false,
+  # Extra CLI flags appended to standalone `peng` desktop entry Exec= lines (e.g. [ "--title" "--scale" "shrink" ])
+  desktopArgs ? [ ],
 }:
 assert lib.assertMsg (static -> zigTarget != null) "zigTarget must be set when static = true";
 let
@@ -87,36 +91,50 @@ stdenv.mkDerivation (_finalAttrs: {
         "Viewer"
         "Photography"
       ];
+      standaloneExec = lib.concatStringsSep " " ([ "peng" ] ++ desktopArgs);
     in
-    lib.optionals (stdenv.hostPlatform.isLinux && !static) [
-      (makeDesktopItem {
-        name = "peng";
-        desktopName = "Peng";
-        genericName = "Image Viewer";
-        comment = "GPU-accelerated image viewer built in Zig";
-        exec = "peng-msg --spawn open %f";
-        icon = "image-x-generic";
-        terminal = false;
-        inherit categories mimeTypes;
-        actions = {
-          new-window = {
-            name = "Open in New Window";
-            exec = "peng %F";
-          };
-        };
-      })
-      (makeDesktopItem {
-        name = "peng-new-window";
-        desktopName = "Peng (New Window)";
-        genericName = "Image Viewer";
-        comment = "Open in a standalone Peng window";
-        exec = "peng %F";
-        icon = "image-x-generic";
-        terminal = false;
-        noDisplay = true;
-        inherit categories mimeTypes;
-      })
-    ];
+    lib.optionals stdenv.hostPlatform.isLinux (
+      [
+        (makeDesktopItem {
+          name = "peng";
+          desktopName = "Peng";
+          genericName = "Image Viewer";
+          comment = "GPU-accelerated image viewer built in Zig";
+          exec = if useServer then "peng-msg --spawn open %f" else "${standaloneExec} %F";
+          icon = "image-x-generic";
+          terminal = false;
+          inherit categories mimeTypes;
+          actions =
+            if useServer then
+              {
+                new-window = {
+                  name = "Open in New Window";
+                  exec = "${standaloneExec} %F";
+                };
+              }
+            else
+              {
+                server-window = {
+                  name = "Open in Resident Server";
+                  exec = "peng-msg --spawn open %f";
+                };
+              };
+        })
+      ]
+      ++ lib.optionals useServer [
+        (makeDesktopItem {
+          name = "peng-new-window";
+          desktopName = "Peng (New Window)";
+          genericName = "Image Viewer";
+          comment = "Open in a standalone Peng window";
+          exec = "${standaloneExec} %F";
+          icon = "image-x-generic";
+          terminal = false;
+          noDisplay = true;
+          inherit categories mimeTypes;
+        })
+      ]
+    );
 
   postConfigure = ''
     mkdir -p .zig-cache/p
@@ -150,10 +168,8 @@ stdenv.mkDerivation (_finalAttrs: {
     zig
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [
-    wayland-scanner
-  ]
-  ++ lib.optionals (stdenv.hostPlatform.isLinux && !static) [
     copyDesktopItems
+    wayland-scanner
   ];
 
   buildInputs = [
