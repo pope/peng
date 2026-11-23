@@ -3,6 +3,15 @@
 const sdl = @import("sdl");
 const std = @import("std");
 
+/// Lifecycle and active OS cursor state for `ActiveWindow`.
+/// Makes `(.pointer, null)` unrepresentable by pairing the cached pointer
+/// handle with the active cursor state once lazily created.
+pub const CursorState = union(enum) {
+    uninitialized,
+    default: sdl.Cursor,
+    pointer: sdl.Cursor,
+};
+
 /// Claimed SDL window handle, pixel format, fullscreen state, borderless
 /// state, and title string cache.
 /// Invariant: Only constructed once a real `sdl.Window` has been created and
@@ -16,10 +25,53 @@ pub const ActiveWindow = struct {
     is_minimized: bool = false,
     is_occluded: bool = false,
     screensaver_inhibited: bool = false,
+    cursor: CursorState = .uninitialized,
+
+    /// Lazily updates the active OS mouse cursor when `desired` changes.
+    pub fn syncCursor(self: *ActiveWindow, desired: sdl.SystemCursor) void {
+        switch (desired) {
+            .default => switch (self.cursor) {
+                .uninitialized, .default => {},
+                .pointer => |cur| {
+                    if (sdl.Cursor.getDefault()) |def| {
+                        _ = def.set();
+                    }
+                    self.cursor = .{ .default = cur };
+                },
+            },
+            .pointer => switch (self.cursor) {
+                .pointer => {},
+                .default => |cur| {
+                    if (cur.set()) {
+                        self.cursor = .{ .pointer = cur };
+                    }
+                },
+                .uninitialized => {
+                    const cur = sdl.Cursor.createSystem(.pointer) orelse return;
+                    if (cur.set()) {
+                        self.cursor = .{ .pointer = cur };
+                    } else {
+                        self.cursor = .{ .default = cur };
+                    }
+                },
+            },
+        }
+    }
 
     /// Frees the cached window title string allocation if present and releases
-    /// any active OS screensaver inhibition.
+    /// any active OS screensaver inhibition and system cursor handles.
     pub fn deinit(self: *ActiveWindow, gpa: std.mem.Allocator) void {
+        switch (self.cursor) {
+            .uninitialized => {},
+            .default => |cur| cur.destroy(),
+            .pointer => |cur| {
+                if (sdl.Cursor.getDefault()) |def| {
+                    _ = def.set();
+                }
+                cur.destroy();
+            },
+        }
+        self.cursor = .uninitialized;
         if (self.screensaver_inhibited) {
             self.screensaver_inhibited = false;
             if (!sdl.enableScreenSaver()) {

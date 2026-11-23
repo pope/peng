@@ -15,6 +15,7 @@ const wayland_shm = @import("wayland_shm.zig");
 pub const window = @import("window.zig");
 
 const c = c_pkg.c;
+pub const Cursor = window.Cursor;
 pub const disableScreenSaver = window.disableScreenSaver;
 pub const enableScreenSaver = window.enableScreenSaver;
 pub const Event = events.Event;
@@ -31,6 +32,7 @@ pub const quit = events.quit;
 pub const quitTtf = font.quitTtf;
 pub const SoftwarePresenter = window.SoftwarePresenter;
 pub const Surface = surface.Surface;
+pub const SystemCursor = window.SystemCursor;
 pub const Window = window.Window;
 pub const window_flags = window.window_flags;
 

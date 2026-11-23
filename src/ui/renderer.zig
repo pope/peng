@@ -106,12 +106,19 @@ pub const ImageConfig = struct {
     uv: UvRect = .{},
 };
 
+/// Configuration for analytic SDF close (`×`) icon render commands.
+pub const CloseIconConfig = struct {
+    color: Color,
+    stroke_width: f32 = 1.5,
+};
+
 /// Variant payload for pure-Zig immediate-mode UI draw commands.
 pub const CommandPayload = union(enum) {
     scissor_start,
     scissor_end,
     rectangle: RectConfig,
     border: BorderConfig,
+    close_icon: CloseIconConfig,
     text: TextConfig,
     text_runs: TextRunsConfig,
     image: ImageConfig,
@@ -170,6 +177,18 @@ pub const UiDrawList = struct {
         try self.append(.{
             .rect = rect,
             .payload = .{ .border = config },
+        });
+    }
+
+    /// Appends an analytic SDF close (`×`) icon command centered inside `rect`.
+    pub fn addCloseIcon(
+        self: *UiDrawList,
+        rect: FRect,
+        config: CloseIconConfig,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .close_icon = config },
         });
     }
 
@@ -666,6 +685,26 @@ fn buildGeometryFromCommands(
                     build_ctx.gpu_res,
                     current_scissor,
                 );
+            },
+            .close_icon => |config| {
+                if (rect.w > 0.0 and rect.h > 0.0) {
+                    const start = @as(u32, @intCast(instances.items.len));
+                    try instances.append(build_ctx.frame_allocator, .{
+                        .rect = .{ rect.x, rect.y, rect.w, rect.h },
+                        .border = .{ config.stroke_width * scale_x, 0, 0, 0 },
+                        .fill_color = packRgba255(config.color),
+                        .flags = UiQuadInstance.flag_close_icon,
+                    });
+                    try addBatch(
+                        batches,
+                        build_ctx.frame_allocator,
+                        start,
+                        1,
+                        build_ctx.gpu_res.uiTexture(),
+                        .sdf_ui,
+                        current_scissor,
+                    );
+                }
             },
             .image => |config| {
                 try render_image.appendImageCommand(

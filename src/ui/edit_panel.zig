@@ -331,13 +331,9 @@ pub fn renderEditPanel(
             withAlpha(theme.surface0, progress),
         .corner_radius = .all(12),
     });
-    const x_dims = measureText("x", 0, 12, measure_data);
-    const x_rect = close_btn_rect.centered(x_dims.w, x_dims.h);
-    try list.addText(x_rect, .{
-        .text = "x",
+    try list.addCloseIcon(close_btn_rect.centered(7.0, 7.0), .{
         .color = withAlpha(theme.text, progress),
-        .font_size = 12,
-        .font_id = 0,
+        .stroke_width = 1.25,
     });
 
     _ = header_rect.cutRight(8.0);

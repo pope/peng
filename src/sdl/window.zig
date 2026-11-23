@@ -15,6 +15,39 @@ pub const window_flags = struct {
     pub const borderless: u64 = c.SDL_WINDOW_BORDERLESS;
 };
 
+/// Standard OS mouse cursor shapes supported by SDL3.
+pub const SystemCursor = enum(c_int) {
+    default = c.SDL_SYSTEM_CURSOR_DEFAULT,
+    pointer = c.SDL_SYSTEM_CURSOR_POINTER,
+};
+
+/// Safe typed wrapper handle around an underlying `SDL_Cursor`.
+pub const Cursor = extern struct {
+    ptr: *c.SDL_Cursor,
+
+    /// Creates a standard OS system cursor handle.
+    pub fn createSystem(id: SystemCursor) ?Cursor {
+        const raw = c.SDL_CreateSystemCursor(@intCast(@backingInt(id)));
+        return if (raw) |r| .{ .ptr = r } else null;
+    }
+
+    /// Returns SDL's default system cursor handle.
+    pub fn getDefault() ?Cursor {
+        const raw = c.SDL_GetDefaultCursor();
+        return if (raw) |r| .{ .ptr = r } else null;
+    }
+
+    /// Activates this cursor for the application.
+    pub fn set(self: Cursor) bool {
+        return c.SDL_SetCursor(self.ptr);
+    }
+
+    /// Destroys a cursor created with `createSystem`.
+    pub fn destroy(self: Cursor) void {
+        c.SDL_DestroyCursor(self.ptr);
+    }
+};
+
 /// Allows the screen to be blanked by a screensaver or OS power management.
 pub fn enableScreenSaver() bool {
     return c.SDL_EnableScreenSaver();

@@ -113,18 +113,9 @@ fn renderFloatingHudHeader(
         .background_color = theme.surface0,
         .corner_radius = .all(12),
     });
-    const x_dims = measureText("x", 0, 12, measure_data);
-    const x_off = @round((24.0 - x_dims.w) * 0.5);
-    try list.addText(.{
-        .x = close_rect.x + x_off,
-        .y = close_rect.y,
-        .w = x_dims.w,
-        .h = 24.0,
-    }, .{
-        .text = "x",
+    try list.addCloseIcon(close_rect.centered(7.0, 7.0), .{
         .color = theme.text,
-        .font_size = 12,
-        .font_id = 0,
+        .stroke_width = 1.25,
     });
 
     return close_rect;
@@ -1215,6 +1206,7 @@ test "renderStatsOverlay emits per-phase frame timings and max spikes" {
                 .scissor_end,
                 .rectangle,
                 .border,
+                .close_icon,
                 .text_runs,
                 .image,
                 .atlas_preview,
@@ -1235,6 +1227,7 @@ fn drawListHasText(draw_list: *const UiDrawList, needle: []const u8) bool {
             .scissor_end,
             .rectangle,
             .border,
+            .close_icon,
             .text_runs,
             .image,
             .atlas_preview,

@@ -23,6 +23,21 @@ float sdRoundedBox(vec2 p, vec2 b, vec4 r) {
 }
 
 void main() {
+    int flags = int(inParams.y + 0.5);
+    if ((flags & 8) != 0) {
+        float half_stroke = max(inBorder.x, 1.0) * 0.5;
+        float arm = max(min(inHalfSize.x, inHalfSize.y) - half_stroke, 0.5);
+        vec2 ap = abs(inLocalPos);
+        float t = clamp((ap.x + ap.y) / (2.0 * arm), 0.0, 1.0);
+        float d = length(ap - vec2(t * arm)) - half_stroke;
+        float cov = smoothstep(0.5, -0.5, d);
+        if (cov <= 0.0001) {
+            discard;
+        }
+        outColor = vec4(inFillColor.rgb, inFillColor.a * cov);
+        return;
+    }
+
     float softness = max(inParams.x, 0.0);
     float aa = 0.5 + softness;
 
@@ -32,7 +47,6 @@ void main() {
         discard;
     }
 
-    int flags = int(inParams.y + 0.5);
     bool is_blur = (flags & 1) != 0;
     bool is_border_only = (flags & 2) != 0;
     bool is_dashed = (flags & 4) != 0;

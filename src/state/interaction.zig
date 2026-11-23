@@ -232,6 +232,25 @@ pub const InteractionState = struct {
         }
     }
 
+    /// Returns true if the pointer is currently hovering over an interactive
+    /// UI control (close buttons, edit panel controls, or palette items).
+    pub fn isPointerOverInteractive(self: *const InteractionState) bool {
+        if (!self.has_layout or !self.pointer_inside) return false;
+        if (self.palette_captures_pointer) {
+            for (self.palette_items[0..self.palette_item_count]) |item| {
+                if (item.rect.contains(self.pointer)) return true;
+            }
+            return false;
+        }
+        if (self.isPointerOverInfoCloseBtn() or
+            self.isPointerOverStatsCloseBtn() or
+            self.isPointerOverAtlasCloseBtn())
+        {
+            return true;
+        }
+        return self.hitTestEditPanel() != null;
+    }
+
     /// Returns true if pointer is hovering over the info close button.
     pub fn isPointerOverInfoCloseBtn(self: *const InteractionState) bool {
         if (!self.has_layout) return false;

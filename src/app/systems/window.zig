@@ -143,11 +143,18 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                         }
                     }
                 }
+                const desired_cursor: sdl.SystemCursor =
+                    if (state.viewer.ui.interaction.isPointerOverInteractive())
+                        .pointer
+                    else
+                        .default;
+                win.syncCursor(desired_cursor);
             },
             .headless => {},
         },
         .hidden => |*b| switch (b.*) {
             .windowed => |*win| {
+                win.syncCursor(.default);
                 if (win.screensaver_inhibited) {
                     win.screensaver_inhibited = false;
                     if (!sdl.enableScreenSaver()) {

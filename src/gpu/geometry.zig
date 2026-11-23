@@ -30,12 +30,14 @@ pub const UiQuadInstance = extern struct {
     /// Softness / shadow blur radius in physical pixels (`0.0` = crisp AA).
     softness: f32 = 0.0,
     /// Bitmask flags: bit 0 (`1.0`) = frosted glass, bit 1 (`2.0`) =
-    /// border-only (skip interior fill), bit 2 (`4.0`) = dashed border.
+    /// border-only (skip interior fill), bit 2 (`4.0`) = dashed border,
+    /// bit 3 (`8.0`) = analytic close (`×`) icon.
     flags: f32 = 0.0,
 
     pub const flag_blur: f32 = 1.0;
     pub const flag_border_only: f32 = 2.0;
     pub const flag_dashed: f32 = 4.0;
+    pub const flag_close_icon: f32 = 8.0;
 };
 
 comptime {
