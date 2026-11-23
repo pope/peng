@@ -298,6 +298,9 @@ pub fn getOrRasterizeGlyph(
 
     const fonts = gpu_res.fonts[0..];
     if (font_id >= fonts.len) return null;
+    if (codepoint >= 0x80) {
+        gpu_res.ensureFallbackFont(font_id);
+    }
     const font = fonts[font_id] orelse return null;
 
     if (font.getFontSize() != target_font_size) {
@@ -492,14 +495,19 @@ fn uploadVertexData(
 
 fn drawBatches(
     view_params: ViewportParams,
-    gpu: *const RenderResources,
+    gpu: *RenderResources,
     render_pass: sdl.gpu.RenderPass,
     cmd_buf: sdl.gpu.CommandBuffer,
     batches: []const BatchItem,
     target_dims: PositiveDimsU32,
 ) void {
+    const DrawnUbo = enum {
+        image,
+        ui_solid,
+        ui_blur,
+    };
     var last_pipeline: ?sdl.gpu.Pipeline = null;
-    var last_material: ?MaterialType = null;
+    var last_ubo: ?DrawnUbo = null;
     const win_w: i32 = @intCast(target_dims.w);
     const win_h: i32 = @intCast(target_dims.h);
 
@@ -518,78 +526,101 @@ fn drawBatches(
         }
 
         const is_image = (batch.material == .image_viewer);
-        const pipeline = if (is_image) gpu.image_pipeline else gpu.ui_pipeline;
+        const show_original = view_params.compare_original;
+        const apply_adj = !show_original and view_params.edits.hasEdits();
+        const scale_mode = view_params.getShaderScaleModeInt();
+        const needs_full_image_shader = is_image and
+            (apply_adj or scale_mode != 1);
+
+        const active_image_pipe = if (is_image)
+            (if (needs_full_image_shader)
+                gpu.ensureImagePipeline()
+            else
+                gpu.image_pipeline.get())
+        else
+            null;
+        const use_image_pipeline = (active_image_pipe != null);
+        const pipeline = active_image_pipe orelse gpu.ui_pipeline;
 
         if (last_pipeline == null or last_pipeline.?.ptr != pipeline.ptr) {
             render_pass.bindPipeline(pipeline);
             last_pipeline = pipeline;
         }
 
-        if (last_material == null or last_material.? != batch.material) {
-            if (is_image) {
-                const show_original = view_params.compare_original;
-                const apply_adj =
-                    !show_original and view_params.edits.hasEdits();
-                const edits = view_params.edits;
-                const img_ubo = ImageUniforms{
-                    .brightness = if (apply_adj)
-                        edits.get(.brightness)
-                    else
-                        0.0,
-                    .contrast = if (apply_adj)
-                        edits.get(.contrast)
-                    else
-                        1.0,
-                    .temperature = if (apply_adj)
-                        edits.get(.temperature)
-                    else
-                        0.0,
-                    .tint = if (apply_adj)
-                        edits.get(.tint)
-                    else
-                        0.0,
-                    .highlights = if (apply_adj)
-                        edits.get(.highlights)
-                    else
-                        0.0,
-                    .shadows = if (apply_adj)
-                        edits.get(.shadows)
-                    else
-                        0.0,
-                    .whites = if (apply_adj)
-                        edits.get(.whites)
-                    else
-                        0.0,
-                    .blacks = if (apply_adj)
-                        edits.get(.blacks)
-                    else
-                        0.0,
-                    .saturation = if (apply_adj)
-                        edits.get(.saturation)
-                    else
-                        0.0,
-                    .vibrance = if (apply_adj)
-                        edits.get(.vibrance)
-                    else
-                        0.0,
-                    .contrast_blend = if (apply_adj)
-                        edits.get(.contrast_blend)
-                    else
-                        1.0,
-                    .scale_mode = view_params.getShaderScaleModeInt(),
-                    .has_adjustments = if (apply_adj) 1 else 0,
-                    .clarity = if (apply_adj) edits.get(.clarity) else 0.0,
-                    .texture = if (apply_adj) edits.get(.texture) else 0.0,
-                };
-                cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
-            } else {
-                const is_blur = (batch.material == .blurred_surface);
-                const ui_ubo = UiUniforms{
-                    .is_blurred_surface = if (is_blur) 1 else 0,
-                };
-                cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ui_ubo));
+        const desired_ubo: DrawnUbo = if (use_image_pipeline)
+            .image
+        else if (batch.material == .blurred_surface)
+            .ui_blur
+        else
+            .ui_solid;
+
+        if (last_ubo == null or last_ubo.? != desired_ubo) {
+            switch (desired_ubo) {
+                .image => {
+                    const edits = view_params.edits;
+                    const img_ubo = ImageUniforms{
+                        .brightness = if (apply_adj)
+                            edits.get(.brightness)
+                        else
+                            0.0,
+                        .contrast = if (apply_adj)
+                            edits.get(.contrast)
+                        else
+                            1.0,
+                        .temperature = if (apply_adj)
+                            edits.get(.temperature)
+                        else
+                            0.0,
+                        .tint = if (apply_adj)
+                            edits.get(.tint)
+                        else
+                            0.0,
+                        .highlights = if (apply_adj)
+                            edits.get(.highlights)
+                        else
+                            0.0,
+                        .shadows = if (apply_adj)
+                            edits.get(.shadows)
+                        else
+                            0.0,
+                        .whites = if (apply_adj)
+                            edits.get(.whites)
+                        else
+                            0.0,
+                        .blacks = if (apply_adj)
+                            edits.get(.blacks)
+                        else
+                            0.0,
+                        .saturation = if (apply_adj)
+                            edits.get(.saturation)
+                        else
+                            0.0,
+                        .vibrance = if (apply_adj)
+                            edits.get(.vibrance)
+                        else
+                            0.0,
+                        .contrast_blend = if (apply_adj)
+                            edits.get(.contrast_blend)
+                        else
+                            1.0,
+                        .scale_mode = scale_mode,
+                        .has_adjustments = if (apply_adj) 1 else 0,
+                        .clarity = if (apply_adj) edits.get(.clarity) else 0.0,
+                        .texture = if (apply_adj) edits.get(.texture) else 0.0,
+                    };
+                    cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
+                },
+                .ui_solid, .ui_blur => {
+                    const ui_ubo = UiUniforms{
+                        .is_blurred_surface = if (desired_ubo == .ui_blur)
+                            1
+                        else
+                            0,
+                    };
+                    cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ui_ubo));
+                },
             }
-            last_material = batch.material;
+            last_ubo = desired_ubo;
         }
 
         render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
@@ -628,7 +659,7 @@ fn findBlurSplit(
 
 fn renderBatchPass(
     view_params: ViewportParams,
-    gpu: *const RenderResources,
+    gpu: *RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     target_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
@@ -717,7 +748,7 @@ fn runBlurFilterPass(
 
 fn executeRenderPass(
     view_params: ViewportParams,
-    gpu: *const RenderResources,
+    gpu: *RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     batches: []const BatchItem,

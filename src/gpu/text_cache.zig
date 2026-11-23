@@ -246,11 +246,37 @@ pub const TextCache = struct {
     }
 };
 
+/// Lazily loads and attaches the embedded CJK/Unicode fallback font
+/// (`unifont_jp.otf`) to `font` on first non-ASCII glyph demand.
+pub fn ensureFallbackFont(font: *sdl.Font, attempted: *bool) void {
+    if (attempted.* or font.hasFallback()) return;
+    attempted.* = true;
+    const unifont_bytes = @embedFile("resources/unifont_jp.otf");
+    const fb = sdl.Font.openConstMem(
+        unifont_bytes,
+        font.getFontSize(),
+    ) orelse {
+        std.log.warn(
+            "Failed to open fallback font unifont_jp.otf: {s}",
+            .{sdl.getError()},
+        );
+        return;
+    };
+    if (!font.addFallback(fb)) {
+        std.log.warn(
+            "Failed to attach fallback font unifont_jp.otf: {s}",
+            .{sdl.getError()},
+        );
+        fb.close();
+    }
+}
+
 /// Encapsulates loaded font slots and optional glyph cache for text width and
 /// prefix measurement without exposing underlying SDL_ttf font handles to UI
 /// callers.
 pub const FontMeasurer = struct {
-    fonts: []const ?sdl.Font = &.{},
+    fonts: []?sdl.Font = &.{},
+    fallback_attempted: ?*bool = null,
     cache: ?*const TextCache = null,
 
     /// Default empty font measurer for headless tests without loaded TTFs.
@@ -273,7 +299,8 @@ pub const FontMeasurer = struct {
         if (text.len == 0 or font_id >= self.fonts.len) {
             return .{ .w = 0, .h = 0 };
         }
-        const font = self.fonts[font_id] orelse return .{ .w = 0, .h = 0 };
+        if (self.fonts[font_id] == null) return .{ .w = 0, .h = 0 };
+        const font = &self.fonts[font_id].?;
         const size_u16: u16 = @intFromFloat(@round(target_size));
         const page_opt = if (self.cache) |c|
             c.findPage(@intCast(font_id), size_u16)
@@ -325,6 +352,9 @@ pub const FontMeasurer = struct {
                         continue;
                     }
                 }
+                if (self.fallback_attempted) |attempted| {
+                    ensureFallbackFont(font, attempted);
+                }
                 if (!font_size_set) {
                     if (font.getFontSize() != target_size) {
                         _ = font.setFontSize(target_size);
@@ -365,7 +395,8 @@ pub const FontMeasurer = struct {
         if (text.len == 0 or font_id >= self.fonts.len or max_w <= 0) {
             return null;
         }
-        const font = self.fonts[font_id] orelse return null;
+        if (self.fonts[font_id] == null) return null;
+        const font = &self.fonts[font_id].?;
         const size_u16: u16 = @intFromFloat(@round(target_size));
         const page_opt = if (self.cache) |c|
             c.findPage(@intCast(font_id), size_u16)
@@ -424,6 +455,9 @@ pub const FontMeasurer = struct {
                     }
                 }
                 if (!hit) {
+                    if (self.fallback_attempted) |attempted| {
+                        ensureFallbackFont(font, attempted);
+                    }
                     if (!font_size_set) {
                         if (font.getFontSize() != target_size) {
                             _ = font.setFontSize(target_size);

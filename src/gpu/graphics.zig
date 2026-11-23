@@ -12,6 +12,13 @@ const TextCache = text_cache.TextCache;
 const UiRenderMetrics = state.UiRenderMetrics;
 const UiRenderMetricsSnapshot = state.UiRenderMetricsSnapshot;
 
+/// Initialized window handle and initial DPI scale factor (before GPU device
+/// creation or claim).
+pub const WindowSetup = struct {
+    window: sdl.Window,
+    initial_dpi_scale: f32,
+};
+
 /// Initialized window handle, SDL GPU device, and DPI scale factor.
 pub const GraphicsSetup = struct {
     window: sdl.Window,
@@ -456,15 +463,34 @@ pub fn AcquiredFrameBuffer(comptime Handle: type) type {
     };
 }
 
+/// Lifecycle state for an optional GPU pipeline compiled lazily on first use.
+pub fn LazyPipeline(comptime Handle: type) type {
+    return union(enum) {
+        uninitialized,
+        ready: Handle,
+        failed,
+
+        /// Returns the compiled pipeline handle if ready, or `null` otherwise.
+        pub inline fn get(self: @This()) ?Handle {
+            return switch (self) {
+                .ready => |p| p,
+                .uninitialized, .failed => null,
+            };
+        }
+    };
+}
+
 /// Cohesive GPU context and render resources initialized for GPU-accelerated
 /// rendering.
 pub const RenderResources = struct {
     io: std.Io,
     device: sdl.gpu.Device,
-    image_pipeline: sdl.gpu.Pipeline,
+    swapchain_format: sdl.gpu.TextureFormat = .rgba8_unorm,
+    image_pipeline: LazyPipeline(sdl.gpu.Pipeline) = .uninitialized,
     ui_pipeline: sdl.gpu.Pipeline,
     fullscreen_vertex_buffer: sdl.gpu.Buffer,
-    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
+    unpack_compute_pipeline: LazyPipeline(sdl.gpu.ComputePipeline) =
+        .uninitialized,
     sampler: sdl.gpu.Sampler,
     white_texture: sdl.gpu.Texture,
 
@@ -485,7 +511,129 @@ pub const RenderResources = struct {
     // Font text texture cache & font
     text_cache: TextCache = .{},
     fonts: [1]?sdl.Font = .{null},
+    fallback_font_attempted: bool = false,
     metrics: UiRenderMetrics = .{},
+
+    /// Lazily loads and attaches the CJK/Unicode fallback font to
+    /// `self.fonts[font_id]` on first non-ASCII glyph demand.
+    pub fn ensureFallbackFont(self: *RenderResources, font_id: usize) void {
+        if (font_id >= self.fonts.len) return;
+        if (self.fonts[font_id]) |*font| {
+            text_cache.ensureFallbackFont(font, &self.fallback_font_attempted);
+        }
+    }
+
+    /// Lazily compiles and caches the full color-grading / resampling image
+    /// pipeline on first demand. Latches `.failed` to avoid retry churn.
+    pub fn ensureImagePipeline(self: *RenderResources) ?sdl.gpu.Pipeline {
+        switch (self.image_pipeline) {
+            .ready => |pipe| return pipe,
+            .failed => return null,
+            .uninitialized => {},
+        }
+
+        const dev = self.device;
+        const shader_formats = dev.getShaderFormats();
+        const vert_code_spv = @embedFile("shaders/vert.spv");
+        const vert_code_msl = @embedFile("shaders/vert.msl");
+        const image_frag_code_spv = @embedFile("shaders/image.frag.spv");
+        const image_frag_code_msl = @embedFile("shaders/image.frag.msl");
+
+        const vert_shader = createShaderFromFormat(
+            dev,
+            shader_formats,
+            .vertex,
+            vert_code_spv,
+            vert_code_msl,
+            0,
+            0,
+        ) catch {
+            self.image_pipeline = .failed;
+            return null;
+        };
+        defer dev.releaseShader(vert_shader);
+
+        const image_frag_shader = createShaderFromFormat(
+            dev,
+            shader_formats,
+            .fragment,
+            image_frag_code_spv,
+            image_frag_code_msl,
+            1,
+            1,
+        ) catch {
+            self.image_pipeline = .failed;
+            return null;
+        };
+        defer dev.releaseShader(image_frag_shader);
+
+        const color_targets = makeAlphaBlendColorTargets(self.swapchain_format);
+        const pipeline_info = makeQuadPipelineInfo(
+            vert_shader,
+            image_frag_shader,
+            &color_targets,
+        );
+        const pipe = dev.createPipeline(&pipeline_info) orelse {
+            std.log.err(
+                "Failed to create image graphics pipeline: {s}",
+                .{sdl.getError()},
+            );
+            self.image_pipeline = .failed;
+            return null;
+        };
+        self.image_pipeline = .{ .ready = pipe };
+        return pipe;
+    }
+
+    /// Lazily compiles and caches the RGB24/BGR24 compute unpack pipeline on
+    /// first demand. Latches `.failed` to avoid retry churn.
+    pub fn ensureUnpackComputePipeline(
+        self: *RenderResources,
+    ) ?sdl.gpu.ComputePipeline {
+        switch (self.unpack_compute_pipeline) {
+            .ready => |pipe| return pipe,
+            .failed => return null,
+            .uninitialized => {},
+        }
+
+        const dev = self.device;
+        const shader_formats = dev.getShaderFormats();
+        const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
+        const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
+
+        const is_comp_spirv =
+            (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
+        const comp_code = if (is_comp_spirv) comp_code_spv else comp_code_msl;
+        const comp_fmt = if (is_comp_spirv)
+            sdl.gpu.ShaderFormat.spirv
+        else
+            sdl.gpu.ShaderFormat.msl;
+        const comp_entry = if (is_comp_spirv) "main" else "main0";
+
+        const comp_pipeline_info = sdl.gpu.ComputePipelineCreateInfo{
+            .code_size = comp_code.len,
+            .code = comp_code.ptr,
+            .entrypoint = comp_entry,
+            .format = comp_fmt,
+            .num_readonly_storage_buffers = 1,
+            .num_readwrite_storage_textures = 1,
+            .num_uniform_buffers = 1,
+            .threadcount_x = 16,
+            .threadcount_y = 16,
+            .threadcount_z = 1,
+        };
+        const pipe = dev.createComputePipeline(&comp_pipeline_info) orelse {
+            std.log.warn(
+                "Failed to create unpack compute pipeline " ++
+                    "(will fallback to SIMD): {s}",
+                .{sdl.getError()},
+            );
+            self.unpack_compute_pipeline = .failed;
+            return null;
+        };
+        self.unpack_compute_pipeline = .{ .ready = pipe };
+        return pipe;
+    }
 
     /// Snapshots UI vertex/batch counts and live font-atlas metrics for HUD
     /// overlay display.
@@ -506,9 +654,10 @@ pub const RenderResources = struct {
 
     /// Returns a `FontMeasurer` bound to this resource context's loaded fonts
     /// and glyph cache.
-    pub inline fn fontMeasurer(self: *const RenderResources) FontMeasurer {
+    pub inline fn fontMeasurer(self: *RenderResources) FontMeasurer {
         return .{
             .fonts = self.fonts[0..],
+            .fallback_attempted = &self.fallback_font_attempted,
             .cache = &self.text_cache,
         };
     }
@@ -650,9 +799,11 @@ pub const RenderResources = struct {
         }
         self.blur.deinit(self.device);
         self.device.releaseBuffer(self.fullscreen_vertex_buffer);
-        self.device.releasePipeline(self.image_pipeline);
+        if (self.image_pipeline.get()) |pipe| {
+            self.device.releasePipeline(pipe);
+        }
         self.device.releasePipeline(self.ui_pipeline);
-        if (self.unpack_compute_pipeline) |pipe| {
+        if (self.unpack_compute_pipeline.get()) |pipe| {
             self.device.releaseComputePipeline(pipe);
         }
         self.device.releaseSampler(self.sampler);
@@ -688,6 +839,11 @@ pub fn initSdlCore(headless: bool) !void {
         "Viewing a slideshow",
     );
     _ = sdl.hint.set("SDL_APP_NAME", "Peng");
+    // Disable 3D acceleration for `SDL_GetWindowSurface` so software-first
+    // startup stays pure CPU for fast first-frame display (no OpenGL/EGL
+    // init). Rendering upgrades to the hardware-accelerated SDL GPU pipeline
+    // (Vulkan/Metal) once background device initialization finishes.
+    _ = sdl.hint.set("SDL_FRAMEBUFFER_ACCELERATION", "0");
 
     if (!sdl.init(sdl.init_flags.video | sdl.init_flags.events)) {
         logInitErr("SDL_Init Error: {s}", .{sdl.getError()});
@@ -707,13 +863,12 @@ pub fn quitSdlCore() void {
     sdl.quit();
 }
 
-/// Creates the main window and claims the GPU graphics device.
-/// Assumes SDL core and TTF subsystems have been initialized via `initSdlCore`.
-pub fn initGraphicsAndWindow(
+/// Creates the main SDL window and queries its initial DPI scale without
+/// initializing a GPU device yet. Assumes `initSdlCore` has been called.
+pub fn createWindowOnly(
     window_title: [:0]const u8,
     options: GraphicsOptions,
-) !GraphicsSetup {
-    // Create window
+) !WindowSetup {
     var win_flags = if (options.headless)
         sdl.window_flags.hidden
     else if (options.high_dpi)
@@ -733,7 +888,6 @@ pub fn initGraphicsAndWindow(
         };
     errdefer window.destroy();
 
-    // Get scales
     const win_size = window.getSize();
     const pix_size = window.getSizeInPixels();
     const initial_dpi_scale = if (win_size.w > 0)
@@ -741,6 +895,21 @@ pub fn initGraphicsAndWindow(
             @as(f32, @floatFromInt(win_size.w))
     else
         1.0;
+
+    return .{
+        .window = window,
+        .initial_dpi_scale = initial_dpi_scale,
+    };
+}
+
+/// Creates the main window and claims the GPU graphics device.
+/// Assumes SDL core and TTF subsystems have been initialized via `initSdlCore`.
+pub fn initGraphicsAndWindow(
+    window_title: [:0]const u8,
+    options: GraphicsOptions,
+) !GraphicsSetup {
+    const win_setup = try createWindowOnly(window_title, options);
+    errdefer win_setup.window.destroy();
 
     // Create GPU Device
     const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
@@ -752,7 +921,7 @@ pub fn initGraphicsAndWindow(
 
     // Claim window for GPU
     if (!options.headless) {
-        if (!window.claimForGpu(dev)) {
+        if (!win_setup.window.claimForGpu(dev)) {
             logInitErr(
                 "SDL_ClaimWindowForGPUDevice failed: {s}",
                 .{sdl.getError()},
@@ -762,9 +931,9 @@ pub fn initGraphicsAndWindow(
     }
 
     return GraphicsSetup{
-        .window = window,
+        .window = win_setup.window,
         .gpu_device = dev,
-        .initial_dpi_scale = initial_dpi_scale,
+        .initial_dpi_scale = win_setup.initial_dpi_scale,
     };
 }
 
@@ -815,8 +984,68 @@ fn createShaderFromFormat(
     };
 }
 
-/// Creates graphics shaders, pipelines, samplers, font texture caches, and
-/// double-buffered staging buffers.
+fn makeAlphaBlendColorTargets(
+    target_format: sdl.gpu.TextureFormat,
+) [1]sdl.gpu.ColorTargetDescription {
+    return .{.{
+        .format = target_format,
+        .blend_state = .{
+            .src_color_blendfactor = .src_alpha,
+            .dst_color_blendfactor = .one_minus_src_alpha,
+            .color_blend_op = .add,
+            .src_alpha_blendfactor = .one,
+            .dst_alpha_blendfactor = .one_minus_src_alpha,
+            .alpha_blend_op = .add,
+            .color_write_mask = sdl.gpu.ColorComponent.r |
+                sdl.gpu.ColorComponent.g |
+                sdl.gpu.ColorComponent.b |
+                sdl.gpu.ColorComponent.a,
+            .enable_blend = true,
+            .enable_color_write_mask = true,
+        },
+    }};
+}
+
+fn makeQuadPipelineInfo(
+    vertex_shader: sdl.gpu.Shader,
+    fragment_shader: sdl.gpu.Shader,
+    color_targets: *const [1]sdl.gpu.ColorTargetDescription,
+) sdl.gpu.GraphicsPipelineCreateInfo {
+    return .{
+        .vertex_shader = vertex_shader,
+        .fragment_shader = fragment_shader,
+        .vertex_input_state = .{
+            .num_vertex_attributes = quad_vertex_attribs.len,
+            .vertex_attributes = &quad_vertex_attribs,
+            .num_vertex_buffers = quad_vertex_buf_descs.len,
+            .vertex_buffer_descriptions = &quad_vertex_buf_descs,
+        },
+        .primitive_type = .triangle_list,
+        .rasterizer_state = .{
+            .fill_mode = .fill,
+            .cull_mode = .none,
+            .front_face = .counter_clockwise,
+        },
+        .multisample_state = .{
+            .sample_count = .count_1,
+        },
+        .depth_stencil_state = .{
+            .compare_op = .never,
+        },
+        .target_info = .{
+            .num_color_targets = 1,
+            .color_target_descriptions = color_targets,
+            .has_depth_stencil_target = false,
+            .depth_stencil_format = .d16_unorm,
+        },
+        .props = 0,
+    };
+}
+
+/// Creates core GPU pipelines, samplers, primary font, and static buffers.
+/// Heavy optional resources (full color-grading `image_pipeline`, RGB24 compute
+/// unpack pipeline, blur pipelines, and CJK fallback font) are initialized
+/// lazily on first demand to minimize cold-start latency.
 pub fn initGpuResources(
     io: std.Io,
     dev: sdl.gpu.Device,
@@ -829,10 +1058,11 @@ pub fn initGpuResources(
     else
         dev.getSwapchainTextureFormat(window);
 
-    // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
+    // Load primary UI font from memory (CJK fallback `unifont_jp.otf` is
+    // attached lazily on first non-ASCII glyph demand).
     const initial_font_size = 20.0 * initial_dpi_scale;
     const roboto_font_bytes = @embedFile("resources/Roboto-Regular.ttf");
-    var font = sdl.Font.openConstMem(
+    const font = sdl.Font.openConstMem(
         roboto_font_bytes,
         initial_font_size,
     ) orelse {
@@ -841,24 +1071,17 @@ pub fn initGpuResources(
     };
     errdefer font.close();
 
-    const unifont_bytes = @embedFile("resources/unifont_jp.otf");
-    if (sdl.Font.openConstMem(unifont_bytes, initial_font_size)) |fb| {
-        if (!font.addFallback(fb)) fb.close();
-    }
-
     const fonts = [1]?sdl.Font{font};
 
-    // Compile Shaders
+    // Compile lightweight UI/blit shaders (`image.frag` and `unpack_rgb` are
+    // compiled lazily on first demand).
     const vert_code_spv = @embedFile("shaders/vert.spv");
-    const image_frag_code_spv = @embedFile("shaders/image.frag.spv");
     const vert_code_msl = @embedFile("shaders/vert.msl");
-    const image_frag_code_msl = @embedFile("shaders/image.frag.msl");
     const ui_frag_code_spv = @embedFile("shaders/ui.frag.spv");
     const ui_frag_code_msl = @embedFile("shaders/ui.frag.msl");
 
     const shader_formats = dev.getShaderFormats();
 
-    // Vertex & Fragment Shaders
     const vert_shader = try createShaderFromFormat(
         dev,
         shader_formats,
@@ -869,17 +1092,6 @@ pub fn initGpuResources(
         0,
     );
     defer dev.releaseShader(vert_shader);
-
-    const image_frag_shader = try createShaderFromFormat(
-        dev,
-        shader_formats,
-        .fragment,
-        image_frag_code_spv,
-        image_frag_code_msl,
-        1,
-        1,
-    );
-    defer dev.releaseShader(image_frag_shader);
 
     const ui_frag_shader = try createShaderFromFormat(
         dev,
@@ -932,63 +1144,13 @@ pub fn initGpuResources(
     };
     errdefer dev.releaseTexture(white_texture);
 
-    // Create Graphics Pipeline
-    var pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
-        .vertex_shader = vert_shader,
-        .fragment_shader = image_frag_shader,
-        .vertex_input_state = .{
-            .num_vertex_attributes = quad_vertex_attribs.len,
-            .vertex_attributes = &quad_vertex_attribs,
-            .num_vertex_buffers = quad_vertex_buf_descs.len,
-            .vertex_buffer_descriptions = &quad_vertex_buf_descs,
-        },
-        .primitive_type = .triangle_list,
-        .rasterizer_state = .{
-            .fill_mode = .fill,
-            .cull_mode = .none,
-            .front_face = .counter_clockwise,
-        },
-        .multisample_state = .{
-            .sample_count = .count_1,
-        },
-        .depth_stencil_state = .{
-            .compare_op = .never,
-        },
-        .target_info = .{
-            .num_color_targets = 1,
-            .color_target_descriptions = &[_]sdl.gpu.ColorTargetDescription{.{
-                .format = target_format,
-                .blend_state = .{
-                    .src_color_blendfactor = .src_alpha,
-                    .dst_color_blendfactor = .one_minus_src_alpha,
-                    .color_blend_op = .add,
-                    .src_alpha_blendfactor = .one,
-                    .dst_alpha_blendfactor = .one_minus_src_alpha,
-                    .alpha_blend_op = .add,
-                    .color_write_mask = sdl.gpu.ColorComponent.r |
-                        sdl.gpu.ColorComponent.g |
-                        sdl.gpu.ColorComponent.b |
-                        sdl.gpu.ColorComponent.a,
-                    .enable_blend = true,
-                    .enable_color_write_mask = true,
-                },
-            }},
-            .has_depth_stencil_target = false,
-            .depth_stencil_format = .d16_unorm,
-        },
-        .props = 0,
-    };
-    const image_pipeline = dev.createPipeline(&pipeline_info) orelse {
-        std.log.err(
-            "Failed to create image graphics pipeline: {s}",
-            .{sdl.getError()},
-        );
-        return error.PipelineCreationFailed;
-    };
-    errdefer dev.releasePipeline(image_pipeline);
-
-    var ui_pipeline_info = pipeline_info;
-    ui_pipeline_info.fragment_shader = ui_frag_shader;
+    // Create UI / fast-blit Graphics Pipeline
+    const color_targets = makeAlphaBlendColorTargets(target_format);
+    const ui_pipeline_info = makeQuadPipelineInfo(
+        vert_shader,
+        ui_frag_shader,
+        &color_targets,
+    );
     const ui_pipeline = dev.createPipeline(&ui_pipeline_info) orelse {
         std.log.err(
             "Failed to create UI graphics pipeline: {s}",
@@ -1053,48 +1215,15 @@ pub fn initGpuResources(
         _ = cmd_buf_wrapper.submit();
     }
 
-    // Compute Shader for RGB/BGR Unpack
-    const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
-    const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
-
-    const is_comp_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
-    const comp_code = if (is_comp_spirv) comp_code_spv else comp_code_msl;
-    const comp_fmt = if (is_comp_spirv)
-        sdl.gpu.ShaderFormat.spirv
-    else
-        sdl.gpu.ShaderFormat.msl;
-    const comp_entry = if (is_comp_spirv) "main" else "main0";
-
-    const comp_pipeline_info = sdl.gpu.ComputePipelineCreateInfo{
-        .code_size = comp_code.len,
-        .code = comp_code.ptr,
-        .entrypoint = comp_entry,
-        .format = comp_fmt,
-        .num_readonly_storage_buffers = 1,
-        .num_readwrite_storage_textures = 1,
-        .num_uniform_buffers = 1,
-        .threadcount_x = 16,
-        .threadcount_y = 16,
-        .threadcount_z = 1,
-    };
-    const unpack_compute_pipeline =
-        dev.createComputePipeline(&comp_pipeline_info);
-    if (unpack_compute_pipeline == null) {
-        std.log.warn(
-            "Failed to create unpack compute pipeline " ++
-                "(will fallback to SIMD): {s}",
-            .{sdl.getError()},
-        );
-    }
-
     return RenderResources{
         .io = io,
         .device = dev,
-        .image_pipeline = image_pipeline,
+        .swapchain_format = target_format,
+        .image_pipeline = .uninitialized,
         .ui_pipeline = ui_pipeline,
         .blur = .uninitialized,
         .fullscreen_vertex_buffer = fullscreen_vertex_buffer,
-        .unpack_compute_pipeline = unpack_compute_pipeline,
+        .unpack_compute_pipeline = .uninitialized,
         .sampler = sampler,
         .white_texture = white_texture,
         .fonts = fonts,

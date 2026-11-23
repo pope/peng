@@ -42,6 +42,7 @@ pub const OptionId = enum {
     headless,
     test_mode,
     update_baselines,
+    profile_startup,
     windowless,
     stack_raw_jpeg,
     no_stack_raw_jpeg,

@@ -38,8 +38,9 @@ const LibViewer = struct {
     update: *const fn (
         app_state: *app.state.AppState,
         window: sdl.Window,
-        resources: *gpu.graphics.RenderResources,
+        resources: ?*gpu.graphics.RenderResources,
         measure_data: *ui.text_utils.MeasureTextUserData,
+        sw_presenter: ?*sdl.SoftwarePresenter,
         parsed_headless: bool,
         parsed_test_mode: bool,
         frame_arena: *std.heap.ArenaAllocator,
@@ -136,14 +137,152 @@ const LibViewer = struct {
     }
 };
 
+/// Asynchronous background GPU device initialization context for
+/// software-first startup. Runs `SDL_CreateGPUDevice` off the main thread
+/// while the main thread presents Frame 0 via `sdl.SoftwarePresenter`.
+const AsyncGpuInit = struct {
+    ready: std.atomic.Value(bool) = .init(false),
+    device: ?sdl.gpu.Device = null,
+    create_ms: f64 = 0.0,
+    thread: ?std.Thread = null,
+    debug_mode: bool = false,
+    io: std.Io = undefined,
+
+    fn start(self: *AsyncGpuInit, io: std.Io, debug_mode: bool) !void {
+        self.io = io;
+        self.debug_mode = debug_mode;
+        self.ready.store(false, .release);
+        self.device = null;
+        self.create_ms = 0.0;
+        self.thread = try std.Thread.spawn(.{}, worker, .{self});
+    }
+
+    fn worker(self: *AsyncGpuInit) void {
+        const t0 = std.Io.Clock.awake.now(self.io);
+        const shader_flags =
+            sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
+        self.device = sdl.gpu.Device.createWithOptions(
+            shader_flags,
+            self.debug_mode,
+            true,
+        );
+        if (self.device == null) {
+            std.log.err(
+                "Async SDL_CreateGPUDevice Error: {s}",
+                .{sdl.getError()},
+            );
+        }
+        self.create_ms = state_pkg.durationToMs(
+            t0.untilNow(self.io, .awake),
+        );
+        self.ready.store(true, .release);
+        _ = sdl.events.pushUserEvent();
+    }
+
+    fn deinitUnclaimed(self: *AsyncGpuInit) void {
+        if (self.thread) |t| {
+            t.join();
+            self.thread = null;
+        }
+        if (self.device) |dev| {
+            dev.destroy();
+            self.device = null;
+        }
+    }
+};
+
+/// Lightweight startup latency profiler enabled via `--profile-startup`.
+/// Modeled as a tagged union so timestamps and milestone flags only exist when
+/// profiling is active.
+const StartupProfiler = union(enum) {
+    disabled,
+    active: struct {
+        t_start: std.Io.Timestamp,
+        logged_sw_image: bool = false,
+        logged_gpu_frame: bool = false,
+    },
+
+    fn init(enabled: bool, t_start: std.Io.Timestamp) StartupProfiler {
+        return if (enabled)
+            .{ .active = .{ .t_start = t_start } }
+        else
+            .disabled;
+    }
+
+    fn log(self: StartupProfiler, io: std.Io, label: []const u8) void {
+        switch (self) {
+            .disabled => {},
+            .active => |a| {
+                const elapsed = state_pkg.durationToMs(
+                    a.t_start.untilNow(io, .awake),
+                );
+                std.log.info("[startup] {s}: {d:.1} ms", .{ label, elapsed });
+            },
+        }
+    }
+
+    fn logDur(
+        self: StartupProfiler,
+        io: std.Io,
+        label: []const u8,
+        dur_ms: f64,
+    ) void {
+        switch (self) {
+            .disabled => {},
+            .active => |a| {
+                const elapsed = state_pkg.durationToMs(
+                    a.t_start.untilNow(io, .awake),
+                );
+                std.log.info(
+                    "[startup] {s}: {d:.1} ms (at t={d:.1} ms)",
+                    .{ label, dur_ms, elapsed },
+                );
+            },
+        }
+    }
+};
+
+/// Exclusive graphics lifecycle state: either software-first boot while
+/// `SDL_CreateGPUDevice` runs asynchronously, or active GPU rendering with
+/// initialized `RenderResources`.
+const GraphicsBackend = union(enum) {
+    software_boot: struct {
+        presenter: sdl.SoftwarePresenter,
+        async_gpu: AsyncGpuInit,
+    },
+    gpu_ready: struct {
+        device: sdl.gpu.Device,
+        resources: gpu.graphics.RenderResources,
+    },
+
+    fn deinit(
+        self: *GraphicsBackend,
+        gpa: std.mem.Allocator,
+        window: sdl.Window,
+    ) void {
+        switch (self.*) {
+            .software_boot => |*boot| {
+                boot.async_gpu.deinitUnclaimed();
+                boot.presenter.deinit(window);
+            },
+            .gpu_ready => |*ready| {
+                ready.resources.deinit(gpa);
+                ready.device.destroy();
+            },
+        }
+    }
+};
+
 /// Application context encapsulating initialized graphics, state, resources,
 /// and IPC server.
 const AppGraphicsAndState = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     parsed: app_config.cli.ParsedArgs,
-    setup: gpu.graphics.GraphicsSetup,
-    resources: gpu.graphics.RenderResources,
+    window: sdl.Window,
+    initial_dpi_scale: f32,
+    backend: GraphicsBackend,
+    profiler: StartupProfiler,
     state: app.state.AppState,
     measure_data: ui.text_utils.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
@@ -154,15 +293,84 @@ const AppGraphicsAndState = struct {
         self.parsed.deinit(self.gpa);
         self.state.workers.exiting.store(true, .release);
         if (self.ipc_server) |srv| srv.deinit(self.io);
+        switch (self.backend) {
+            .software_boot => |*boot| boot.async_gpu.deinitUnclaimed(),
+            .gpu_ready => {},
+        }
         self.state.deinit();
-        self.resources.deinit(self.gpa);
-        self.setup.gpu_device.destroy();
-        self.setup.window.destroy();
+        self.backend.deinit(self.gpa, self.window);
+        self.window.destroy();
         gpu.graphics.quitSdlCore();
     }
 
+    /// Completes the handoff from software-first presentation to SDL GPU
+    /// once the background `SDL_CreateGPUDevice` thread finishes.
+    fn tryCompleteAsyncGpuInit(self: *AppGraphicsAndState) !bool {
+        const boot = switch (self.backend) {
+            .gpu_ready => return false,
+            .software_boot => |*b| b,
+        };
+        if (!boot.async_gpu.ready.load(.acquire)) return false;
+
+        if (boot.async_gpu.thread) |t| {
+            t.join();
+            boot.async_gpu.thread = null;
+        }
+        self.profiler.logDur(
+            self.io,
+            "gpu_device_bg_create",
+            boot.async_gpu.create_ms,
+        );
+        const dev = boot.async_gpu.device orelse {
+            std.log.err("Async SDL_CreateGPUDevice failed", .{});
+            return error.DeviceCreationFailed;
+        };
+        boot.async_gpu.device = null;
+        errdefer dev.destroy();
+
+        const handoff_t0 = std.Io.Clock.awake.now(self.io);
+        boot.presenter.deinit(self.window);
+        if (!self.window.claimForGpu(dev)) {
+            std.log.err(
+                "SDL_ClaimWindowForGPUDevice failed: {s}",
+                .{sdl.getError()},
+            );
+            return error.ClaimWindowFailed;
+        }
+        errdefer self.window.releaseFromGpu(dev);
+
+        const res = try gpu.graphics.initGpuResources(
+            self.io,
+            dev,
+            self.window,
+            self.initial_dpi_scale,
+            self.parsed.headless,
+        );
+        self.backend = .{
+            .gpu_ready = .{
+                .device = dev,
+                .resources = res,
+            },
+        };
+        self.state.gpu_device = dev;
+        self.state.unpack_compute_pipeline =
+            self.backend.gpu_ready.resources.unpack_compute_pipeline.get();
+        self.measure_data = .{
+            .measurer = self.backend.gpu_ready.resources.fontMeasurer(),
+        };
+        self.profiler.logDur(
+            self.io,
+            "gpu_handoff_claim_and_res",
+            state_pkg.durationToMs(handoff_t0.untilNow(self.io, .awake)),
+        );
+        // Wake the event loop so the first GPU frame renders immediately even
+        // when there is no pending image upload (e.g. empty/text-only view).
+        _ = sdl.events.pushUserEvent();
+        return true;
+    }
+
     /// Phase 1: Initializes CLI options, SDL graphics, viewer state, early
-    /// background workers, and GPU resources in-place.
+    /// background workers, and window/GPU resources in-place.
     ///
     /// In-place initialization ensures `self.state` is pinned at its final
     /// memory address before `openPath` / `readPipedStdin` spawns background
@@ -170,6 +378,7 @@ const AppGraphicsAndState = struct {
     /// `self.state.cache.generation`, and `self.state.viewer.navigation.active_file_scans`.
     pub fn init(self: *AppGraphicsAndState, proc_init: std.process.Init) !bool {
         const gpa = proc_init.gpa;
+        const t_start = std.Io.Clock.awake.now(proc_init.io);
 
         // Pre-scan `process_environ` on both the global debug `Io.Threaded`
         // instance (used by `std.log` / `std.debug.lockStderr` and panic stack
@@ -189,6 +398,7 @@ const AppGraphicsAndState = struct {
         // 1. Parse command line arguments
         var parsed = try app_config.cli.parseCommandLineArgs(proc_init, gpa);
         errdefer parsed.deinit(gpa);
+        const profiler = StartupProfiler.init(parsed.profile_startup, t_start);
 
         if (parsed.help) {
             parsed.deinit(gpa);
@@ -221,6 +431,7 @@ const AppGraphicsAndState = struct {
         // Must be initialized before background workers touch SDL surface/event APIs.
         try gpu.graphics.initSdlCore(parsed.headless);
         errdefer gpu.graphics.quitSdlCore();
+        profiler.log(proc_init.io, "sdl_core_init");
 
         // 3. Pinned In-Place State Initialization & Early Path Scan / Decode Launch
         const start_hidden = parsed.server_mode and parsed.arg_path == null;
@@ -237,7 +448,8 @@ const AppGraphicsAndState = struct {
         self.gpa = gpa;
         self.io = proc_init.io;
         self.parsed = parsed;
-        self.measure_data = undefined;
+        self.profiler = profiler;
+        self.measure_data = .{ .measurer = .empty };
         self.ipc_server = null;
         self.state = app.state.AppState{
             .viewer = viewer_blk: {
@@ -274,8 +486,8 @@ const AppGraphicsAndState = struct {
             if (parsed.test_mode) .off else parsed.thumb_cache,
         );
 
-        // Spawn initial directory scan & decode worker before graphics/GPU initialization
-        // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
+        // Spawn initial directory scan & decode worker before window/GPU setup
+        // to overlap CPU file I/O & decode with Wayland/Vulkan initialization.
         if (self.parsed.arg_path) |path| {
             try self.state.openPath(
                 path,
@@ -289,9 +501,10 @@ const AppGraphicsAndState = struct {
                 gpa,
             );
         }
+        self.profiler.log(proc_init.io, "open_path_spawned");
 
-        // 4. Graphics and Window Setup
-        self.setup = try gpu.graphics.initGraphicsAndWindow(
+        // 4. Create Window Immediately
+        const win_setup = try gpu.graphics.createWindowOnly(
             "Peng Image Viewer",
             .{
                 .headless = parsed.headless,
@@ -300,37 +513,84 @@ const AppGraphicsAndState = struct {
                 .borderless = parsed.windowless,
             },
         );
-        errdefer {
-            if (!parsed.headless) {
-                self.setup.window.releaseFromGpu(self.setup.gpu_device);
-            }
-            self.setup.gpu_device.destroy();
-            self.setup.window.destroy();
-        }
-
-        // 5. GPU Pipeline and Resources Setup
-        self.resources = try gpu.graphics.initGpuResources(
-            proc_init.io,
-            self.setup.gpu_device,
-            self.setup.window,
-            self.setup.initial_dpi_scale,
-            parsed.headless,
-        );
-        errdefer self.resources.deinit(gpa);
-
-        // 6. Bind graphics device and window handle to state
-        self.state.gpu_device = self.setup.gpu_device;
-        self.state.unpack_compute_pipeline = self.resources.unpack_compute_pipeline;
+        errdefer win_setup.window.destroy();
+        self.window = win_setup.window;
+        self.initial_dpi_scale = win_setup.initial_dpi_scale;
         if (!parsed.headless) {
             self.state.display.backendPtr().* = .{
                 .windowed = .{
-                    .handle = self.setup.window,
+                    .handle = self.window,
                     .pixel_format = sdl.PixelFormat.rgba32,
                     .is_fullscreen = false,
                     .is_borderless = parsed.windowless,
                 },
             };
         }
+        self.profiler.log(proc_init.io, "window_created");
+
+        // 5. Async GPU creation for interactive windowed launches;
+        //    synchronous GPU init for headless, test-mode, and hidden server.
+        const use_async_gpu = !parsed.headless and
+            !parsed.test_mode and
+            !start_hidden;
+        if (use_async_gpu) {
+            self.backend = .{
+                .software_boot = .{
+                    .presenter = sdl.SoftwarePresenter.init(self.window),
+                    .async_gpu = .{},
+                },
+            };
+            errdefer self.backend.software_boot.presenter.deinit(self.window);
+            try self.backend.software_boot.async_gpu.start(
+                proc_init.io,
+                builtin.mode == .debug,
+            );
+            self.profiler.log(proc_init.io, "async_gpu_spawned");
+            return true;
+        }
+
+        const shader_flags =
+            sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
+        const dev = sdl.gpu.Device.create(
+            shader_flags,
+            builtin.mode == .debug,
+        ) orelse {
+            std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
+            return error.DeviceCreationFailed;
+        };
+        errdefer dev.destroy();
+
+        if (!parsed.headless) {
+            if (!self.window.claimForGpu(dev)) {
+                std.log.err(
+                    "SDL_ClaimWindowForGPUDevice failed: {s}",
+                    .{sdl.getError()},
+                );
+                return error.ClaimWindowFailed;
+            }
+        }
+        errdefer if (!parsed.headless) self.window.releaseFromGpu(dev);
+
+        const res = try gpu.graphics.initGpuResources(
+            proc_init.io,
+            dev,
+            self.window,
+            self.initial_dpi_scale,
+            parsed.headless,
+        );
+        self.backend = .{
+            .gpu_ready = .{
+                .device = dev,
+                .resources = res,
+            },
+        };
+        self.state.gpu_device = dev;
+        self.state.unpack_compute_pipeline =
+            self.backend.gpu_ready.resources.unpack_compute_pipeline.get();
+        self.measure_data = .{
+            .measurer = self.backend.gpu_ready.resources.fontMeasurer(),
+        };
+        self.profiler.log(proc_init.io, "sync_gpu_ready");
 
         return true;
     }
@@ -369,9 +629,14 @@ fn handleFallbackHotReloadEvent(
 /// Phase 2: Runs the main application event processing, state updating,
 /// and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
-    ctx.measure_data = ui.text_utils.MeasureTextUserData{
-        .measurer = ctx.resources.fontMeasurer(),
-    };
+    switch (ctx.backend) {
+        .gpu_ready => |*ready| {
+            ctx.measure_data = ui.text_utils.MeasureTextUserData{
+                .measurer = ready.resources.fontMeasurer(),
+            };
+        },
+        .software_boot => {},
+    }
 
     // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_mode.isEnabled()) {
@@ -407,13 +672,24 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
         while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
+            _ = try ctx.tryCompleteAsyncGpuInit();
             lib_viewer.safeReload(ctx.io);
             if (lib_viewer.is_valid) {
+                const res_ptr: ?*gpu.graphics.RenderResources =
+                    switch (ctx.backend) {
+                        .gpu_ready => |*r| &r.resources,
+                        .software_boot => null,
+                    };
+                const sw_ptr: ?*sdl.SoftwarePresenter = switch (ctx.backend) {
+                    .software_boot => |*b| &b.presenter,
+                    .gpu_ready => null,
+                };
                 lib_viewer.update(
                     &ctx.state,
-                    ctx.setup.window,
-                    &ctx.resources,
+                    ctx.window,
+                    res_ptr,
                     &ctx.measure_data,
+                    sw_ptr,
                     ctx.parsed.headless,
                     ctx.parsed.test_mode,
                     &frame_arena,
@@ -442,16 +718,71 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
         while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
+            _ = try ctx.tryCompleteAsyncGpuInit();
+            const res_ptr: ?*gpu.graphics.RenderResources =
+                switch (ctx.backend) {
+                    .gpu_ready => |*r| &r.resources,
+                    .software_boot => null,
+                };
+            const sw_ptr: ?*sdl.SoftwarePresenter = switch (ctx.backend) {
+                .software_boot => |*b| &b.presenter,
+                .gpu_ready => null,
+            };
             try viewer.updateFrame(
                 &ctx.state,
-                ctx.setup.window,
-                &ctx.resources,
+                ctx.window,
+                res_ptr,
                 &ctx.measure_data,
+                sw_ptr,
                 ctx.parsed.headless,
                 ctx.parsed.test_mode,
                 &frame_arena,
                 &last_time,
             );
+            switch (ctx.profiler) {
+                .disabled => {},
+                .active => |*prof| {
+                    switch (ctx.backend) {
+                        .software_boot => |*boot| {
+                            if (!prof.logged_sw_image and
+                                boot.presenter.hasPresented())
+                            {
+                                const has_img =
+                                    if (ctx.state.getCurrentEntry()) |e|
+                                        e.resident.asset == .loaded_cpu or
+                                            e.resident.thumbnail == .staged_cpu
+                                    else
+                                        false;
+                                if (has_img) {
+                                    prof.logged_sw_image = true;
+                                    const elapsed = state_pkg.durationToMs(
+                                        prof.t_start.untilNow(ctx.io, .awake),
+                                    );
+                                    std.log.info(
+                                        "[startup] first_sw_image_present: " ++
+                                            "{d:.1} ms (wl_shm={})",
+                                        .{
+                                            elapsed,
+                                            boot.presenter.isWaylandShm(),
+                                        },
+                                    );
+                                }
+                            }
+                        },
+                        .gpu_ready => |*ready| {
+                            if (!prof.logged_gpu_frame and
+                                ready.resources.frame_index > 0)
+                            {
+                                prof.logged_gpu_frame = true;
+                                ctx.profiler.log(
+                                    ctx.io,
+                                    "first_gpu_frame_present",
+                                );
+                            }
+                        },
+                    }
+                },
+            }
         }
     }
 }

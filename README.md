@@ -147,6 +147,7 @@ Start the image viewer by passing a file or directory path:
 | `--headless`          | None                                                        | Runs without opening an OS display window.               |
 | `--test-mode`         | None                                                        | Puts the window and event loop into test configuration.  |
 | `--update-baselines`  | None                                                        | Overwrites baseline golden screenshots.                  |
+| `--profile-startup`   | None                                                        | Logs cold-start milestone timings in milliseconds.       |
 | `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.  |
 | `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images. |
 | `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                        | Sets the XDG shared thumbnail cache policy.              |
