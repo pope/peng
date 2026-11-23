@@ -31,13 +31,41 @@ pub const GpuUploadResult = upload.GpuUploadResult;
 pub const TextureRef = render_image.TextureRef;
 
 /// Reusable GPU staging buffers for texture uploads, retaining buffers up to
-/// 32 MiB warm across frames and decaying oversized buffers after 5s idle.
+/// 96 MiB warm across frames and decaying oversized buffers after 30s idle.
 pub const UploadStagingBuffer = upload.UploadStagingBuffer;
 
 /// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid
 /// generation, using an optional compute pipeline for fast RGB24/BGR24 unpack
 /// and optional staging buffer reuse.
 pub const uploadSurfaceToGpu = upload.uploadSurfaceToGpu;
+
+/// Ownership contract for the source `sdl.Surface` during async staging.
+pub const SurfaceOwnership = upload.SurfaceOwnership;
+
+/// Pixel staging operation performed on the background copy worker.
+pub const StagingCopyMode = upload.StagingCopyMode;
+
+/// GPU-side submission path paired with `PreparedGpuUpload`.
+pub const AsyncUploadPath = upload.AsyncUploadPath;
+
+/// Pure-CPU staging copy job executed on a background worker thread.
+pub const StagedTransferJob = upload.StagedTransferJob;
+
+/// Main-thread GPU state retained while a background worker populates the
+/// mapped staging transfer buffer.
+pub const PreparedGpuUpload = upload.PreparedGpuUpload;
+
+/// Paired main-thread GPU state and pure-CPU worker copy job.
+pub const BeginAsyncUploadResult = upload.BeginAsyncUploadResult;
+
+/// Begins a 2-phase async GPU texture upload on the main thread.
+pub const beginAsyncUpload = upload.beginAsyncUpload;
+
+/// Completes a 2-phase async GPU texture upload on the main thread.
+pub const finishAsyncUpload = upload.finishAsyncUpload;
+
+/// Cancels an in-flight async GPU texture upload after worker join.
+pub const cancelAsyncUpload = upload.cancelAsyncUpload;
 
 test {
     _ = geometry;

@@ -11,13 +11,28 @@ const AppState = app_state.AppState;
 const CacheEntry = cache_pkg.CacheEntry;
 const calcCyclicDistance = cache_pkg.calcCyclicDistance;
 const CpuAsset = cache_pkg.CpuAsset;
-const CpuSurfaceComponent = cache_pkg.CpuSurfaceComponent;
 const FrameContext = context.FrameContext;
 const ImageCache = cache_pkg.ImageCache;
 const ImageCacheKey = cache_pkg.ImageCacheKey;
+const PendingThumbWrite = app_state.PendingThumbWrite;
+const PendingUploadMetadata = app_state.PendingUploadMetadata;
 const PhysicalDims = geom.PhysicalDims;
+const StagedTransferJob = gpu.StagedTransferJob;
+const SurfaceOwnership = gpu.SurfaceOwnership;
 const ThumbnailState = cache_pkg.ThumbnailState;
 const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
+
+fn stageCopyWorker(
+    io: std.Io,
+    result_out: *?f64,
+    done_flag: *std.atomic.Value(bool),
+    job: StagedTransferJob,
+) void {
+    var local_job = job;
+    result_out.* = local_job.executeStagingCopy(io);
+    done_flag.store(true, .release);
+    _ = sdl.events.pushUserEvent();
+}
 
 /// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures
 /// and decays oversized staging buffers after idle cooldown.
@@ -27,6 +42,7 @@ pub fn sysProcessAssetUploads(ctx: FrameContext) void {
     const did_upload = prepareCacheTextures(state, ctx.now_ms);
     if (state.gpu_device) |gpu_dev| {
         const is_idle = !did_upload and
+            !state.pending_gpu_upload.isActive() and
             !state.cache.hasPendingCpuUploads(true) and
             state.workers.active_decode_threads.load(.acquire) == 0;
         _ = state.upload_staging.maybeShrinkIdle(
@@ -167,6 +183,49 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
     const gpu_dev = state.gpu_device orelse return false;
     var did_upload = false;
 
+    switch (state.pending_gpu_upload) {
+        .idle => {},
+        .copying => |pending| {
+            if (!state.upload_stage_done.load(.acquire)) return false;
+            state.upload_group.cancel(state.io);
+            state.upload_stage_done.store(false, .monotonic);
+            const conv_ms = state.upload_stage_result;
+            state.upload_stage_result = null;
+            state.pending_gpu_upload = .idle;
+            var surface_transferred = false;
+            defer {
+                if (pending.thumb_write) |tw| {
+                    if (!surface_transferred) {
+                        tw.surface.destroy();
+                    }
+                }
+                if (state.workers.active_decode_threads.load(.acquire) == 0) {
+                    sdl.reclaimProcessHeap();
+                }
+            }
+            if (gpu.finishAsyncUpload(
+                state.io,
+                gpu_dev,
+                pending.prepared,
+                conv_ms,
+            )) |res| {
+                did_upload = true;
+                completeGpuUpload(
+                    state,
+                    pending.key,
+                    pending.meta,
+                    pending.thumb_write,
+                    res,
+                    gpu_dev,
+                    ImageCache.DEFAULT_MAX_VRAM_BYTES,
+                    &surface_transferred,
+                );
+            } else {
+                handleGpuUploadFailure(state, pending.key);
+            }
+        },
+    }
+
     const cur_id_opt = state.viewer.navigation.getCurrentMediaId();
     const cur_key_opt = if (cur_id_opt) |ci|
         state.cache.activeKey(ci)
@@ -261,33 +320,95 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
     }
 
     if (upload_target) |target| {
-        var surface_transferred = false;
-        defer {
-            if (!surface_transferred) {
-                target.asset.cpu.surface.destroy();
-                if (state.workers.active_decode_threads.load(.acquire) == 0) {
-                    sdl.reclaimProcessHeap();
+        const meta = PendingUploadMetadata{
+            .w = target.asset.cpu.w,
+            .h = target.asset.cpu.h,
+            .size_bytes = target.asset.cpu.size_bytes,
+            .mime_type = target.asset.cpu.mime_type,
+            .decode = target.asset.cpu.decode,
+        };
+        const thumb_write: ?PendingThumbWrite =
+            if (target.asset.thumb_write) |tw|
+                .{
+                    .surface = target.asset.cpu.surface,
+                    .source_mtime_sec = tw.source_mtime_sec,
                 }
-            }
-        }
-        if (uploadSurfaceToGpu(
+            else
+                null;
+        const surface_ownership: SurfaceOwnership = if (thumb_write != null)
+            .{ .borrowed_for_thumb_write = target.asset.cpu.surface }
+        else
+            .{ .owned_by_worker = target.asset.cpu.surface };
+
+        if (gpu.beginAsyncUpload(
             state.io,
             gpu_dev,
-            target.asset.cpu.surface,
+            surface_ownership,
             state.unpack_compute_pipeline,
             &state.upload_staging,
-        )) |res| {
-            did_upload = true;
-            completeGpuUpload(
-                state,
-                target.key,
-                &target.asset,
-                res,
-                gpu_dev,
-                ImageCache.DEFAULT_MAX_VRAM_BYTES,
-                &surface_transferred,
-            );
+        )) |started| {
+            state.upload_stage_done.store(false, .monotonic);
+            state.upload_stage_result = null;
+            if (state.upload_group.concurrent(
+                state.io,
+                stageCopyWorker,
+                .{
+                    state.io,
+                    &state.upload_stage_result,
+                    &state.upload_stage_done,
+                    started.job,
+                },
+            )) |_| {
+                state.pending_gpu_upload = .{
+                    .copying = .{
+                        .key = target.key,
+                        .meta = meta,
+                        .thumb_write = thumb_write,
+                        .prepared = started.prepared,
+                    },
+                };
+            } else |_| {
+                var job = started.job;
+                const conv_ms = job.executeStagingCopy(state.io);
+                var surface_transferred = false;
+                defer {
+                    if (thumb_write) |tw| {
+                        if (!surface_transferred) {
+                            tw.surface.destroy();
+                        }
+                    }
+                    if (state.workers.active_decode_threads.load(.acquire) ==
+                        0)
+                    {
+                        sdl.reclaimProcessHeap();
+                    }
+                }
+                if (gpu.finishAsyncUpload(
+                    state.io,
+                    gpu_dev,
+                    started.prepared,
+                    conv_ms,
+                )) |res| {
+                    did_upload = true;
+                    completeGpuUpload(
+                        state,
+                        target.key,
+                        meta,
+                        thumb_write,
+                        res,
+                        gpu_dev,
+                        ImageCache.DEFAULT_MAX_VRAM_BYTES,
+                        &surface_transferred,
+                    );
+                } else {
+                    handleGpuUploadFailure(state, target.key);
+                }
+            }
         } else {
+            target.asset.cpu.surface.destroy();
+            if (state.workers.active_decode_threads.load(.acquire) == 0) {
+                sdl.reclaimProcessHeap();
+            }
             handleGpuUploadFailure(state, target.key);
         }
     }
@@ -298,9 +419,8 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
 fn enqueueDecodedThumbWrite(
     state: *AppState,
     key: ImageCacheKey,
-    cpu: *const CpuSurfaceComponent,
-    mtime_sec: i64,
-    surf: sdl.Surface,
+    meta: PendingUploadMetadata,
+    tw: PendingThumbWrite,
 ) bool {
     if (state.workers.thumb_cache_config == .disabled) return false;
     const entry = state.cache.getEntry(key) orelse return false;
@@ -319,14 +439,14 @@ fn enqueueDecodedThumbWrite(
     const auth = entry.getAuthoritativeDims();
     const source_dims =
         auth.asPositive() orelse
-        PhysicalDims.initPositive(cpu.w, cpu.h);
+        PhysicalDims.initPositive(meta.w, meta.h);
 
     state.workers.enqueueThumbWrite(state.allocator, state.io, .{
-        .surface = surf,
+        .surface = tw.surface,
         .source_path = owned_path,
-        .mime_type = cpu.mime_type,
-        .file_size = cpu.size_bytes,
-        .mtime_sec = mtime_sec,
+        .mime_type = meta.mime_type,
+        .file_size = meta.size_bytes,
+        .mtime_sec = tw.source_mtime_sec,
         .orientation = entry.metadata.orientation,
         .source_dims = source_dims,
     });
@@ -336,7 +456,8 @@ fn enqueueDecodedThumbWrite(
 fn completeGpuUpload(
     state: *AppState,
     key: ImageCacheKey,
-    asset: *const CpuAsset,
+    meta: PendingUploadMetadata,
+    thumb_write: ?PendingThumbWrite,
     res: gpu.GpuUploadResult,
     gpu_dev: ?sdl.gpu.Device,
     max_vram_bytes: usize,
@@ -352,9 +473,9 @@ fn completeGpuUpload(
             .gpu_texture = res.gpu_texture,
             .w = res.w,
             .h = res.h,
-            .size_bytes = asset.cpu.size_bytes,
-            .mime_type = asset.cpu.mime_type,
-            .decode = asset.cpu.decode,
+            .size_bytes = meta.size_bytes,
+            .mime_type = meta.mime_type,
+            .decode = meta.decode,
             .ingest = res.ingest,
         }, gpu_dev);
         switch (entry.inflight) {
@@ -377,14 +498,8 @@ fn completeGpuUpload(
         state.viewer.navigation.count(),
         max_vram_bytes,
     );
-    if (asset.thumb_write) |tw| {
-        if (enqueueDecodedThumbWrite(
-            state,
-            key,
-            &asset.cpu,
-            tw.source_mtime_sec,
-            asset.cpu.surface,
-        )) {
+    if (thumb_write) |tw| {
+        if (enqueueDecodedThumbWrite(state, key, meta, tw)) {
             surface_transferred.* = true;
         }
     }
@@ -681,10 +796,25 @@ test "completeGpuUpload - enqueues thumb write before swapRemove" {
     // Budget is 600 bytes; 400 + 400 = 800 > 600, so enforceVramBudget will
     // evict slot 0 via swapRemove(0), moving tail slot (key5) into index 0
     // before enqueueDecodedThumbWrite resolves key5 via getEntry(key5).
+    const meta5 = PendingUploadMetadata{
+        .w = asset.cpu.w,
+        .h = asset.cpu.h,
+        .size_bytes = asset.cpu.size_bytes,
+        .mime_type = asset.cpu.mime_type,
+        .decode = asset.cpu.decode,
+    };
+    const tw5: ?PendingThumbWrite = if (asset.thumb_write) |tw|
+        .{
+            .surface = asset.cpu.surface,
+            .source_mtime_sec = tw.source_mtime_sec,
+        }
+    else
+        null;
     completeGpuUpload(
         &state,
         key5,
-        &asset,
+        meta5,
+        tw5,
         full_res,
         null,
         600,
@@ -710,9 +840,11 @@ test "completeGpuUpload - enqueues thumb write before swapRemove" {
     try std.testing.expect(!enqueueDecodedThumbWrite(
         &state,
         expired_key,
-        &asset.cpu,
-        1700000000,
-        expired_surf,
+        meta5,
+        .{
+            .surface = expired_surf,
+            .source_mtime_sec = 1700000000,
+        },
     ));
 }
 
@@ -1083,7 +1215,14 @@ test "toggle_pair_stream on loaded_cpu survives GPU upload and failure" {
         completeGpuUpload(
             &state,
             key0,
-            &asset0,
+            .{
+                .w = asset0.cpu.w,
+                .h = asset0.cpu.h,
+                .size_bytes = asset0.cpu.size_bytes,
+                .mime_type = asset0.cpu.mime_type,
+                .decode = asset0.cpu.decode,
+            },
+            null,
             .{
                 .gpu_texture = dummy_tex,
                 .w = 32.0,
@@ -1372,7 +1511,14 @@ test "neighbor loaded_cpu with decoding ticket preserves ticket on upload" {
         completeGpuUpload(
             &state,
             key0,
-            &asset0,
+            .{
+                .w = asset0.cpu.w,
+                .h = asset0.cpu.h,
+                .size_bytes = asset0.cpu.size_bytes,
+                .mime_type = asset0.cpu.mime_type,
+                .decode = asset0.cpu.decode,
+            },
+            null,
             .{
                 .gpu_texture = dummy_tex,
                 .w = 32.0,
@@ -1571,4 +1717,119 @@ test "neighbor loaded_cpu with decoding ticket preserves ticket on upload" {
     try std.testing.expect(events_mod.drainWorkerEvents(&state, 1032));
     try std.testing.expect(state.cache.get(key0).?.inflight.isIdle());
     try std.testing.expectEqual(@as(u16, 0), state.cache.job_alloc_mask);
+}
+
+test "async GPU upload stages on worker thread and completes cleanly" {
+    const allocator = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var state = try AppState.initHeadless(allocator, io);
+    state.gpu_device = dev;
+    defer state.deinit();
+
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "async0.jpg" },
+    });
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "async1.jpg" },
+    });
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const id1 = state.viewer.navigation.getIdAt(1).?;
+
+    const surf0 =
+        sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = surf0,
+                        .w = 64.0,
+                        .h = 64.0,
+                        .size_bytes = 64 * 64 * 4,
+                    },
+                },
+            },
+        },
+    });
+
+    // Pass 1: kicks off worker staging copy without blocking main thread
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    });
+    try std.testing.expect(state.pending_gpu_upload.isActive());
+
+    // Wait for worker completion via infallible atomic flag
+    state.upload_group.cancel(io);
+    try std.testing.expect(state.upload_stage_done.load(.acquire));
+
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1016,
+    });
+    try std.testing.expect(!state.pending_gpu_upload.isActive());
+    switch (state.cache.get(key0).?.resident.asset) {
+        .loaded_gpu => {},
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    }
+
+    // Verify borrowed_for_thumb_write and cancelPendingGpuUploadForKey
+    const surf1 =
+        sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    const key1 = try state.cache.appendSlot(allocator, id1, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = surf1,
+                        .w = 64.0,
+                        .h = 64.0,
+                        .size_bytes = 64 * 64 * 4,
+                    },
+                    .thumb_write = .{ .source_mtime_sec = 1700000000 },
+                },
+            },
+        },
+    });
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1032,
+    });
+    try std.testing.expect(state.pending_gpu_upload.isActive());
+    state.cancelPendingGpuUploadForKey(key0);
+    try std.testing.expect(state.pending_gpu_upload.isActive());
+    state.cancelPendingGpuUploadForKey(key1);
+    try std.testing.expect(!state.pending_gpu_upload.isActive());
+
+    // Verify conversion_time_ms == null fails cleanly without leaking texture
+    const surf2 =
+        sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse return;
+    const started = gpu.beginAsyncUpload(
+        io,
+        dev,
+        .{ .owned_by_worker = surf2 },
+        null,
+        &state.upload_staging,
+    ).?;
+    var job2 = started.job;
+    _ = job2.executeStagingCopy(io);
+    try std.testing.expect(
+        gpu.finishAsyncUpload(io, dev, started.prepared, null) == null,
+    );
 }

@@ -38,6 +38,7 @@ fn togglePairStream(self: *AppState, now_ms: u64) void {
     if (!entry_item.isPair()) return;
 
     const key = self.cache.activeKey(cur_id);
+    self.cancelPendingGpuUploadForKey(key);
     const entry = self.cache.get(key) orelse return;
     if (!entry.resident.asset.isLoaded()) return;
     switch (entry.inflight) {

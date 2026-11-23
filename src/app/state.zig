@@ -18,9 +18,11 @@ const ArchiveTelemetry = state_pkg.ArchiveTelemetry;
 const BackgroundEvent = workers_mod.BackgroundEvent;
 const CacheEntry = cache.CacheEntry;
 const DecodeMode = workers_mod.DecodeMode;
+const DecodeTelemetry = state_pkg.DecodeTelemetry;
 const DisplayState = core.display.DisplayState;
 const FrameMetrics = state_pkg.FrameMetrics;
 const ImageCache = cache.ImageCache;
+const ImageCacheKey = cache.ImageCacheKey;
 const InFlightState = cache.InFlightState;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
@@ -29,6 +31,7 @@ const MipmapTelemetry = state_pkg.MipmapTelemetry;
 const OpenPathTarget = intents.OpenPathTarget;
 const PairStreamTarget = vfs.PairStreamTarget;
 const PhysicalDims = geom.PhysicalDims;
+const PreparedGpuUpload = gpu.PreparedGpuUpload;
 const ScrollCadence = state_pkg.ScrollCadence;
 const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
@@ -42,21 +45,60 @@ const ViewerStats = state_pkg.ViewerStats;
 const view_transform = state_pkg.view_transform;
 const ZoomFactor = state_pkg.ZoomFactor;
 
-/// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
+/// Pure value metadata carried across an async GPU upload without retaining
+/// a potentially-destroyed `sdl.Surface` handle.
+pub const PendingUploadMetadata = struct {
+    w: f32,
+    h: f32,
+    size_bytes: u64,
+    mime_type: []const u8,
+    decode: DecodeTelemetry,
+};
+
+/// Retained CPU surface and source mtime awaiting Freedesktop thumbnail cache
+/// enqueue after an async GPU upload completes.
+pub const PendingThumbWrite = struct {
+    surface: sdl.Surface,
+    source_mtime_sec: i64,
+};
+
+/// Main-thread bookkeeping for the single in-flight 2-phase async GPU texture
+/// upload while a background worker populates `upload_staging.transfer`.
+pub const PendingGpuUpload = struct {
+    key: ImageCacheKey,
+    meta: PendingUploadMetadata,
+    thumb_write: ?PendingThumbWrite = null,
+    prepared: PreparedGpuUpload,
+};
+
+/// Single-slot state machine for the in-flight 2-phase async GPU upload.
+pub const AsyncGpuUploadSlot = union(enum) {
+    idle,
+    copying: PendingGpuUpload,
+
+    /// Returns `true` when an async GPU staging upload is in flight.
+    pub inline fn isActive(self: AsyncGpuUploadSlot) bool {
+        return switch (self) {
+            .idle => false,
+            .copying => true,
+        };
+    }
+};
+
 /// Main Application State Architecture
 ///
 /// Single-Threaded ViewerState Model:
 /// - `ViewerState` lives 100% on the main thread and contains ZERO mutexes.
-/// - Background workers (decode, scan, IPC) run as isolated tasks that receive plain
-///   value copies of parameters (paths, generation counters) and touch zero shared state.
-/// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
+/// - Background workers (decode, scan, IPC) run as isolated tasks receiving
+///   plain value copies (paths, generation counters) with zero shared state.
+/// - Workers communicate exclusively by pushing events into `event_queue`.
 /// - The main thread consumes background events during frame updates and
 ///   updates `ViewerState` safely.
 /// Main Top-Level Application State & Engine Container.
 ///
-/// Owns the visual model (`viewer: ViewerState`), hardware contexts (`gpu_device`),
-/// memory allocators (`allocator`), async I/O (`io`), worker task pools (`workers`),
-/// texture slot caches (`cache`), and event/command queues.
+/// Owns the visual model (`viewer: ViewerState`), hardware contexts
+/// (`gpu_device`), memory allocators (`allocator`), async I/O (`io`), worker
+/// task pools (`workers`), texture slot caches (`cache`), and queues.
 pub const AppState = struct {
     /// Pure Visual & UI State Model
     viewer: ViewerState,
@@ -75,6 +117,10 @@ pub const AppState = struct {
     cache: ImageCache,
     workers: workers_mod.WorkerManager = .{},
     upload_staging: UploadStagingBuffer = .{},
+    pending_gpu_upload: AsyncGpuUploadSlot = .idle,
+    upload_stage_done: std.atomic.Value(bool) = .init(false),
+    upload_stage_result: ?f64 = null,
+    upload_group: std.Io.Group = .init,
     frame_metrics: FrameMetrics = .{},
 
     /// Queues
@@ -262,11 +308,13 @@ pub const AppState = struct {
     }
 
     /// Returns `true` if files are currently loading, background workers are
-    /// active, or animations are active.
+    /// active, an async GPU staging copy is in flight, or animations are
+    /// active.
     pub inline fn isBusy(self: *const AppState) bool {
         return self.viewer.hasActiveAnimation() or
             self.viewer.navigation.isLoadingFiles() or
-            self.workers.isBusy();
+            self.workers.isBusy() or
+            self.pending_gpu_upload.isActive();
     }
 
     /// Returns `true` if the currently active slide is still decoding or awaiting
@@ -396,6 +444,7 @@ pub const AppState = struct {
         };
         return self.viewer.navigation.isLoadingFiles() or
             self.workers.isBusy() or
+            self.pending_gpu_upload.isActive() or
             self.isCurrentSlideLoading() or
             self.cache.hasPendingCpuUploads(has_gpu) or
             (self.pending_wait_load_streams.items.len > 0) or
@@ -416,7 +465,8 @@ pub const AppState = struct {
     ) input.EventWaitStrategy {
         if (force_non_blocking or
             bg_events_processed or
-            self.workers.event_queue.hasPending())
+            self.workers.event_queue.hasPending() or
+            self.upload_stage_done.load(.acquire))
         {
             return .poll;
         }
@@ -428,6 +478,7 @@ pub const AppState = struct {
             const has_gpu = self.gpu_device != null;
             const has_pending_work = self.isCurrentSlideLoading() or
                 self.cache.hasPendingCpuUploads(has_gpu) or
+                self.pending_gpu_upload.isActive() or
                 self.viewer.navigation.isLoadingFiles() or
                 self.workers.isBusy() or
                 (self.pending_wait_load_streams.items.len > 0) or
@@ -452,9 +503,47 @@ pub const AppState = struct {
         return input.selectEventWaitStrategy(false, is_busy, wait_timeout_ms);
     }
 
+    /// Joins any in-flight async GPU staging copy worker uncancelably and
+    /// cleanly unmaps and releases the uncommitted GPU texture before tearing
+    /// down `upload_staging` or clearing cache slots.
+    pub fn cancelPendingGpuUpload(self: *AppState) void {
+        self.upload_group.cancel(self.io);
+        self.upload_stage_done.store(false, .monotonic);
+        self.upload_stage_result = null;
+        switch (self.pending_gpu_upload) {
+            .idle => {},
+            .copying => |pending| {
+                if (self.gpu_device) |dev| {
+                    gpu.cancelAsyncUpload(dev, pending.prepared);
+                }
+                if (pending.thumb_write) |tw| {
+                    tw.surface.destroy();
+                }
+                self.pending_gpu_upload = .idle;
+            },
+        }
+    }
+
+    /// Cancels an in-flight async GPU staging upload only if it targets `key`,
+    /// preventing stale promotion uploads from overwriting toggled streams.
+    pub fn cancelPendingGpuUploadForKey(
+        self: *AppState,
+        key: ImageCacheKey,
+    ) void {
+        switch (self.pending_gpu_upload) {
+            .idle => {},
+            .copying => |pending| {
+                if (pending.key.eql(key)) {
+                    self.cancelPendingGpuUpload();
+                }
+            },
+        }
+    }
+
     /// Releases all engine resources, cancels background worker tasks, and
     /// frees GPU textures and queues.
     pub fn deinit(self: *AppState) void {
+        self.cancelPendingGpuUpload();
         self.workers.deinit(self.allocator, self.io);
 
         if (self.gpu_device) |dev| {
@@ -639,6 +728,7 @@ pub const AppState = struct {
 
     /// Releases all GPU textures and resets status across all cache slots.
     pub fn clearCache(self: *AppState) void {
+        self.cancelPendingGpuUpload();
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
     }
@@ -765,6 +855,7 @@ pub const AppState = struct {
         if (self.cache.slots.capacity > 16) {
             self.cache.slots.shrinkAndFree(self.allocator, 0);
         }
+        self.cancelPendingGpuUpload();
         if (self.gpu_device) |dev| {
             self.upload_staging.deinit(dev);
         }

@@ -190,6 +190,110 @@ pub const GpuUploadResult = struct {
     ingest: IngestTelemetry = .{},
 };
 
+/// Ownership contract for the source `sdl.Surface` during an async staging
+/// copy: either the worker destroys it immediately after copying, or the main
+/// thread retains ownership to enqueue a Freedesktop thumbnail write.
+pub const SurfaceOwnership = union(enum) {
+    owned_by_worker: sdl.Surface,
+    borrowed_for_thumb_write: sdl.Surface,
+
+    /// Returns the underlying `sdl.Surface` handle regardless of ownership.
+    pub inline fn handle(self: SurfaceOwnership) sdl.Surface {
+        return switch (self) {
+            .owned_by_worker => |s| s,
+            .borrowed_for_thumb_write => |s| s,
+        };
+    }
+};
+
+/// Pixel staging operation performed on the background copy worker.
+pub const StagingCopyMode = union(enum) {
+    raw_memcpy: usize,
+    convert_rgba32: u32,
+};
+
+/// Pure-CPU staging copy job executed on a background worker thread while
+/// `PreparedGpuUpload` holds the mapped GPU transfer buffer on the main thread.
+/// Contains zero SDL GPU handles.
+pub const StagedTransferJob = struct {
+    surface: SurfaceOwnership,
+    scaled_surf: ?sdl.Surface = null,
+    mapped: []u8,
+    u_w: usize,
+    u_h: usize,
+    mode: StagingCopyMode,
+
+    /// Copies or converts pixel data into `self.mapped` and releases owned
+    /// CPU surfaces off the main thread. Returns conversion duration in ms on
+    /// success, or `null` on conversion failure.
+    pub fn executeStagingCopy(self: *StagedTransferJob, io: std.Io) ?f64 {
+        defer {
+            if (self.scaled_surf) |s| {
+                s.destroy();
+                self.scaled_surf = null;
+            }
+            switch (self.surface) {
+                .owned_by_worker => |s| s.destroy(),
+                .borrowed_for_thumb_write => {},
+            }
+        }
+        const active_surf = self.scaled_surf orelse self.surface.handle();
+        return switch (self.mode) {
+            .raw_memcpy => |src_pitch| blk: {
+                const pixels: [*]const u8 = active_surf.pixels();
+                const raw_bytes_len = src_pitch * self.u_h;
+                @memcpy(
+                    self.mapped[0..raw_bytes_len],
+                    pixels[0..raw_bytes_len],
+                );
+                break :blk 0.0;
+            },
+            .convert_rgba32 => |cur_fmt| stageSurfaceToRgba32(
+                io,
+                active_surf,
+                self.mapped,
+                self.u_w,
+                self.u_h,
+                self.u_w * 4,
+                cur_fmt,
+            ),
+        };
+    }
+};
+
+/// GPU-side submission path paired with `PreparedGpuUpload`, making
+/// compute-unpack vs direct texture upload mutually exclusive at compile time.
+pub const AsyncUploadPath = union(enum) {
+    direct_texture,
+    compute_unpack: struct {
+        storage_buf: sdl.gpu.Buffer,
+        pipeline: sdl.gpu.ComputePipeline,
+        is_bgr: bool,
+        src_pitch: usize,
+    },
+};
+
+/// Main-thread GPU state retained between `beginAsyncUpload` and
+/// `finishAsyncUpload` (or `cancelAsyncUpload`) while a background worker
+/// populates the mapped transfer buffer.
+pub const PreparedGpuUpload = struct {
+    gpu_tex: sdl.gpu.Texture,
+    transfer_buf: sdl.gpu.TransferBuffer,
+    path: AsyncUploadPath,
+    img_w: i32,
+    img_h: i32,
+    num_levels: u32,
+    mode: UploadMode,
+    start_upload: std.Io.Timestamp,
+};
+
+/// Paired main-thread GPU state and pure-CPU worker copy job returned by
+/// `beginAsyncUpload`.
+pub const BeginAsyncUploadResult = struct {
+    prepared: PreparedGpuUpload,
+    job: StagedTransferJob,
+};
+
 /// Computes the mipmap pyramid level count for a 2D texture of size `w` x `h`.
 fn computeMipLevels(w: i32, h: i32) u32 {
     const max_dim_u: u32 = @intCast(@max(1, @max(w, h)));
@@ -702,6 +806,342 @@ pub fn uploadSurfaceToGpu(
             ),
         },
     };
+}
+
+/// Phase 1 (main thread) of the 2-phase async GPU upload pipeline.
+/// Creates the destination GPU texture, acquires and maps the staging transfer
+/// buffer, and returns both the main-thread `PreparedGpuUpload` state and a
+/// pure-CPU `StagedTransferJob` to run on a background worker thread.
+pub fn beginAsyncUpload(
+    io: std.Io,
+    dev: sdl.gpu.Device,
+    surface: SurfaceOwnership,
+    comp_pipeline: ?sdl.gpu.ComputePipeline,
+    staging: *UploadStagingBuffer,
+) ?BeginAsyncUploadResult {
+    const start_upload = std.Io.Clock.awake.now(io);
+    var current_surf = surface.handle();
+    const src_fmt = current_surf.format();
+    const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
+        sdl.PixelFormat.bgra32,
+        sdl.PixelFormat.xrgb8888,
+        sdl.PixelFormat.bgrx8888,
+        => .bgra8_unorm,
+        sdl.PixelFormat.rgba32,
+        sdl.PixelFormat.xbgr8888,
+        sdl.PixelFormat.rgbx8888,
+        => .rgba8_unorm,
+        else => .rgba8_unorm,
+    };
+
+    var scaled_surf: ?sdl.Surface = null;
+
+    var img_w = current_surf.w();
+    var img_h = current_surf.h();
+    if (img_w <= 0 or img_h <= 0) return null;
+    var num_levels: u32 = computeMipLevels(img_w, img_h);
+    var was_fallback: bool = false;
+    var fallback_time_ms: f64 = 0.0;
+
+    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline =
+        if (src_fmt == sdl.PixelFormat.rgb24 or
+        src_fmt == sdl.PixelFormat.bgr24)
+            comp_pipeline
+        else
+            null;
+
+    var tex_usage =
+        sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
+    if (comp_pipeline_opt != null) {
+        tex_usage |= sdl.gpu.TextureUsage.compute_storage_write;
+    }
+
+    var img_tex_info = sdl.gpu.TextureCreateInfo{
+        .type = .type_2d,
+        .format = gpu_format,
+        .usage = tex_usage,
+        .width = @intCast(img_w),
+        .height = @intCast(img_h),
+        .layer_count_or_depth = 1,
+        .num_levels = num_levels,
+        .sample_count = .count_1,
+        .props = 0,
+    };
+    var tex = dev.createTexture(&img_tex_info);
+
+    if (tex == null) {
+        const start_fb = std.Io.Clock.awake.now(io);
+        was_fallback = true;
+        var try_max_dim: i32 = 8192;
+        while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(
+            try_max_dim,
+            2,
+        )) {
+            if (computeFallbackScaleDims(img_w, img_h, try_max_dim)) |fb| {
+                const new_scale = current_surf.scale(fb.w, fb.h, .linear);
+                if (new_scale) |ns| {
+                    if (scaled_surf) |s| s.destroy();
+                    scaled_surf = ns;
+                    current_surf = ns;
+                    img_w = fb.w;
+                    img_h = fb.h;
+                    num_levels = fb.num_levels;
+
+                    img_tex_info.width = @intCast(img_w);
+                    img_tex_info.height = @intCast(img_h);
+                    img_tex_info.num_levels = num_levels;
+                    tex = dev.createTexture(&img_tex_info);
+                    if (tex != null) break;
+                } else {
+                    std.log.err(
+                        "beginAsyncUpload: SDL_ScaleSurface failed: {s}",
+                        .{sdl.getError()},
+                    );
+                    break;
+                }
+            }
+        }
+        fallback_time_ms = state_pkg.durationToMs(
+            start_fb.untilNow(io, .awake),
+        );
+    }
+
+    const gpu_tex = tex orelse {
+        if (scaled_surf) |s| s.destroy();
+        return null;
+    };
+    const u_w: usize = @intCast(img_w);
+    const u_h: usize = @intCast(img_h);
+    const cur_fmt = current_surf.format();
+    const src_pitch: usize = @intCast(current_surf.pitch());
+    const upload_mode = UploadMode.init(was_fallback, fallback_time_ms);
+
+    if (comp_pipeline_opt) |pipeline_handle| {
+        const raw_bytes_len = src_pitch * u_h;
+        const storage_buf_size = std.mem.alignForward(usize, raw_bytes_len, 4);
+        const transfer_buf = staging.getOrCreateTransferBuffer(
+            dev,
+            raw_bytes_len,
+        ) orelse {
+            if (scaled_surf) |s| s.destroy();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+        const storage_buf = staging.getOrCreateStorageBuffer(
+            dev,
+            storage_buf_size,
+        ) orelse {
+            if (scaled_surf) |s| s.destroy();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+        const mapped = dev.mapTransferBuffer(transfer_buf, true) orelse {
+            if (scaled_surf) |s| s.destroy();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+        return .{
+            .prepared = .{
+                .gpu_tex = gpu_tex,
+                .transfer_buf = transfer_buf,
+                .path = .{
+                    .compute_unpack = .{
+                        .storage_buf = storage_buf,
+                        .pipeline = pipeline_handle,
+                        .is_bgr = (cur_fmt == sdl.PixelFormat.bgr24),
+                        .src_pitch = src_pitch,
+                    },
+                },
+                .img_w = img_w,
+                .img_h = img_h,
+                .num_levels = num_levels,
+                .mode = upload_mode,
+                .start_upload = start_upload,
+            },
+            .job = .{
+                .surface = surface,
+                .scaled_surf = scaled_surf,
+                .mapped = mapped[0..raw_bytes_len],
+                .u_w = u_w,
+                .u_h = u_h,
+                .mode = .{ .raw_memcpy = src_pitch },
+            },
+        };
+    }
+
+    const size = u_w * 4 * u_h;
+    const transfer_buf = staging.getOrCreateTransferBuffer(dev, size) orelse {
+        if (scaled_surf) |s| s.destroy();
+        dev.releaseTexture(gpu_tex);
+        return null;
+    };
+    const mapped = dev.mapTransferBuffer(transfer_buf, true) orelse {
+        if (scaled_surf) |s| s.destroy();
+        dev.releaseTexture(gpu_tex);
+        return null;
+    };
+    return .{
+        .prepared = .{
+            .gpu_tex = gpu_tex,
+            .transfer_buf = transfer_buf,
+            .path = .direct_texture,
+            .img_w = img_w,
+            .img_h = img_h,
+            .num_levels = num_levels,
+            .mode = upload_mode,
+            .start_upload = start_upload,
+        },
+        .job = .{
+            .surface = surface,
+            .scaled_surf = scaled_surf,
+            .mapped = mapped[0..size],
+            .u_w = u_w,
+            .u_h = u_h,
+            .mode = .{ .convert_rgba32 = cur_fmt },
+        },
+    };
+}
+
+/// Phase 2 (main thread) of the 2-phase async GPU upload pipeline.
+/// Unmaps `prepared.transfer_buf` and, if `conversion_time_ms_opt` is
+/// non-null, submits the GPU copy, optional compute unpack, and mipmap
+/// generation command buffer.
+pub fn finishAsyncUpload(
+    io: std.Io,
+    dev: sdl.gpu.Device,
+    prepared: PreparedGpuUpload,
+    conversion_time_ms_opt: ?f64,
+) ?GpuUploadResult {
+    dev.unmapTransferBuffer(prepared.transfer_buf);
+    if (conversion_time_ms_opt == null) {
+        dev.releaseTexture(prepared.gpu_tex);
+        return null;
+    }
+
+    const u_w: usize = @intCast(prepared.img_w);
+    const u_h: usize = @intCast(prepared.img_h);
+    const cmd_wrapper = dev.acquireCommandBuffer() orelse {
+        dev.releaseTexture(prepared.gpu_tex);
+        return null;
+    };
+
+    const copy_pass = cmd_wrapper.beginCopyPass() orelse {
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(prepared.gpu_tex);
+        return null;
+    };
+
+    switch (prepared.path) {
+        .compute_unpack => |cu| {
+            const raw_bytes_len = cu.src_pitch * u_h;
+            copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
+                .transfer_buffer = prepared.transfer_buf,
+                .offset = 0,
+            }, &sdl.gpu.BufferRegion{
+                .buffer = cu.storage_buf,
+                .offset = 0,
+                .size = @intCast(raw_bytes_len),
+            }, true);
+            copy_pass.end();
+
+            const compute_pass = cmd_wrapper.beginComputePass(
+                &[_]sdl.gpu.StorageTextureReadWriteBinding{
+                    .{
+                        .texture = prepared.gpu_tex,
+                        .mip_level = 0,
+                        .layer = 0,
+                        .cycle = false,
+                    },
+                },
+            ) orelse {
+                _ = cmd_wrapper.cancel();
+                dev.releaseTexture(prepared.gpu_tex);
+                return null;
+            };
+
+            const Params = extern struct {
+                width: u32,
+                height: u32,
+                is_bgr: u32,
+                src_pitch: u32,
+            };
+            const params = Params{
+                .width = @intCast(prepared.img_w),
+                .height = @intCast(prepared.img_h),
+                .is_bgr = if (cu.is_bgr) 1 else 0,
+                .src_pitch = @intCast(cu.src_pitch),
+            };
+            cmd_wrapper.pushComputeUniform(0, std.mem.asBytes(&params));
+            compute_pass.bindPipeline(cu.pipeline);
+            compute_pass.bindStorageBuffers(
+                0,
+                &[_]sdl.gpu.Buffer{cu.storage_buf},
+            );
+            const group_x: u32 = @intCast(@divCeil(u_w, 16));
+            const group_y: u32 = @intCast(@divCeil(u_h, 16));
+            compute_pass.dispatch(group_x, group_y, 1);
+            compute_pass.end();
+        },
+        .direct_texture => {
+            copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+                .transfer_buffer = prepared.transfer_buf,
+                .offset = 0,
+                .pixels_per_row = @intCast(u_w),
+                .rows_per_layer = @intCast(u_h),
+            }, &sdl.gpu.TextureRegion{
+                .texture = prepared.gpu_tex,
+                .w = @intCast(prepared.img_w),
+                .h = @intCast(prepared.img_h),
+                .d = 1,
+            }, false);
+            copy_pass.end();
+        },
+    }
+
+    var mipmap_time_ms: f64 = 0.0;
+    if (prepared.num_levels > 1) {
+        const start_mip = std.Io.Clock.awake.now(io);
+        cmd_wrapper.generateMipmaps(prepared.gpu_tex);
+        mipmap_time_ms = state_pkg.durationToMs(
+            start_mip.untilNow(io, .awake),
+        );
+    }
+
+    _ = cmd_wrapper.submit();
+
+    const upload_time_ms = state_pkg.durationToMs(
+        prepared.start_upload.untilNow(io, .awake),
+    );
+    const memory_size_bytes = computeTextureVramBytes(
+        u_w,
+        u_h,
+        prepared.num_levels,
+    );
+
+    return .{
+        .gpu_texture = prepared.gpu_tex,
+        .w = @floatFromInt(prepared.img_w),
+        .h = @floatFromInt(prepared.img_h),
+        .ingest = .{
+            .upload_time_ms = upload_time_ms,
+            .memory_size_bytes = memory_size_bytes,
+            .mode = prepared.mode,
+            .mipmaps = MipmapTelemetry.init(
+                prepared.num_levels,
+                mipmap_time_ms,
+            ),
+        },
+    };
+}
+
+/// Cancels an in-flight `PreparedGpuUpload` after its worker has joined,
+/// unmapping the transfer buffer and releasing the uncommitted GPU texture.
+pub fn cancelAsyncUpload(
+    dev: sdl.gpu.Device,
+    prepared: PreparedGpuUpload,
+) void {
+    dev.unmapTransferBuffer(prepared.transfer_buf);
+    dev.releaseTexture(prepared.gpu_tex);
 }
 
 test "UploadStagingBuffer - capacity growth and clean deinit" {
