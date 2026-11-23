@@ -49,6 +49,11 @@ pub const DURATION_TITLE_OVERLAY_CLOSE_MS =
     animation_state.DURATION_TITLE_OVERLAY_CLOSE_MS;
 pub const DURATION_TITLE_OVERLAY_OPEN_MS =
     animation_state.DURATION_TITLE_OVERLAY_OPEN_MS;
+pub const SPRING_OMEGA_EDIT_PANEL = animation_state.SPRING_OMEGA_EDIT_PANEL;
+pub const SPRING_OMEGA_PALETTE = animation_state.SPRING_OMEGA_PALETTE;
+pub const SPRING_OMEGA_SNACKBAR = animation_state.SPRING_OMEGA_SNACKBAR;
+pub const SPRING_OMEGA_TITLE_OVERLAY =
+    animation_state.SPRING_OMEGA_TITLE_OVERLAY;
 pub const EasingType = easing.EasingType;
 pub const EDIT_PANEL_PADDING = types.EDIT_PANEL_PADDING;
 pub const EDIT_PANEL_WIDTH = types.EDIT_PANEL_WIDTH;

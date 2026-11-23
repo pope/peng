@@ -30,6 +30,16 @@ pub const DURATION_EDIT_PANEL_OPEN_MS: f32 = 180.0;
 pub const DURATION_EDIT_PANEL_CLOSE_MS: f32 = 140.0;
 pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S: f32 = 0.5;
 
+/// Critically-damped spring angular frequencies (`omega`, rad/s) for spatial
+/// UI chrome channels. Higher values settle faster with zero overshoot.
+pub const SPRING_OMEGA_PALETTE: f32 = 28.0;
+pub const SPRING_OMEGA_EDIT_PANEL: f32 = 24.0;
+pub const SPRING_OMEGA_TITLE_OVERLAY: f32 = 26.0;
+pub const SPRING_OMEGA_SNACKBAR: f32 = 26.0;
+
+const SPRING_SETTLE_POS_EPS: f32 = 0.002;
+const SPRING_SETTLE_VEL_EPS: f32 = 0.01;
+
 /// Metadata describing default durations, easings, and base values for an animation channel.
 pub const ChannelDescriptor = struct {
     default_open_duration_ms: f32,
@@ -110,7 +120,10 @@ pub const AnimationState = struct {
     elapsed_ms: [MAX_CHANNELS]f32 = @splat(0.0),
     durations_ms: [MAX_CHANNELS]f32 = @splat(0.0),
     easings: [MAX_CHANNELS]EasingType = @splat(.linear),
+    velocities: [MAX_CHANNELS]f32 = @splat(0.0),
+    spring_omegas: [MAX_CHANNELS]f32 = @splat(0.0),
     active_mask: u32 = 0,
+    spring_mask: u32 = 0,
 
     fn initValues() [MAX_CHANNELS]f32 {
         var vals: [MAX_CHANNELS]f32 = @splat(0.0);
@@ -170,7 +183,38 @@ pub const AnimationState = struct {
         self.elapsed_ms[idx] = 0.0;
         self.durations_ms[idx] = duration_ms;
         self.easings[idx] = easing_type;
-        self.active_mask |= (@as(u32, 1) << @intCast(idx));
+        self.velocities[idx] = 0.0;
+        const bit = @as(u32, 1) << @intCast(idx);
+        self.spring_mask &= ~bit;
+        self.active_mask |= bit;
+    }
+
+    /// Starts or retargets a critically-damped spring on `channel` toward
+    /// `target` with angular frequency `omega` (rad/s), preserving current
+    /// velocity across mid-flight interruptions.
+    pub fn startSpring(
+        self: *AnimationState,
+        channel: AnimationChannel,
+        target: f32,
+        omega: f32,
+    ) void {
+        const idx = @backingInt(channel);
+        const current_val = self.values[idx];
+        const vel = self.velocities[idx];
+        if (omega <= 0.0 or
+            (@abs(current_val - target) < SPRING_SETTLE_POS_EPS and
+                @abs(vel) < SPRING_SETTLE_VEL_EPS))
+        {
+            self.setImmediate(channel, target);
+            return;
+        }
+
+        self.start_vals[idx] = current_val;
+        self.target_vals[idx] = target;
+        self.spring_omegas[idx] = omega;
+        const bit = @as(u32, 1) << @intCast(idx);
+        self.spring_mask |= bit;
+        self.active_mask |= bit;
     }
 
     /// Starts an animation on `channel` with an explicit starting baseline,
@@ -195,7 +239,10 @@ pub const AnimationState = struct {
         self.elapsed_ms[idx] = 0.0;
         self.durations_ms[idx] = duration_ms;
         self.easings[idx] = easing_type;
-        self.active_mask |= (@as(u32, 1) << @intCast(idx));
+        self.velocities[idx] = 0.0;
+        const bit = @as(u32, 1) << @intCast(idx);
+        self.spring_mask &= ~bit;
+        self.active_mask |= bit;
     }
 
     /// Sets the value directly without animating, deactivating the channel.
@@ -204,14 +251,20 @@ pub const AnimationState = struct {
         self.values[idx] = val;
         self.start_vals[idx] = val;
         self.target_vals[idx] = val;
-        self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
+        self.velocities[idx] = 0.0;
+        const bit = @as(u32, 1) << @intCast(idx);
+        self.spring_mask &= ~bit;
+        self.active_mask &= ~bit;
     }
 
     /// Immediately snaps `channel` to its target value and marks it inactive.
     pub fn settle(self: *AnimationState, channel: AnimationChannel) void {
         const idx = @backingInt(channel);
         self.values[idx] = self.target_vals[idx];
-        self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
+        self.velocities[idx] = 0.0;
+        const bit = @as(u32, 1) << @intCast(idx);
+        self.spring_mask &= ~bit;
+        self.active_mask &= ~bit;
     }
 
     /// Immediately snaps all active channels to their target values and marks all inactive.
@@ -221,9 +274,11 @@ pub const AnimationState = struct {
         while (mask != 0) {
             const idx = @ctz(mask);
             self.values[idx] = self.target_vals[idx];
+            self.velocities[idx] = 0.0;
             mask &= mask - 1;
         }
         self.active_mask = 0;
+        self.spring_mask = 0;
     }
 
     /// Ticks all active animation channels forward by `delta_ms`.
@@ -231,22 +286,46 @@ pub const AnimationState = struct {
         if (self.active_mask == 0) return;
 
         const safe_delta = @max(delta_ms, 0.0);
+        const dt_s = safe_delta * 0.001;
         var mask = self.active_mask;
         while (mask != 0) {
             const idx = @ctz(mask);
             const bit = @as(u32, 1) << @intCast(idx);
             mask &= ~bit;
 
-            self.elapsed_ms[idx] += safe_delta;
-            const dur = self.durations_ms[idx];
-            if (self.elapsed_ms[idx] >= dur) {
-                self.values[idx] = self.target_vals[idx];
-                self.active_mask &= ~bit;
+            if ((self.spring_mask & bit) != 0) {
+                const omega = self.spring_omegas[idx];
+                const target = self.target_vals[idx];
+                const x0 = self.values[idx] - target;
+                const v0 = self.velocities[idx];
+                const decay = @exp(-omega * dt_s);
+                const c2 = v0 + omega * x0;
+                const x_next = (x0 + c2 * dt_s) * decay;
+                const v_next = (c2 - omega * (x0 + c2 * dt_s)) * decay;
+
+                if (@abs(x_next) < SPRING_SETTLE_POS_EPS and
+                    @abs(v_next) < SPRING_SETTLE_VEL_EPS)
+                {
+                    self.values[idx] = target;
+                    self.velocities[idx] = 0.0;
+                    self.active_mask &= ~bit;
+                    self.spring_mask &= ~bit;
+                } else {
+                    self.values[idx] = target + x_next;
+                    self.velocities[idx] = v_next;
+                }
             } else {
-                const t = self.elapsed_ms[idx] / dur;
-                const factor = self.easings[idx].eval(t);
-                const delta = self.target_vals[idx] - self.start_vals[idx];
-                self.values[idx] = self.start_vals[idx] + delta * factor;
+                self.elapsed_ms[idx] += safe_delta;
+                const dur = self.durations_ms[idx];
+                if (self.elapsed_ms[idx] >= dur) {
+                    self.values[idx] = self.target_vals[idx];
+                    self.active_mask &= ~bit;
+                } else {
+                    const t = self.elapsed_ms[idx] / dur;
+                    const factor = self.easings[idx].eval(t);
+                    const delta = self.target_vals[idx] - self.start_vals[idx];
+                    self.values[idx] = self.start_vals[idx] + delta * factor;
+                }
             }
         }
     }
@@ -436,4 +515,34 @@ test "AnimationState image_crossfade channel transitions" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.image_crossfade), 0.001);
     try std.testing.expect(!anim.isActive(.image_crossfade));
     try std.testing.expect(!anim.hasActiveAnimations());
+}
+
+test "AnimationState critically-damped spring preserves velocity and settles" {
+    var anim = AnimationState{};
+    anim.startSpring(.edit_panel, 1.0, SPRING_OMEGA_EDIT_PANEL);
+    try std.testing.expect(anim.isActive(.edit_panel));
+
+    // Step forward 50ms: moves toward 1.0 with positive velocity, no overshoot
+    anim.tick(50.0);
+    const mid = anim.get(.edit_panel);
+    const idx = @backingInt(AnimationChannel.edit_panel);
+    const vel_before = anim.velocities[idx];
+    try std.testing.expect(mid > 0.2 and mid < 1.0);
+    try std.testing.expect(vel_before > 0.0);
+
+    // Mid-flight reversal preserves velocity instead of snapping to zero
+    anim.startSpring(.edit_panel, 0.0, SPRING_OMEGA_EDIT_PANEL);
+    try std.testing.expectEqual(vel_before, anim.velocities[idx]);
+
+    // Ticking forward smoothly decelerates, reverses, and settles cleanly at 0
+    for (0..30) |_| {
+        anim.tick(16.0);
+    }
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.0),
+        anim.get(.edit_panel),
+        0.001,
+    );
+    try std.testing.expect(!anim.isActive(.edit_panel));
+    try std.testing.expectEqual(@as(f32, 0.0), anim.velocities[idx]);
 }

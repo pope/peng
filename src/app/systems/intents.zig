@@ -24,9 +24,11 @@ const sysUpdateAnimations = animation.sysUpdateAnimations;
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled or self.display.isHidden()) return;
     self.viewer.ui.snackbar.show(msg, now_ms +| 1500);
-    const progress = self.viewer.animations.get(.snackbar);
-    const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
-    self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
+    self.viewer.animations.startSpring(
+        .snackbar,
+        1.0,
+        state.SPRING_OMEGA_SNACKBAR,
+    );
 }
 
 fn togglePairStream(self: *AppState, now_ms: u64) void {
@@ -400,16 +402,10 @@ fn executeIntent(
                     ui.overlays.title_display = .{
                         .transient = .{ .timeout_ms = now_ms +| 1500 },
                     };
-                    const progress = self.viewer.animations.get(.title_overlay);
-                    const dur = @max(
-                        state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress),
-                        30.0,
-                    );
-                    self.viewer.animations.start(
+                    self.viewer.animations.startSpring(
                         .title_overlay,
                         1.0,
-                        dur,
-                        .ease_out_quad,
+                        state.SPRING_OMEGA_TITLE_OVERLAY,
                     );
                 }
             }
@@ -626,86 +622,68 @@ fn executeIntent(
         .toggle_edit_panel => {
             const new_vis = !ui.overlays.edit_panel.visible;
             ui.overlays.edit_panel.visible = new_vis;
-            const target: f32 = if (new_vis) 1.0 else 0.0;
-            const progress = self.viewer.animations.get(.edit_panel);
-            const dur: f32 = if (new_vis)
-                @max(state.DURATION_EDIT_PANEL_OPEN_MS * (1.0 - progress), 30.0)
-            else
-                @max(state.DURATION_EDIT_PANEL_CLOSE_MS * progress, 30.0);
-            self.viewer.animations.start(
+            self.viewer.animations.startSpring(
                 .edit_panel,
-                target,
-                dur,
-                if (new_vis) .ease_out_cubic else .ease_out_quad,
+                if (new_vis) 1.0 else 0.0,
+                state.SPRING_OMEGA_EDIT_PANEL,
             );
         },
         .set_edit_panel => |val| {
             ui.overlays.edit_panel.visible = val;
-            const target: f32 = if (val) 1.0 else 0.0;
-            const progress = self.viewer.animations.get(.edit_panel);
-            const dur: f32 = if (val)
-                @max(state.DURATION_EDIT_PANEL_OPEN_MS * (1.0 - progress), 30.0)
-            else
-                @max(state.DURATION_EDIT_PANEL_CLOSE_MS * progress, 30.0);
-            self.viewer.animations.start(
+            self.viewer.animations.startSpring(
                 .edit_panel,
-                target,
-                dur,
-                if (val) .ease_out_cubic else .ease_out_quad,
+                if (val) 1.0 else 0.0,
+                state.SPRING_OMEGA_EDIT_PANEL,
             );
         },
         .dismiss_overlays => {
             _ = ui.overlays.dismissFloatingPanels();
             if (ui.overlays.edit_panel.visible) {
                 ui.overlays.edit_panel.visible = false;
-                const progress = self.viewer.animations.get(.edit_panel);
-                const close_dur = state.DURATION_EDIT_PANEL_CLOSE_MS;
-                const dur = @max(close_dur * progress, 30.0);
-                self.viewer.animations.start(
+                self.viewer.animations.startSpring(
                     .edit_panel,
                     0.0,
-                    dur,
-                    .ease_out_quad,
+                    state.SPRING_OMEGA_EDIT_PANEL,
                 );
             }
         },
         .toggle_title => {
             const new_pinned = !ui.overlays.title_display.isPinned();
             ui.overlays.title_display = if (new_pinned) .pinned else .hidden;
-            const target: f32 = if (new_pinned) 1.0 else 0.0;
-            const progress = self.viewer.animations.get(.title_overlay);
-            const dur: f32 = if (new_pinned)
-                @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0)
-            else
-                @max(state.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
-            self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
+            self.viewer.animations.startSpring(
+                .title_overlay,
+                if (new_pinned) 1.0 else 0.0,
+                state.SPRING_OMEGA_TITLE_OVERLAY,
+            );
         },
         .set_title => |val| {
             ui.overlays.title_display = if (val) .pinned else .hidden;
-            const target: f32 = if (val) 1.0 else 0.0;
-            const progress = self.viewer.animations.get(.title_overlay);
-            const dur: f32 = if (val)
-                @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0)
-            else
-                @max(state.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
-            self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
+            self.viewer.animations.startSpring(
+                .title_overlay,
+                if (val) 1.0 else 0.0,
+                state.SPRING_OMEGA_TITLE_OVERLAY,
+            );
         },
         .toggle_snackbar => {
             ui.snackbar.enabled = !ui.snackbar.enabled;
             if (!ui.snackbar.enabled) {
                 ui.snackbar.clear();
-                const progress = self.viewer.animations.get(.snackbar);
-                const dur = @max(state.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
-                self.viewer.animations.start(.snackbar, 0.0, dur, .ease_out_quad);
+                self.viewer.animations.startSpring(
+                    .snackbar,
+                    0.0,
+                    state.SPRING_OMEGA_SNACKBAR,
+                );
             }
         },
         .set_snackbar => |val| {
             ui.snackbar.enabled = val;
             if (!val) {
                 ui.snackbar.clear();
-                const progress = self.viewer.animations.get(.snackbar);
-                const dur = @max(state.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
-                self.viewer.animations.start(.snackbar, 0.0, dur, .ease_out_quad);
+                self.viewer.animations.startSpring(
+                    .snackbar,
+                    0.0,
+                    state.SPRING_OMEGA_SNACKBAR,
+                );
             }
         },
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
@@ -847,12 +825,11 @@ fn triggerSnackbarForIntent(
 
     if (msg.len > 0) {
         self.viewer.ui.snackbar.show(msg, now_ms +| rule.duration_ms);
-        const progress = self.viewer.animations.get(.snackbar);
-        const dur = @max(
-            state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress),
-            30.0,
+        self.viewer.animations.startSpring(
+            .snackbar,
+            1.0,
+            state.SPRING_OMEGA_SNACKBAR,
         );
-        self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
     }
 }
 
@@ -1919,7 +1896,7 @@ test "executeIntent - set_palette directory_navigator with query from closed" {
     sysUpdateAnimations(.{
         .state = &app_st,
         .frame_allocator = allocator,
-        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+        .delta_time_ms = 400.0,
     });
     try std.testing.expectApproxEqAbs(
         @as(f32, 1.0),
@@ -1947,7 +1924,7 @@ test "executeIntent - set_palette directory_navigator from closing" {
     sysUpdateAnimations(.{
         .state = &app_st,
         .frame_allocator = allocator,
-        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+        .delta_time_ms = 400.0,
     });
     try app_st.viewer.ui.palette.query.appendSlice(allocator, "stale");
     try app_st.viewer.ui.palette.last_child_dir.appendSlice(
@@ -2006,7 +1983,7 @@ test "executeIntent - set_palette directory_navigator from closing" {
     sysUpdateAnimations(.{
         .state = &app_st,
         .frame_allocator = allocator,
-        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+        .delta_time_ms = 400.0,
     });
     const settled_mode = app_st.viewer.ui.palette.openMode() orelse {
         return error.TestUnexpectedResult;
@@ -2041,7 +2018,7 @@ test "executeIntent - set_palette directory_navigator from open actions" {
     sysUpdateAnimations(.{
         .state = &app_st,
         .frame_allocator = allocator,
-        .delta_time_ms = state.DURATION_PALETTE_OPEN_MS,
+        .delta_time_ms = 400.0,
     });
     try app_st.viewer.ui.palette.query.appendSlice(allocator, "zoom");
 

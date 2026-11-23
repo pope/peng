@@ -681,9 +681,11 @@ pub const AppState = struct {
     pub fn closePalette(self: *AppState) void {
         stopTextInput(self.display);
         self.viewer.ui.palette.beginClose();
-        const progress = self.viewer.animations.get(.palette_reveal);
-        const duration = @max(state_pkg.DURATION_PALETTE_CLOSE_MS * progress, 30.0);
-        self.viewer.animations.start(.palette_reveal, 0.0, duration, .ease_out_quad);
+        self.viewer.animations.startSpring(
+            .palette_reveal,
+            0.0,
+            state_pkg.SPRING_OMEGA_PALETTE,
+        );
     }
 
     /// Immediately closes and resets the command palette without animation.
@@ -918,11 +920,10 @@ pub const AppState = struct {
     ) void {
         self.viewer.ui.palette.reset();
         self.viewer.ui.palette.lifecycle = .{ .open = active_type };
-        self.viewer.animations.start(
+        self.viewer.animations.startSpring(
             .palette_reveal,
             1.0,
-            state_pkg.DURATION_PALETTE_OPEN_MS,
-            .ease_out_cubic,
+            state_pkg.SPRING_OMEGA_PALETTE,
         );
         self.viewer.ui.palette.selected_idx = switch (active_type) {
             .files => self.viewer.navigation.current_index orelse 0,

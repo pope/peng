@@ -30,12 +30,11 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
         .transient => |t| {
             if (now >= t.timeout_ms) {
                 state.viewer.ui.overlays.title_display = .hidden;
-                const progress = anim.get(.title_overlay);
-                const dur = @max(
-                    state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS * progress,
-                    30.0,
+                anim.startSpring(
+                    .title_overlay,
+                    0.0,
+                    state_pkg.SPRING_OMEGA_TITLE_OVERLAY,
                 );
-                anim.start(.title_overlay, 0.0, dur, .ease_out_quad);
             }
         },
         .hidden, .pinned => {},
@@ -47,12 +46,11 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
             if (active.timeout_ms > 0) {
                 if (now >= active.timeout_ms) {
                     active.timeout_ms = 0;
-                    const progress = anim.get(.snackbar);
-                    const dur = @max(
-                        state_pkg.DURATION_SNACKBAR_CLOSE_MS * progress,
-                        30.0,
+                    anim.startSpring(
+                        .snackbar,
+                        0.0,
+                        state_pkg.SPRING_OMEGA_SNACKBAR,
                     );
-                    anim.start(.snackbar, 0.0, dur, .ease_out_quad);
                 }
             }
         },
@@ -124,11 +122,11 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
     try std.testing.expect(state.viewer.animations.get(.palette_reveal) > 0.4);
     try std.testing.expect(state.viewer.animations.get(.palette_reveal) < 1.0);
 
-    // 3. Tick remaining 50%: settles at 1.0
+    // 3. Tick through spring settle: settles at 1.0
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
-        .delta_time_ms = open_half,
+        .delta_time_ms = 400.0,
     });
     try std.testing.expectApproxEqAbs(
         @as(f32, 1.0),
@@ -150,7 +148,7 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
     }
     try std.testing.expect(state.viewer.hasActiveAnimation());
 
-    // 5. Tick 50% through close duration
+    // 5. Tick mid-flight through close spring
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
@@ -160,13 +158,13 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
         .closing => {},
         .closed, .open => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(state.viewer.animations.get(.palette_reveal) < 0.6);
+    try std.testing.expect(state.viewer.animations.get(.palette_reveal) < 0.7);
 
-    // 6. Tick remaining 50%: finishes closing and resets palette
+    // 6. Tick through spring settle: finishes closing and resets palette
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
-        .delta_time_ms = close_half,
+        .delta_time_ms = 400.0,
     });
     switch (state.viewer.ui.palette.lifecycle) {
         .closed => {},
@@ -285,12 +283,12 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
     );
     try std.testing.expect(state.viewer.animations.isActive(.title_overlay));
 
-    // Tick through close duration
+    // Tick through close spring settle
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
-        .delta_time_ms = state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS,
-        .now_ms = now + 100,
+        .delta_time_ms = 400.0,
+        .now_ms = now + 400,
     });
     try std.testing.expectApproxEqAbs(
         @as(f32, 0.0),
@@ -331,12 +329,12 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     );
     try std.testing.expect(state.viewer.animations.isActive(.snackbar));
 
-    // Tick through close duration
+    // Tick through close spring settle
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
-        .delta_time_ms = state_pkg.DURATION_SNACKBAR_CLOSE_MS,
-        .now_ms = now + 100,
+        .delta_time_ms = 400.0,
+        .now_ms = now + 400,
     });
     try std.testing.expectApproxEqAbs(
         @as(f32, 0.0),

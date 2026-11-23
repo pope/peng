@@ -219,12 +219,11 @@ fn handlePrecacheCompletedEvent(
         "Thumbnail pre-cache finished";
 
     state.viewer.ui.snackbar.show(msg, now_ms +| 2000);
-    const progress = state.viewer.animations.get(.snackbar);
-    const dur = @max(
-        state_pkg.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress),
-        30.0,
+    state.viewer.animations.startSpring(
+        .snackbar,
+        1.0,
+        state_pkg.SPRING_OMEGA_SNACKBAR,
     );
-    state.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
 }
 
 fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
