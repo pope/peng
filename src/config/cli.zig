@@ -84,15 +84,10 @@ pub const process_flags = [_]intents.CliOption{
     },
     .{
         .id = .test_mode,
-        .target = .main,
+        .target = .both,
         .long = "--test-mode",
-        .description = "Run in test configuration (disables high-DPI scaling)",
-    },
-    .{
-        .id = .update_baselines,
-        .target = .main,
-        .long = "--update-baselines",
-        .description = "Update golden baseline screenshots during tests",
+        .description = "Run in deterministic test configuration",
+        .hidden = true,
     },
     .{
         .id = .profile_startup,
@@ -161,10 +156,13 @@ fn formatOptionFlags(comptime opt: intents.CliOption) []const u8 {
 }
 
 /// Formats the options section for the specified target application.
-fn formatOptionsFor(comptime target: intents.CliTarget, comptime col_width: usize) []const u8 {
+fn formatOptionsFor(
+    comptime target: intents.CliTarget,
+    comptime col_width: usize,
+) []const u8 {
     var text: []const u8 = "";
     for (options) |opt| {
-        if (!opt.target.appliesTo(target)) continue;
+        if (!opt.target.appliesTo(target) or opt.hidden) continue;
         const flags_str = formatOptionFlags(opt);
         if (flags_str.len < col_width) {
             const col = padRight(flags_str, col_width);
@@ -306,7 +304,6 @@ pub const ParsedArgs = struct {
     arg_path: ?[]const u8 = null,
     default_scale: ZoomPreset = .full,
     test_mode: bool = false,
-    update_baselines: bool = false,
     profile_startup: bool = false,
     headless: bool = false,
     server_mode: bool = false,
@@ -340,6 +337,7 @@ pub const ParsedIpcArgs = union(enum) {
         socket_path: ?[]u8 = null,
         command: []u8,
         spawn: bool = false,
+        test_mode: bool = false,
 
         /// Frees allocated memory for the socket path and command string.
         pub fn deinit(self: *Send, gpa: std.mem.Allocator) void {
@@ -386,7 +384,6 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
 
     var default_scale: ZoomPreset = .full;
     var test_mode = false;
-    var update_baselines = false;
     var profile_startup = false;
     var headless = false;
     var server_mode = false;
@@ -414,7 +411,6 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .help => help = true,
                     .test_mode => test_mode = true,
                     .headless => headless = true,
-                    .update_baselines => update_baselines = true,
                     .profile_startup => profile_startup = true,
                     .server => {
                         server_mode = true;
@@ -528,7 +524,6 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .arg_path = arg_path,
         .default_scale = default_scale,
         .test_mode = test_mode,
-        .update_baselines = update_baselines,
         .profile_startup = profile_startup,
         .headless = headless,
         .server_mode = server_mode,
@@ -575,6 +570,7 @@ pub fn parseIpcArgsIterator(
     defer command_buf.deinit(gpa);
 
     var spawn = false;
+    var test_mode = false;
     var help = false;
     var end_of_options = false;
     var in_command = false;
@@ -589,6 +585,7 @@ pub fn parseIpcArgsIterator(
                 switch (opt.id) {
                     .help => help = true,
                     .spawn => spawn = true,
+                    .test_mode => test_mode = true,
                     .socket => {
                         const val = args_it.next() orelse {
                             if (!builtin.is_test) {
@@ -618,8 +615,6 @@ pub fn parseIpcArgsIterator(
                     .ipc,
                     .server,
                     .headless,
-                    .test_mode,
-                    .update_baselines,
                     .profile_startup,
                     .windowless,
                     .stack_raw_jpeg,
@@ -675,6 +670,7 @@ pub fn parseIpcArgsIterator(
             .socket_path = socket_path,
             .command = try command_buf.toOwnedSlice(gpa),
             .spawn = spawn,
+            .test_mode = test_mode,
         },
     };
 }
@@ -724,23 +720,23 @@ test "scale_modes_string and filter_modes_string contain enum variants" {
     try testing.expect(std.mem.find(u8, filter_str, "tiny_cnn") != null);
 }
 
-test "help_text and ipc_help_text contain registered options" {
+test "help_text and ipc_help_text contain visible options only" {
     const testing = std.testing;
     for (options) |opt| {
         if (opt.target.appliesTo(.main)) {
             const has_long = std.mem.find(u8, main_help_text, opt.long) != null;
-            try testing.expect(has_long);
+            try testing.expectEqual(!opt.hidden, has_long);
             if (opt.short) |s| {
                 const has_short = std.mem.find(u8, main_help_text, s) != null;
-                try testing.expect(has_short);
+                try testing.expectEqual(!opt.hidden, has_short);
             }
         }
         if (opt.target.appliesTo(.ipc)) {
             const has_long = std.mem.find(u8, ipc_help_text, opt.long) != null;
-            try testing.expect(has_long);
+            try testing.expectEqual(!opt.hidden, has_long);
             if (opt.short) |s| {
                 const has_short = std.mem.find(u8, ipc_help_text, s) != null;
-                try testing.expect(has_short);
+                try testing.expectEqual(!opt.hidden, has_short);
             }
         }
     }
@@ -947,6 +943,16 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
 
     {
         var it = SliceIterator{
+            .slice = &[_][]const u8{"--update-baselines"},
+        };
+        try testing.expectError(
+            error.UnknownFlag,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
             .slice = &[_][]const u8{"--scale"},
         };
         try testing.expectError(
@@ -1135,6 +1141,18 @@ test "parseIpcArgsIterator handles explicit/default socket and --spawn" {
             parsed.send.socket_path.?,
         );
         try testing.expectEqualStrings("quit\n", parsed.send.command);
+    }
+
+    // 3b. Hidden --test-mode flag alongside --spawn
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--spawn", "--test-mode", "open" },
+        };
+        var parsed = try parseIpcArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.send.spawn);
+        try testing.expect(parsed.send.test_mode);
+        try testing.expectEqualStrings("open\n", parsed.send.command);
     }
 
     // 4. Negative numeric arguments after command verb are preserved

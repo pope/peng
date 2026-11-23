@@ -404,7 +404,6 @@ fn verifyServerModeAndAutoSpawn(
         }
     }
     try env.put("XDG_RUNTIME_DIR", xdg_dir);
-    try env.put("PENG_SPAWN_HEADLESS", "1");
 
     const msg_bin = "./zig-out/bin/peng-msg";
     errdefer {
@@ -428,6 +427,7 @@ fn verifyServerModeAndAutoSpawn(
         const out = try runPengMsg(gpa, io, &env, &.{
             msg_bin,
             "--spawn",
+            "--test-mode",
             "open",
             "testfiles/images/001_1_1024x682.jpg",
         });

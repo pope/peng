@@ -41,7 +41,6 @@ pub const OptionId = enum {
     spawn,
     headless,
     test_mode,
-    update_baselines,
     profile_startup,
     windowless,
     stack_raw_jpeg,
@@ -62,6 +61,7 @@ pub const CliOption = struct {
     aliases: []const []const u8 = &.{},
     arg_name: ?[]const u8 = null,
     description: []const u8,
+    hidden: bool = false,
 
     /// Returns true if the given argument matches this option's short flag,
     /// long flag, or any alias.

@@ -145,8 +145,6 @@ Start the image viewer by passing a file or directory path:
 | `--no-blur`           | None                                                        | Disables background glassmorphism blur effect.           |
 | `--title`             | None                                                        | Shows floating title bar overlay on startup.             |
 | `--headless`          | None                                                        | Runs without opening an OS display window.               |
-| `--test-mode`         | None                                                        | Puts the window and event loop into test configuration.  |
-| `--update-baselines`  | None                                                        | Overwrites baseline golden screenshots.                  |
 | `--profile-startup`   | None                                                        | Logs cold-start milestone timings in milliseconds.       |
 | `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.  |
 | `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images. |

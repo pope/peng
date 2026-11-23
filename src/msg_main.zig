@@ -43,17 +43,12 @@ fn spawnServerProcess(
     environ_map: *const std.process.Environ.Map,
     argv0: ?[]const u8,
     socket_path: []const u8,
+    test_mode: bool,
 ) !void {
     const peng_bin = try resolvePengBinary(gpa, io, environ_map, argv0);
     defer gpa.free(peng_bin);
 
-    const headless_env = environ_map.get("PENG_SPAWN_HEADLESS");
-    const use_headless = if (headless_env) |val|
-        std.mem.eql(u8, std.mem.trim(u8, val, " \t\r\n"), "1")
-    else
-        false;
-
-    const argv_headless = [_][]const u8{
+    const argv_test = [_][]const u8{
         peng_bin,
         "--server",
         "--headless",
@@ -67,8 +62,8 @@ fn spawnServerProcess(
         "--socket",
         socket_path,
     };
-    const argv: []const []const u8 = if (use_headless)
-        &argv_headless
+    const argv: []const []const u8 = if (test_mode)
+        &argv_test
     else
         &argv_normal;
 
@@ -246,6 +241,7 @@ pub fn main(init: std.process.Init) !void {
                         init.environ_map,
                         argv0,
                         socket_path,
+                        send_args.test_mode,
                     ) catch |spawn_err| {
                         std.log.err(
                             "Failed to spawn peng server for socket {s}: {any}",
