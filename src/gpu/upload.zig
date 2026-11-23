@@ -294,7 +294,7 @@ fn stageSurfaceToRgba32(
         conversion_time_ms = state_pkg.durationToMs(
             start_conv.untilNow(io, .awake),
         );
-        std.log.info(
+        std.log.debug(
             "main-thread RGB24 conversion ({d}x{d}) took {d:.2}ms",
             .{ u_w, u_h, conversion_time_ms },
         );
@@ -311,7 +311,7 @@ fn stageSurfaceToRgba32(
         conversion_time_ms = state_pkg.durationToMs(
             start_conv.untilNow(io, .awake),
         );
-        std.log.info(
+        std.log.debug(
             "main-thread BGR24 conversion ({d}x{d}) took {d:.2}ms",
             .{ u_w, u_h, conversion_time_ms },
         );
