@@ -927,10 +927,10 @@ test "sysProcessAssetUploads - stamps and decays oversized staging buffer" {
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
 
-    // 3000x3000 RGBA32 (36,000,000 bytes > 32 MiB) expands transfer staging
+    // 5024x5024 RGBA32 (> 96 MiB) expands transfer staging past warm cap
     const huge_surf = sdl.Surface.create(
-        3000,
-        3000,
+        5024,
+        5024,
         sdl.PixelFormat.rgba32,
     ) orelse return;
     _ = try state.cache.appendSlot(allocator, id0, .{
@@ -939,9 +939,9 @@ test "sysProcessAssetUploads - stamps and decays oversized staging buffer" {
                 .loaded_cpu = .{
                     .cpu = .{
                         .surface = huge_surf,
-                        .w = 3000.0,
-                        .h = 3000.0,
-                        .size_bytes = 3000 * 3000 * 4,
+                        .w = 5024.0,
+                        .h = 5024.0,
+                        .size_bytes = 5024 * 5024 * 4,
                     },
                 },
             },
@@ -977,12 +977,13 @@ test "sysProcessAssetUploads - stamps and decays oversized staging buffer" {
         state.upload_staging.oversized_since_ms,
     );
 
-    // Frame 3: idle at 7999ms (4999ms elapsed) -> retained
+    // Frame 3: idle just before IDLE_DECAY_MS elapsed -> retained
+    const decay_ms = gpu.UploadStagingBuffer.IDLE_DECAY_MS;
     state.workers.active_decode_threads.store(0, .release);
     sysProcessAssetUploads(.{
         .state = &state,
         .frame_allocator = allocator,
-        .now_ms = 7999,
+        .now_ms = 3000 + decay_ms - 1,
     });
     try std.testing.expectEqual(
         @as(?u64, 3000),
@@ -993,11 +994,11 @@ test "sysProcessAssetUploads - stamps and decays oversized staging buffer" {
         .unallocated => return error.TestExpectedAllocatedTransfer,
     }
 
-    // Frame 4: idle at 8000ms (5000ms elapsed) -> decayed to .unallocated
+    // Frame 4: idle at IDLE_DECAY_MS elapsed -> decayed to .unallocated
     sysProcessAssetUploads(.{
         .state = &state,
         .frame_allocator = allocator,
-        .now_ms = 8000,
+        .now_ms = 3000 + decay_ms,
     });
     try std.testing.expectEqual(
         @as(?u64, null),

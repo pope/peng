@@ -20,6 +20,17 @@ pub const white_block_size: u32 = 4;
 /// Maximum number of distinct `(font_id, font_size)` fast-lookup pages.
 pub const max_font_size_pages: usize = 12;
 
+/// Initial capacity in bytes of the persistent glyph atlas upload staging
+/// buffer (64 KiB, sufficient for hundreds of tight R8 glyphs per frame).
+pub const initial_glyph_staging_bytes: usize = 64 * 1024;
+
+/// Sub-allocated upload slice inside `TextCache.glyph_staging`.
+pub const GlyphUploadSlice = struct {
+    buffer: sdl.gpu.TransferBuffer,
+    offset: usize,
+    cycle: bool,
+};
+
 /// Pixel coordinates of a packed region within the unified glyph atlas.
 pub const AtlasPos = struct {
     x: u32,
@@ -106,17 +117,88 @@ pub const FontSizePage = struct {
 /// Unified UI + per-glyph GPU texture atlas cache.
 pub const TextCache = struct {
     atlas_texture: ?sdl.gpu.Texture = null,
+    glyph_staging: sdl.gpu.RetainedTransferBuffer = .unallocated,
+    glyph_staging_offset: usize = 0,
     packer: ShelfPacker = .{},
     pages: [max_font_size_pages]FontSizePage = @splat(.{}),
     page_count: usize = 0,
     glyphs: std.AutoHashMapUnmanaged(GlyphCacheKey, GlyphCacheValue) = .empty,
 
-    /// Returns true if the cache currently holds an allocated GPU atlas or
-    /// cached glyph entries.
+    /// Returns true if the cache currently holds an allocated GPU atlas,
+    /// glyph staging buffer, or cached glyph entries.
     pub inline fn hasResources(self: *const TextCache) bool {
         return self.atlas_texture != null or
+            self.glyph_staging != .unallocated or
             self.page_count > 0 or
             self.glyphs.count() > 0;
+    }
+
+    /// Resets the per-frame bump offset for `glyph_staging` before recording
+    /// a new frame's copy pass.
+    pub inline fn beginFrameGlyphUploads(self: *TextCache) void {
+        self.glyph_staging_offset = 0;
+    }
+
+    /// Acquires a 4-byte-aligned sub-slice from the persistent glyph upload
+    /// staging buffer, avoiding per-glyph `vkAllocateMemory` churn. On the
+    /// first upload of a frame (`offset == 0`), returns `cycle = true` so
+    /// SDL3 GPU safely cycles any in-flight backing buffer; subsequent uploads
+    /// in the same frame share the same buffer with `cycle = false`.
+    pub fn acquireGlyphUpload(
+        self: *TextCache,
+        dev: sdl.gpu.Device,
+        size: usize,
+        frame_allocator: std.mem.Allocator,
+        temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    ) ?GlyphUploadSlice {
+        if (size == 0) return null;
+        const aligned_offset = std.mem.alignForward(
+            usize,
+            self.glyph_staging_offset,
+            4,
+        );
+        const growth_cap: usize = switch (self.glyph_staging) {
+            .allocated => |a| blk: {
+                if (aligned_offset + size <= a.capacity) {
+                    self.glyph_staging_offset = aligned_offset + size;
+                    return .{
+                        .buffer = a.handle,
+                        .offset = aligned_offset,
+                        .cycle = (aligned_offset == 0),
+                    };
+                }
+                temp_buffers.append(frame_allocator, a.handle) catch |err| {
+                    std.log.err(
+                        "Failed to defer old glyph staging buffer: {}",
+                        .{err},
+                    );
+                    dev.releaseTransferBuffer(a.handle);
+                };
+                self.glyph_staging = .unallocated;
+                break :blk a.capacity * 2;
+            },
+            .unallocated => initial_glyph_staging_bytes,
+        };
+
+        const next_cap = std.mem.alignForward(
+            usize,
+            @max(size, growth_cap),
+            4 * 1024,
+        );
+        const tb = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(next_cap),
+            .props = 0,
+        }) orelse return null;
+        self.glyph_staging = .{
+            .allocated = .{ .handle = tb, .capacity = next_cap },
+        };
+        self.glyph_staging_offset = size;
+        return .{
+            .buffer = tb,
+            .offset = 0,
+            .cycle = false,
+        };
     }
 
     /// Finds the read-only `FontSizePage` for `(font_id, font_size)` if cached.
@@ -175,7 +257,8 @@ pub const TextCache = struct {
         self.packer.reset();
     }
 
-    /// Releases the unified GPU atlas texture and frees glyph map allocations.
+    /// Releases the unified GPU atlas texture, glyph staging buffer, and frees
+    /// glyph map allocations.
     pub fn deinit(
         self: *TextCache,
         allocator: std.mem.Allocator,
@@ -185,8 +268,14 @@ pub const TextCache = struct {
             if (self.atlas_texture) |tex| {
                 dev.releaseTexture(tex);
             }
+            switch (self.glyph_staging) {
+                .unallocated => {},
+                .allocated => |a| dev.releaseTransferBuffer(a.handle),
+            }
         }
         self.atlas_texture = null;
+        self.glyph_staging = .unallocated;
+        self.glyph_staging_offset = 0;
         self.page_count = 0;
         self.packer.reset();
         self.glyphs.deinit(allocator);
@@ -711,4 +800,55 @@ test "FontMeasurer maps logical sizes to HiDPI physical TextCache pages" {
     try std.testing.expect(
         measurer.measurePrefix(0, 13.0, "A", std.math.nan(f32)) == null,
     );
+}
+
+test "TextCache.acquireGlyphUpload sub-allocates, cycles per frame, and grows" {
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    const alloc = std.testing.allocator;
+    var cache: TextCache = .{};
+    defer cache.deinit(alloc, dev);
+
+    var temp_bufs: std.ArrayList(sdl.gpu.TransferBuffer) = .empty;
+    defer {
+        for (temp_bufs.items) |tb| dev.releaseTransferBuffer(tb);
+        temp_bufs.deinit(alloc);
+    }
+
+    // Frame 1: first upload allocates initial buffer (cycle = false)
+    cache.beginFrameGlyphUploads();
+    const s1 = cache.acquireGlyphUpload(dev, 13, alloc, &temp_bufs).?;
+    try std.testing.expectEqual(@as(usize, 0), s1.offset);
+    try std.testing.expect(!s1.cycle);
+    try std.testing.expectEqual(@as(usize, 0), temp_bufs.items.len);
+
+    // Same frame: second upload reuses buffer at 4-byte aligned offset (16)
+    const s2 = cache.acquireGlyphUpload(dev, 20, alloc, &temp_bufs).?;
+    try std.testing.expectEqual(s1.buffer, s2.buffer);
+    try std.testing.expectEqual(@as(usize, 16), s2.offset);
+    try std.testing.expect(!s2.cycle);
+
+    // Frame 2: reset offset -> first upload cycles existing buffer
+    cache.beginFrameGlyphUploads();
+    const s3 = cache.acquireGlyphUpload(dev, 32, alloc, &temp_bufs).?;
+    try std.testing.expectEqual(s1.buffer, s3.buffer);
+    try std.testing.expectEqual(@as(usize, 0), s3.offset);
+    try std.testing.expect(s3.cycle);
+
+    // Overflow past initial_glyph_staging_bytes defers old buffer to temp_bufs
+    const s4 = cache.acquireGlyphUpload(
+        dev,
+        initial_glyph_staging_bytes,
+        alloc,
+        &temp_bufs,
+    ).?;
+    try std.testing.expectEqual(@as(usize, 0), s4.offset);
+    try std.testing.expect(!s4.cycle);
+    try std.testing.expectEqual(@as(usize, 1), temp_bufs.items.len);
+    try std.testing.expectEqual(s1.buffer, temp_bufs.items[0]);
 }

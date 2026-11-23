@@ -1763,26 +1763,38 @@ test "AppState.getWaitTimeoutMs schedules staging decay and clears when null" {
         state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
     );
 
-    // Near 5s deadline (4500ms elapsed -> 500ms remaining)
-    try std.testing.expectEqual(@as(?i32, 500), state.getWaitTimeoutMs(5500));
+    // Near IDLE_DECAY_MS deadline (500ms remaining)
+    const decay_ms = UploadStagingBuffer.IDLE_DECAY_MS;
+    const near_ms = 1000 + decay_ms - 500;
+    try std.testing.expectEqual(
+        @as(?i32, 500),
+        state.getWaitTimeoutMs(near_ms),
+    );
     try std.testing.expectEqual(
         input.EventWaitStrategy{ .wait_timeout_ms = 500 },
-        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 5500),
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, near_ms),
     );
 
     // Shorter transient title timeout wins via @min
     state.viewer.ui.overlays.title_display = .{
-        .transient = .{ .timeout_ms = 5650 },
+        .transient = .{ .timeout_ms = near_ms + 150 },
     };
-    try std.testing.expectEqual(@as(?i32, 150), state.getWaitTimeoutMs(5500));
+    try std.testing.expectEqual(
+        @as(?i32, 150),
+        state.getWaitTimeoutMs(near_ms),
+    );
 
     // Once decayed (oversized_since_ms == null) and title hidden -> indefinite
     state.viewer.ui.overlays.title_display = .hidden;
     state.upload_staging.oversized_since_ms = null;
-    try std.testing.expectEqual(@as(?i32, null), state.getWaitTimeoutMs(6000));
+    const after_ms = 1000 + decay_ms;
+    try std.testing.expectEqual(
+        @as(?i32, null),
+        state.getWaitTimeoutMs(after_ms),
+    );
     try std.testing.expectEqual(
         input.EventWaitStrategy.wait_indefinite,
-        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 6000),
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, after_ms),
     );
 }
 

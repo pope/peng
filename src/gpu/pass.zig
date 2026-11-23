@@ -201,35 +201,29 @@ pub fn ensureUiAtlasTexture(
 
     const wb_size = text_cache.white_block_size;
     const wb_bytes = wb_size * wb_size;
-    const transfer_buf = dev.createTransferBuffer(
-        &sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = wb_bytes,
-            .props = 0,
-        },
+    const upload = gpu_res.text_cache.acquireGlyphUpload(
+        dev,
+        wb_bytes,
+        build_ctx.frame_allocator,
+        build_ctx.temp_buffers,
     ) orelse {
         dev.releaseTexture(tex);
         return gpu_res.white_texture;
     };
-    build_ctx.temp_buffers.append(
-        build_ctx.frame_allocator,
-        transfer_buf,
-    ) catch {
-        dev.releaseTransferBuffer(transfer_buf);
-        dev.releaseTexture(tex);
-        return gpu_res.white_texture;
-    };
 
-    const mapped_raw = dev.mapTransferBuffer(transfer_buf, false) orelse {
+    const mapped_raw = dev.mapTransferBuffer(
+        upload.buffer,
+        upload.cycle,
+    ) orelse {
         dev.releaseTexture(tex);
         return gpu_res.white_texture;
     };
-    @memset(mapped_raw[0..wb_bytes], 255);
-    dev.unmapTransferBuffer(transfer_buf);
+    @memset(mapped_raw[upload.offset .. upload.offset + wb_bytes], 255);
+    dev.unmapTransferBuffer(upload.buffer);
 
     build_ctx.copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-        .transfer_buffer = transfer_buf,
-        .offset = 0,
+        .transfer_buffer = upload.buffer,
+        .offset = @intCast(upload.offset),
         .pixels_per_row = wb_size,
         .rows_per_layer = wb_size,
     }, &sdl.gpu.TextureRegion{
@@ -390,24 +384,19 @@ pub fn getOrRasterizeGlyph(
 
     const dev = gpu_res.device;
     const size: usize = @as(usize, alloc_w) * @as(usize, alloc_h);
-    const transfer_buf = dev.createTransferBuffer(
-        &sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = @intCast(size),
-            .props = 0,
-        },
-    ) orelse return null;
-    build_ctx.temp_buffers.append(
+    const upload = gpu_res.text_cache.acquireGlyphUpload(
+        dev,
+        size,
         build_ctx.frame_allocator,
-        transfer_buf,
-    ) catch |err| {
-        dev.releaseTransferBuffer(transfer_buf);
-        return err;
-    };
+        build_ctx.temp_buffers,
+    ) orelse return null;
 
-    const mapped_raw = dev.mapTransferBuffer(transfer_buf, false) orelse
-        return null;
-    @memset(mapped_raw[0..size], 0);
+    const mapped_raw = dev.mapTransferBuffer(
+        upload.buffer,
+        upload.cycle,
+    ) orelse return null;
+    const dst_slice = mapped_raw[upload.offset .. upload.offset + size];
+    @memset(dst_slice, 0);
 
     var row_y: u32 = 0;
     while (row_y < tight_h) : (row_y += 1) {
@@ -415,15 +404,15 @@ pub fn getOrRasterizeGlyph(
         const dst_row = @as(usize, row_y + 1) * @as(usize, alloc_w) + 1;
         var col_x: u32 = 0;
         while (col_x < tight_w) : (col_x += 1) {
-            mapped_raw[dst_row + col_x] =
+            dst_slice[dst_row + col_x] =
                 pixels[src_row + @as(usize, min_x + col_x) * 4 + 3];
         }
     }
-    dev.unmapTransferBuffer(transfer_buf);
+    dev.unmapTransferBuffer(upload.buffer);
 
     build_ctx.copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-        .transfer_buffer = transfer_buf,
-        .offset = 0,
+        .transfer_buffer = upload.buffer,
+        .offset = @intCast(upload.offset),
         .pixels_per_row = alloc_w,
         .rows_per_layer = alloc_h,
     }, &sdl.gpu.TextureRegion{
@@ -1155,6 +1144,8 @@ pub fn executeFrame(
             return error.GPUCopyPassFailed;
         };
         errdefer copy_pass.end();
+
+        gpu_res.text_cache.beginFrameGlyphUploads();
 
         var packet = try build_packet_fn(context, .{
             .gpu_res = gpu_res,
