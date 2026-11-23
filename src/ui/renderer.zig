@@ -85,6 +85,10 @@ pub const TextConfig = struct {
     color: Color,
     font_size: u16 = 13,
     font_id: u16 = 0,
+    /// When true, centers the string vertically inside `rect` using its actual
+    /// glyph ink bounds rather than the font's full line-box height (ideal for
+    /// pill badges, key caps, and buttons).
+    optical_center: bool = false,
 };
 
 /// Styled sub-slice span for multi-color text runs.
@@ -413,6 +417,7 @@ fn appendSingleTextRun(
     font_size: u16,
     raw_text: []const u8,
     color: Color,
+    optical_center: bool,
     current_scissor: ?Rect,
 ) !void {
     var text_slice = raw_text;
@@ -452,6 +457,8 @@ fn appendSingleTextRun(
         text_slice.len * 6,
     );
 
+    var min_ink_y: f32 = std.math.inf(f32);
+    var max_ink_y: f32 = -std.math.inf(f32);
     var byte_idx: usize = 0;
     while (byte_idx < text_slice.len) {
         const first_byte = text_slice[byte_idx];
@@ -489,6 +496,8 @@ fn appendSingleTextRun(
         };
 
         if (glyph.has_pixels) {
+            min_ink_y = @min(min_ink_y, glyph.offset_y);
+            max_ink_y = @max(max_ink_y, glyph.offset_y + glyph.h);
             const gx = world_x.* + glyph.offset_x;
             const gy = world_y + glyph.offset_y;
             const x1 = gx * inv_win_w - 1.0;
@@ -545,6 +554,16 @@ fn appendSingleTextRun(
     }
 
     const vert_count = @as(u32, @intCast(vertices.items.len)) - start_vert;
+    if (optical_center and vert_count > 0 and max_ink_y > min_ink_y) {
+        const ink_h = max_ink_y - min_ink_y;
+        const opt_y = rect.y + @round((rect.h - ink_h) * 0.5 - min_ink_y);
+        const dy_ndc = (world_y - opt_y) * inv_win_h;
+        if (dy_ndc != 0.0) {
+            for (vertices.items[start_vert..]) |*v| {
+                v.y += dy_ndc;
+            }
+        }
+    }
     if (vert_count > 0) {
         try addBatch(
             batches,
@@ -652,6 +671,7 @@ fn buildGeometryFromCommands(
                     config.font_size,
                     config.text,
                     config.color,
+                    config.optical_center,
                     current_scissor,
                 );
             },
@@ -668,6 +688,7 @@ fn buildGeometryFromCommands(
                         config.font_size,
                         span.text,
                         span.color,
+                        false,
                         current_scissor,
                     );
                 }

@@ -243,14 +243,15 @@ fn renderPillBadge(
     });
     try list.addText(.{
         .x = x + 6.0,
-        .y = y + 2.0,
+        .y = y,
         .w = dims.w,
-        .h = dims.h,
+        .h = bh,
     }, .{
         .text = text,
         .color = theme.withAlpha(color, progress),
         .font_size = 11,
         .font_id = 0,
+        .optical_center = true,
     });
     return bw;
 }

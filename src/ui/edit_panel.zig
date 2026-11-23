@@ -355,15 +355,17 @@ pub fn renderEditPanel(
     else
         withAlpha(theme.subtext1, progress);
     const reset_txt_dims = measureText("Reset", 0, 11, measure_data);
-    const reset_txt_rect = reset_btn_rect.centered(
-        reset_txt_dims.w,
-        reset_txt_dims.h,
-    );
-    try list.addText(reset_txt_rect, .{
+    try list.addText(.{
+        .x = reset_btn_rect.x + (reset_btn_rect.w - reset_txt_dims.w) * 0.5,
+        .y = reset_btn_rect.y,
+        .w = reset_txt_dims.w,
+        .h = reset_btn_rect.h,
+    }, .{
         .text = "Reset",
         .color = reset_col,
         .font_size = 11,
         .font_id = 0,
+        .optical_center = true,
     });
 
     _ = header_rect.cutRight(8.0);
@@ -398,15 +400,17 @@ pub fn renderEditPanel(
     else
         withAlpha(theme.subtext1, progress);
     const cmp_txt_dims = measureText(cmp_label, 0, 11, measure_data);
-    const cmp_txt_rect = cmp_btn_rect.centered(
-        cmp_txt_dims.w,
-        cmp_txt_dims.h,
-    );
-    try list.addText(cmp_txt_rect, .{
+    try list.addText(.{
+        .x = cmp_btn_rect.x + (cmp_btn_rect.w - cmp_txt_dims.w) * 0.5,
+        .y = cmp_btn_rect.y,
+        .w = cmp_txt_dims.w,
+        .h = cmp_btn_rect.h,
+    }, .{
         .text = cmp_label,
         .color = cmp_col,
         .font_size = 11,
         .font_id = 0,
+        .optical_center = true,
     });
 
     // Panel Title

@@ -139,14 +139,15 @@ fn renderBadge(
     });
     try list.addText(.{
         .x = x + 6.0,
-        .y = y + 2.0,
+        .y = y,
         .w = dims.w,
-        .h = dims.h,
+        .h = badge_h,
     }, .{
         .text = text,
         .color = withAlpha(text_color, progress),
         .font_size = 11,
         .font_id = 0,
+        .optical_center = true,
     });
     return badge_w;
 }
@@ -176,14 +177,15 @@ fn renderShortcutBadge(
     });
     try list.addText(.{
         .x = x + 8.0,
-        .y = y + 3.0,
+        .y = y,
         .w = dims.w,
-        .h = dims.h,
+        .h = badge_h,
     }, .{
         .text = text,
         .color = withAlpha(theme.subtext0, progress),
         .font_size = 11,
         .font_id = 0,
+        .optical_center = true,
     });
     return badge_w;
 }
@@ -1390,27 +1392,29 @@ fn renderDirectoryLegend(
         });
         try list.addText(.{
             .x = key_badge_rect.x + 4.0,
-            .y = key_badge_rect.y + 1.0,
+            .y = key_badge_rect.y,
             .w = key_w,
-            .h = 12.0,
+            .h = key_badge_h,
         }, .{
             .text = item.key,
             .color = withAlpha(theme.mauve, progress),
             .font_size = 10,
             .font_id = 0,
+            .optical_center = true,
         });
 
         const label_x = key_badge_rect.x + key_badge_w + 5.0;
         try list.addText(.{
             .x = label_x,
-            .y = pill_y + 3.0,
+            .y = pill_y,
             .w = label_widths[i],
-            .h = 14.0,
+            .h = pill_h,
         }, .{
             .text = item.label,
             .color = withAlpha(theme.subtext0, progress),
             .font_size = 11,
             .font_id = 0,
+            .optical_center = true,
         });
 
         cur_x += item_w + 6.0;
