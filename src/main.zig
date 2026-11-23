@@ -19,20 +19,19 @@ const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
 
 const LibViewer = struct {
-    const lib_name = switch (builtin.target.os.tag) {
-        .macos => "zig-out/lib/libviewer.dylib",
-        .linux => "zig-out/lib/libviewer.so",
+    const lib_ext = switch (builtin.target.os.tag) {
+        .macos => "dylib",
+        .linux => "so",
         else => @panic("unsupported for hot reloading"),
     };
-    const lib_temp_name = switch (builtin.target.os.tag) {
-        .macos => "zig-out/lib/libviewer-temp.dylib",
-        .linux => "zig-out/lib/libviewer-temp.so",
-        else => @panic("unsupported for hot reloading"),
-    };
+    const lib_name = "zig-out/lib/libviewer." ++ lib_ext;
 
     handle: std.DynLib,
     last_mod_time: std.Io.Timestamp,
     is_valid: bool = true,
+    generation: u64 = 0,
+    temp_path_buf: [64]u8 = undefined,
+    temp_path_len: usize = 0,
     load_assets: *const fn () callconv(.c) void,
     unload_assets: *const fn () callconv(.c) void,
     update: *const fn (
@@ -47,29 +46,65 @@ const LibViewer = struct {
         last_time: *u64,
     ) callconv(.c) void,
 
+    fn tempPath(self: *const LibViewer) []const u8 {
+        return self.temp_path_buf[0..self.temp_path_len];
+    }
+
+    fn deleteTempPath(io: std.Io, path: []const u8) void {
+        if (path.len == 0) return;
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| {
+            std.log.warn(
+                "Failed to delete temp library {s}: {}",
+                .{ path, err },
+            );
+        };
+    }
+
     fn init(io: std.Io) !LibViewer {
+        return initGeneration(io, 0);
+    }
+
+    fn initGeneration(io: std.Io, generation: u64) !LibViewer {
         const cwd = std.Io.Dir.cwd();
 
         const f = try cwd.openFile(io, lib_name, .{});
         defer f.close(io);
         const stat = try f.stat(io);
 
+        var temp_path_buf: [64]u8 = undefined;
+        const temp_path = std.mem.print(
+            &temp_path_buf,
+            "zig-out/lib/libviewer-temp-{d}.{s}",
+            .{ generation, lib_ext },
+        ) catch unreachable;
+
+        cwd.deleteFile(io, temp_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => std.log.warn(
+                "Failed to remove stale temp library {s}: {}",
+                .{ temp_path, err },
+            ),
+        };
         try std.Io.Dir.copyFile(
             cwd,
             lib_name,
             cwd,
-            lib_temp_name,
+            temp_path,
             io,
             .{},
         );
+        errdefer deleteTempPath(io, temp_path);
 
-        var handle = try std.DynLib.open(lib_temp_name);
+        var handle = try std.DynLib.open(temp_path);
         errdefer handle.close();
 
         return .{
             .handle = handle,
             .last_mod_time = stat.mtime,
             .is_valid = true,
+            .generation = generation,
+            .temp_path_buf = temp_path_buf,
+            .temp_path_len = temp_path.len,
             .load_assets = handle.lookup(
                 @FieldType(LibViewer, "load_assets"),
                 "viewer_load_assets",
@@ -86,18 +121,13 @@ const LibViewer = struct {
     }
 
     fn deinit(self: *LibViewer, io: std.Io) void {
-        const cwd = std.Io.Dir.cwd();
         if (self.is_valid) {
             self.unload_assets();
             self.handle.close();
             self.is_valid = false;
         }
-        cwd.deleteFile(io, lib_temp_name) catch |err| {
-            std.log.warn(
-                "Failed to delete temp library {s}: {}",
-                .{ lib_temp_name, err },
-            );
-        };
+        deleteTempPath(io, self.tempPath());
+        self.temp_path_len = 0;
     }
 
     fn check_outdated(self: *LibViewer, io: std.Io) !bool {
@@ -110,13 +140,11 @@ const LibViewer = struct {
     }
 
     fn updateLib(self: *LibViewer, io: std.Io) !void {
-        if (self.is_valid) {
-            self.unload_assets();
-            self.handle.close();
-            self.is_valid = false;
-        }
+        self.deinit(io);
 
-        const new_viewer = try LibViewer.init(io);
+        const next_gen = self.generation + 1;
+        self.generation = next_gen;
+        const new_viewer = try LibViewer.initGeneration(io, next_gen);
         self.* = new_viewer;
         self.load_assets();
     }
@@ -903,14 +931,31 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-test "hot-reload LibViewer init" {
+test "hot-reload LibViewer init and reload" {
     if (!build_options.hot_reload) return error.SkipZigTest;
 
     const io = std.testing.io;
+    const cwd = std.Io.Dir.cwd();
     var lib_viewer: LibViewer = try .init(io);
     defer lib_viewer.deinit(io);
 
+    var first_buf: [64]u8 = undefined;
+    const first_path = first_buf[0..lib_viewer.temp_path_len];
+    @memcpy(first_path, lib_viewer.tempPath());
+
     try std.testing.expect(lib_viewer.is_valid);
+    try std.testing.expectEqual(@as(u64, 0), lib_viewer.generation);
+    try cwd.access(io, first_path, .{});
     lib_viewer.load_assets();
     try std.testing.expect(!try lib_viewer.check_outdated(io));
+
+    try lib_viewer.updateLib(io);
+    try std.testing.expect(lib_viewer.is_valid);
+    try std.testing.expectEqual(@as(u64, 1), lib_viewer.generation);
+    try std.testing.expect(!std.mem.eql(u8, first_path, lib_viewer.tempPath()));
+    try std.testing.expectError(
+        error.FileNotFound,
+        cwd.access(io, first_path, .{}),
+    );
+    try cwd.access(io, lib_viewer.tempPath(), .{});
 }
