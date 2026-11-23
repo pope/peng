@@ -536,6 +536,7 @@ pub const RenderResources = struct {
     swapchain_format: sdl.gpu.TextureFormat = .rgba8_unorm,
     image_pipeline: LazyPipeline(sdl.gpu.Pipeline) = .uninitialized,
     blit_pipeline: sdl.gpu.Pipeline,
+    glyph_pipeline: sdl.gpu.Pipeline,
     sdf_pipeline: sdl.gpu.Pipeline,
     fullscreen_vertex_buffer: sdl.gpu.Buffer,
     unpack_compute_pipeline: LazyPipeline(sdl.gpu.ComputePipeline) =
@@ -852,6 +853,7 @@ pub const RenderResources = struct {
             self.device.releasePipeline(pipe);
         }
         self.device.releasePipeline(self.blit_pipeline);
+        self.device.releasePipeline(self.glyph_pipeline);
         self.device.releasePipeline(self.sdf_pipeline);
         if (self.unpack_compute_pipeline.get()) |pipe| {
             self.device.releaseComputePipeline(pipe);
@@ -1210,6 +1212,34 @@ pub fn initGpuResources(
     };
     errdefer dev.releasePipeline(blit_pipeline);
 
+    // Create R8 glyph atlas Graphics Pipeline
+    const glyph_frag_spv = @embedFile("shaders/glyph.frag.spv");
+    const glyph_frag_msl = @embedFile("shaders/glyph.frag.msl");
+    const glyph_frag = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .fragment,
+        glyph_frag_spv,
+        glyph_frag_msl,
+        1,
+        0,
+    );
+    defer dev.releaseShader(glyph_frag);
+
+    const glyph_pipeline_info = makeQuadPipelineInfo(
+        vert_shader,
+        glyph_frag,
+        &color_targets,
+    );
+    const glyph_pipeline = dev.createPipeline(&glyph_pipeline_info) orelse {
+        std.log.err(
+            "Failed to create glyph graphics pipeline: {s}",
+            .{sdl.getError()},
+        );
+        return error.PipelineCreationFailed;
+    };
+    errdefer dev.releasePipeline(glyph_pipeline);
+
     // Create instanced SDF UI Graphics Pipeline
     const sdf_vert_spv = @embedFile("shaders/sdf.vert.spv");
     const sdf_vert_msl = @embedFile("shaders/sdf.vert.msl");
@@ -1319,6 +1349,7 @@ pub fn initGpuResources(
         .swapchain_format = target_format,
         .image_pipeline = .uninitialized,
         .blit_pipeline = blit_pipeline,
+        .glyph_pipeline = glyph_pipeline,
         .sdf_pipeline = sdf_pipeline,
         .blur = .uninitialized,
         .fullscreen_vertex_buffer = fullscreen_vertex_buffer,
@@ -1331,6 +1362,7 @@ pub fn initGpuResources(
 
 fn getTextureFormatElementSize(format: sdl.gpu.TextureFormat) u32 {
     return switch (format) {
+        .r8_unorm => 1,
         .rgba8_unorm, .bgra8_unorm, .bgra8_unorm_srgb, .rgba8_unorm_srgb => 4,
         .r16g16b16a16_float => 8,
         .r32g32b32a32_float => 16,

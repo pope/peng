@@ -17,6 +17,7 @@ const ViewportParams = state.ViewportParams;
 /// adjustment shader uniforms apply.
 pub const MaterialType = enum {
     ui_element,
+    glyph,
     image_viewer,
     blurred_surface,
     sdf_ui,

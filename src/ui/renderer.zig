@@ -443,8 +443,7 @@ fn appendSingleTextRun(
     const world_y = rect.y + @max(0.0, offset_y);
     const win_dims = build_ctx.physical_dims;
     const inv_win_w = 2.0 / win_dims.w;
-    const ndc_y1 = 1.0 - (world_y / win_dims.h) * 2.0;
-    const ndc_y2 = 1.0 - ((world_y + line_h) / win_dims.h) * 2.0;
+    const inv_win_h = 2.0 / win_dims.h;
 
     const vert_color = packRgba255(color);
     const start_vert = @as(u32, @intCast(vertices.items.len));
@@ -491,24 +490,23 @@ fn appendSingleTextRun(
 
         if (glyph.has_pixels) {
             const gx = world_x.* + glyph.offset_x;
+            const gy = world_y + glyph.offset_y;
             const x1 = gx * inv_win_w - 1.0;
             const x2 = (gx + glyph.w) * inv_win_w - 1.0;
-            const y2 = if (glyph.h == line_h)
-                ndc_y2
-            else
-                1.0 - ((world_y + glyph.h) / win_dims.h) * 2.0;
+            const y1 = 1.0 - gy * inv_win_h;
+            const y2 = 1.0 - (gy + glyph.h) * inv_win_h;
 
             vertices.addManyAsArrayAssumeCapacity(6).* = .{
                 .{
                     .x = x1,
-                    .y = ndc_y1,
+                    .y = y1,
                     .u = glyph.u1,
                     .v = glyph.v1,
                     .color = vert_color,
                 },
                 .{
                     .x = x2,
-                    .y = ndc_y1,
+                    .y = y1,
                     .u = glyph.u2,
                     .v = glyph.v1,
                     .color = vert_color,
@@ -522,7 +520,7 @@ fn appendSingleTextRun(
                 },
                 .{
                     .x = x2,
-                    .y = ndc_y1,
+                    .y = y1,
                     .u = glyph.u2,
                     .v = glyph.v1,
                     .color = vert_color,
@@ -554,7 +552,7 @@ fn appendSingleTextRun(
             start_vert,
             vert_count,
             build_ctx.gpu_res.uiTexture(),
-            .ui_element,
+            .glyph,
             current_scissor,
         );
     }
@@ -746,7 +744,7 @@ fn buildGeometryFromCommands(
                         start_v,
                         6,
                         build_ctx.gpu_res.uiTexture(),
-                        .ui_element,
+                        .glyph,
                         current_scissor,
                     );
                 }

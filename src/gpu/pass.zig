@@ -187,7 +187,7 @@ pub fn ensureUiAtlasTexture(
     const dev = gpu_res.device;
     const tex_info = sdl.gpu.TextureCreateInfo{
         .type = .type_2d,
-        .format = .rgba8_unorm,
+        .format = .r8_unorm,
         .usage = sdl.gpu.TextureUsage.sampler,
         .width = text_cache.atlas_size,
         .height = text_cache.atlas_size,
@@ -200,7 +200,7 @@ pub fn ensureUiAtlasTexture(
         return gpu_res.white_texture;
 
     const wb_size = text_cache.white_block_size;
-    const wb_bytes = wb_size * wb_size * 4;
+    const wb_bytes = wb_size * wb_size;
     const transfer_buf = dev.createTransferBuffer(
         &sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
@@ -345,8 +345,40 @@ pub fn getOrRasterizeGlyph(
         return val;
     }
 
-    const alloc_w = surf_w + 2;
-    const alloc_h = surf_h + 2;
+    // Scan alpha channel to crop to tight ink bounds (eliminates empty
+    // ascender/descender padding inside the R8 glyph atlas).
+    const pitch: usize = @intCast(converted.pitch());
+    const pixels = converted.pixels();
+    var min_x: u32 = surf_w;
+    var max_x: u32 = 0;
+    var min_y: u32 = surf_h;
+    var max_y: u32 = 0;
+    var scan_y: u32 = 0;
+    while (scan_y < surf_h) : (scan_y += 1) {
+        const row_base = @as(usize, scan_y) * pitch;
+        var scan_x: u32 = 0;
+        while (scan_x < surf_w) : (scan_x += 1) {
+            if (pixels[row_base + @as(usize, scan_x) * 4 + 3] != 0) {
+                min_x = @min(min_x, scan_x);
+                max_x = @max(max_x, scan_x);
+                min_y = @min(min_y, scan_y);
+                max_y = @max(max_y, scan_y);
+            }
+        }
+    }
+    if (min_x > max_x or min_y > max_y) {
+        const val = GlyphCacheValue{
+            .advance = advance,
+            .has_pixels = false,
+        };
+        try gpu_res.text_cache.putGlyph(build_ctx.gpa_allocator, key, val);
+        return val;
+    }
+
+    const tight_w = max_x - min_x + 1;
+    const tight_h = max_y - min_y + 1;
+    const alloc_w = tight_w + 2;
+    const alloc_h = tight_h + 2;
     const pos = gpu_res.text_cache.packer.allocate(alloc_w, alloc_h) orelse
         blk: {
             gpu_res.text_cache.resetAtlas();
@@ -357,7 +389,7 @@ pub fn getOrRasterizeGlyph(
         };
 
     const dev = gpu_res.device;
-    const size: usize = @as(usize, alloc_w) * @as(usize, alloc_h) * 4;
+    const size: usize = @as(usize, alloc_w) * @as(usize, alloc_h);
     const transfer_buf = dev.createTransferBuffer(
         &sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
@@ -375,21 +407,17 @@ pub fn getOrRasterizeGlyph(
 
     const mapped_raw = dev.mapTransferBuffer(transfer_buf, false) orelse
         return null;
-    const mapped_u32: [*]u32 = @ptrCast(@alignCast(mapped_raw));
-    @memset(mapped_u32[0 .. size / 4], 0x00FFFFFF);
+    @memset(mapped_raw[0..size], 0);
 
-    const src_row_bytes: usize = @as(usize, surf_w) * 4;
-    const dst_row_bytes: usize = @as(usize, alloc_w) * 4;
-    const pitch: usize = @intCast(converted.pitch());
-
-    var row_y: usize = 0;
-    while (row_y < surf_h) : (row_y += 1) {
-        const src_start = row_y * pitch;
-        const src_row =
-            converted.pixels()[src_start .. src_start + src_row_bytes];
-        const dst_offset = (row_y + 1) * dst_row_bytes + 4;
-        const dst_row = mapped_raw[dst_offset..][0..src_row_bytes];
-        @memcpy(dst_row, src_row);
+    var row_y: u32 = 0;
+    while (row_y < tight_h) : (row_y += 1) {
+        const src_row = @as(usize, min_y + row_y) * pitch;
+        const dst_row = @as(usize, row_y + 1) * @as(usize, alloc_w) + 1;
+        var col_x: u32 = 0;
+        while (col_x < tight_w) : (col_x += 1) {
+            mapped_raw[dst_row + col_x] =
+                pixels[src_row + @as(usize, min_x + col_x) * 4 + 3];
+        }
     }
     dev.unmapTransferBuffer(transfer_buf);
 
@@ -413,11 +441,12 @@ pub fn getOrRasterizeGlyph(
     const val = GlyphCacheValue{
         .u1 = @as(f32, @floatFromInt(inner_x)) / atlas_f,
         .v1 = @as(f32, @floatFromInt(inner_y)) / atlas_f,
-        .u2 = @as(f32, @floatFromInt(inner_x + surf_w)) / atlas_f,
-        .v2 = @as(f32, @floatFromInt(inner_y + surf_h)) / atlas_f,
-        .w = @floatFromInt(surf_w),
-        .h = @floatFromInt(surf_h),
-        .offset_x = offset_x,
+        .u2 = @as(f32, @floatFromInt(inner_x + tight_w)) / atlas_f,
+        .v2 = @as(f32, @floatFromInt(inner_y + tight_h)) / atlas_f,
+        .w = @floatFromInt(tight_w),
+        .h = @floatFromInt(tight_h),
+        .offset_x = offset_x + @as(f32, @floatFromInt(min_x)),
+        .offset_y = @floatFromInt(min_y),
         .advance = advance,
         .has_pixels = true,
     };
@@ -556,7 +585,8 @@ fn drawBatches(
             render_pass.setScissor(0, 0, win_w, win_h);
         }
 
-        const is_image = switch (batch.material) {
+        const VertexBatchKind = enum { image, blit, glyph };
+        const batch_kind: VertexBatchKind = switch (batch.material) {
             .sdf_ui, .blurred_surface => {
                 if (last_pipeline == null or
                     last_pipeline.?.ptr != gpu.sdf_pipeline.ptr)
@@ -599,9 +629,11 @@ fn drawBatches(
                 );
                 continue;
             },
-            .image_viewer => true,
-            .ui_element => false,
+            .image_viewer => .image,
+            .ui_element => .blit,
+            .glyph => .glyph,
         };
+        const is_image = (batch_kind == .image);
         const show_original = view_params.compare_original;
         const apply_adj = !show_original and view_params.edits.hasEdits();
         const scale_mode = view_params.getShaderScaleModeInt();
@@ -616,7 +648,10 @@ fn drawBatches(
         else
             null;
         const use_image_pipeline = (active_image_pipe != null);
-        const pipeline = active_image_pipe orelse gpu.blit_pipeline;
+        const pipeline = active_image_pipe orelse switch (batch_kind) {
+            .glyph => gpu.glyph_pipeline,
+            .image, .blit => gpu.blit_pipeline,
+        };
 
         if (last_pipeline == null or last_pipeline.?.ptr != pipeline.ptr) {
             render_pass.bindPipeline(pipeline);

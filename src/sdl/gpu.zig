@@ -4,6 +4,7 @@ const std = @import("std");
 const c = c_pkg.c;
 
 pub const TextureFormat = enum(c_int) {
+    r8_unorm = c.SDL_GPU_TEXTUREFORMAT_R8_UNORM,
     rgba8_unorm = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
     bgra8_unorm = c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
     bgra8_unorm_srgb = c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,

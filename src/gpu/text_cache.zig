@@ -1,10 +1,9 @@
 //! Unified UI and Per-Glyph Font Atlas Cache
 //!
 //! Provides shelf bin-packing, direct ASCII page tables, and hash-based lookup
-//! for rasterized codepoints inside a shared `1024x1024` `RGBA8_UNORM` GPU
-//! texture atlas. The top-left `4x4` block at `(0, 0)` is reserved for opaque
-//! white `(255, 255, 255, 255)` so solid UI rectangles, borders, and text share
-//! a single bound texture.
+//! for tight ink-box rasterized codepoints inside a shared `1024x1024`
+//! `R8_UNORM` GPU texture atlas. The top-left `4x4` block at `(0, 0)` is
+//! reserved for opaque coverage (`255`).
 
 const geom = @import("geom");
 const sdl = @import("sdl");
@@ -88,6 +87,7 @@ pub const GlyphCacheValue = struct {
     w: f32 = 0.0,
     h: f32 = 0.0,
     offset_x: f32 = 0.0,
+    offset_y: f32 = 0.0,
     advance: f32 = 0.0,
     has_pixels: bool = false,
     cached: bool = false,
