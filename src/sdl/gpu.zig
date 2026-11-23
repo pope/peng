@@ -660,6 +660,20 @@ pub const CommandBuffer = struct {
         return c.SDL_CancelGPUCommandBuffer(self.ptr);
     }
 
+    /// Pushes immediate uniform data to vertex shader uniform slot.
+    pub fn pushVertexUniform(
+        self: CommandBuffer,
+        slot: u32,
+        data: []const u8,
+    ) void {
+        c.SDL_PushGPUVertexUniformData(
+            self.ptr,
+            slot,
+            data.ptr,
+            @intCast(data.len),
+        );
+    }
+
     /// Pushes immediate uniform data to fragment shader uniform slot.
     pub fn pushFragmentUniform(self: CommandBuffer, slot: u32, data: []const u8) void {
         c.SDL_PushGPUFragmentUniformData(self.ptr, slot, data.ptr, @intCast(data.len));

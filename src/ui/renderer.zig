@@ -11,7 +11,6 @@ const ElementTag = state.ElementTag;
 const ensureFontSizePage = gpu_pkg.pass.ensureFontSizePage;
 const ensureUiAtlasTexture = gpu_pkg.pass.ensureUiAtlasTexture;
 const FRect = geom.FRect;
-const geometry = gpu_pkg.geometry;
 const getOrRasterizeGlyph = gpu_pkg.pass.getOrRasterizeGlyph;
 const GlyphCacheValue = gpu_pkg.text_cache.GlyphCacheValue;
 const intersectScissor = gpu_pkg.pass.intersectScissor;
@@ -24,6 +23,7 @@ const render_image = gpu_pkg.render_image;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
 const RenderResources = gpu_pkg.graphics.RenderResources;
 const TextureRef = gpu_pkg.TextureRef;
+const UiQuadInstance = gpu_pkg.geometry.UiQuadInstance;
 const UvRect = geom.UvRect;
 const Vertex = gpu_pkg.geometry.Vertex;
 const ViewportParams = state.ViewportParams;
@@ -275,349 +275,113 @@ pub fn hasBlurredSurface(r_commands: []const UiCommand) bool {
 }
 
 fn appendRectangleCommand(
-    vertices: *std.ArrayList(Vertex),
+    instances: *std.ArrayList(UiQuadInstance),
     batches: *std.ArrayList(BatchItem),
     allocator: std.mem.Allocator,
     rect: FRect,
     config: RectConfig,
     scale_x: f32,
-    win_dims: PhysicalDims,
     gpu_res: *const RenderResources,
     scissor: ?Rect,
 ) !void {
+    if (rect.w <= 0.0 or rect.h <= 0.0) return;
+
     const active_blur_tex = if (config.tag == .blurred_surface)
         gpu_res.blur.getBlurTexture()
     else
         null;
     const is_blurred = active_blur_tex != null;
 
-    const start = @as(u32, @intCast(vertices.items.len));
+    const min_radius = @min(rect.w, rect.h) * 0.5;
+    const start = @as(u32, @intCast(instances.items.len));
+    try instances.append(allocator, .{
+        .rect = .{ rect.x, rect.y, rect.w, rect.h },
+        .radii = .{
+            @min(config.corner_radius.top_right * scale_x, min_radius),
+            @min(config.corner_radius.bottom_right * scale_x, min_radius),
+            @min(config.corner_radius.top_left * scale_x, min_radius),
+            @min(config.corner_radius.bottom_left * scale_x, min_radius),
+        },
+        .fill_color = packRgba255(config.background_color),
+        .flags = if (is_blurred) UiQuadInstance.flag_blur else 0.0,
+    });
 
-    const corner_radius = config.corner_radius.top_left * scale_x;
-    if (corner_radius > 0) {
-        try geometry.renderFillRoundedRect(
-            vertices,
+    if (active_blur_tex) |btex| {
+        try addBatch(
+            batches,
             allocator,
-            rect,
-            corner_radius,
-            config.background_color,
-            win_dims,
-            is_blurred,
+            start,
+            1,
+            btex,
+            .blurred_surface,
+            scissor,
         );
     } else {
-        try geometry.appendRectQuad(
-            vertices,
+        try addBatch(
+            batches,
             allocator,
-            rect,
-            config.background_color,
-            win_dims,
-            is_blurred,
+            start,
+            1,
+            gpu_res.uiTexture(),
+            .sdf_ui,
+            scissor,
         );
-    }
-
-    const count = @as(u32, @intCast(vertices.items.len)) - start;
-    if (count > 0) {
-        if (active_blur_tex) |btex| {
-            try addBatch(
-                batches,
-                allocator,
-                start,
-                count,
-                btex,
-                .blurred_surface,
-                scissor,
-            );
-        } else {
-            try addBatch(
-                batches,
-                allocator,
-                start,
-                count,
-                gpu_res.uiTexture(),
-                .ui_element,
-                scissor,
-            );
-        }
     }
 }
 
 fn appendBorderCommand(
-    vertices: *std.ArrayList(Vertex),
+    instances: *std.ArrayList(UiQuadInstance),
     batches: *std.ArrayList(BatchItem),
     allocator: std.mem.Allocator,
     rect: FRect,
     config: BorderConfig,
     scale_x: f32,
-    win_dims: PhysicalDims,
     gpu_res: *const RenderResources,
     scissor: ?Rect,
 ) !void {
-    const min_radius = @min(rect.w, rect.h) / 2.0;
-    const clamped_radii = struct {
-        top_left: f32,
-        top_right: f32,
-        bottom_left: f32,
-        bottom_right: f32,
-    }{
-        .top_left = @min(config.corner_radius.top_left * scale_x, min_radius),
-        .top_right = @min(config.corner_radius.top_right * scale_x, min_radius),
-        .bottom_left = @min(
-            config.corner_radius.bottom_left * scale_x,
-            min_radius,
-        ),
-        .bottom_right = @min(
-            config.corner_radius.bottom_right * scale_x,
-            min_radius,
-        ),
-    };
+    if (rect.w <= 0.0 or rect.h <= 0.0) return;
 
-    const is_dashed = (config.tag == .drop_zone_box);
-
-    const r = config.color[0] / 255.0;
-    const g = config.color[1] / 255.0;
-    const b = config.color[2] / 255.0;
-    const a = config.color[3] / 255.0;
-
-    const start_batch = @as(u32, @intCast(vertices.items.len));
-
+    const min_radius = @min(rect.w, rect.h) * 0.5;
     const border_left = @as(f32, @floatFromInt(config.width.left)) * scale_x;
     const border_right = @as(f32, @floatFromInt(config.width.right)) * scale_x;
     const border_top = @as(f32, @floatFromInt(config.width.top)) * scale_x;
     const border_bottom =
         @as(f32, @floatFromInt(config.width.bottom)) * scale_x;
-
-    if (border_left > 0) {
-        const starting_y = rect.y + clamped_radii.top_left;
-        const length =
-            rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
-        if (is_dashed) {
-            try geometry.drawDashedLineV(
-                vertices,
-                allocator,
-                rect.x,
-                starting_y,
-                starting_y + length,
-                border_left,
-                config.color,
-                8.0 * scale_x,
-                6.0 * scale_x,
-                win_dims,
-            );
-        } else {
-            const line = FRect{
-                .x = rect.x,
-                .y = starting_y,
-                .w = border_left,
-                .h = length,
-            };
-            try geometry.appendRectQuad(
-                vertices,
-                allocator,
-                line,
-                config.color,
-                win_dims,
-                false,
-            );
-        }
-    }
-    if (border_right > 0) {
-        const starting_x = rect.x + rect.w - border_right;
-        const starting_y = rect.y + clamped_radii.top_right;
-        const length =
-            rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
-        if (is_dashed) {
-            try geometry.drawDashedLineV(
-                vertices,
-                allocator,
-                starting_x,
-                starting_y,
-                starting_y + length,
-                border_right,
-                config.color,
-                8.0 * scale_x,
-                6.0 * scale_x,
-                win_dims,
-            );
-        } else {
-            const line = FRect{
-                .x = starting_x,
-                .y = starting_y,
-                .w = border_right,
-                .h = length,
-            };
-            try geometry.appendRectQuad(
-                vertices,
-                allocator,
-                line,
-                config.color,
-                win_dims,
-                false,
-            );
-        }
-    }
-    if (border_top > 0) {
-        const starting_x = rect.x + clamped_radii.top_left;
-        const length =
-            rect.w - clamped_radii.top_left - clamped_radii.top_right;
-        if (is_dashed) {
-            try geometry.drawDashedLineH(
-                vertices,
-                allocator,
-                starting_x,
-                starting_x + length,
-                rect.y,
-                border_top,
-                config.color,
-                8.0 * scale_x,
-                6.0 * scale_x,
-                win_dims,
-            );
-        } else {
-            const line = FRect{
-                .x = starting_x,
-                .y = rect.y,
-                .w = length,
-                .h = border_top,
-            };
-            try geometry.appendRectQuad(
-                vertices,
-                allocator,
-                line,
-                config.color,
-                win_dims,
-                false,
-            );
-        }
-    }
-    if (border_bottom > 0) {
-        const starting_x = rect.x + clamped_radii.bottom_left;
-        const starting_y = rect.y + rect.h - border_bottom;
-        const length =
-            rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
-        if (is_dashed) {
-            try geometry.drawDashedLineH(
-                vertices,
-                allocator,
-                starting_x,
-                starting_x + length,
-                starting_y,
-                border_bottom,
-                config.color,
-                8.0 * scale_x,
-                6.0 * scale_x,
-                win_dims,
-            );
-        } else {
-            const line = FRect{
-                .x = starting_x,
-                .y = starting_y,
-                .w = length,
-                .h = border_bottom,
-            };
-            try geometry.appendRectQuad(
-                vertices,
-                allocator,
-                line,
-                config.color,
-                win_dims,
-                false,
-            );
-        }
+    if (border_left <= 0.0 and border_right <= 0.0 and
+        border_top <= 0.0 and border_bottom <= 0.0)
+    {
+        return;
     }
 
-    if (clamped_radii.top_left > 0) {
-        try geometry.renderArc(
-            vertices,
-            .{
-                .x = rect.x + clamped_radii.top_left,
-                .y = rect.y + clamped_radii.top_left,
-            },
-            clamped_radii.top_left,
-            180.0,
-            270.0,
+    const flags = UiQuadInstance.flag_border_only +
+        if (config.tag == .drop_zone_box) UiQuadInstance.flag_dashed else 0.0;
+    const start = @as(u32, @intCast(instances.items.len));
+    try instances.append(allocator, .{
+        .rect = .{ rect.x, rect.y, rect.w, rect.h },
+        .radii = .{
+            @min(config.corner_radius.top_right * scale_x, min_radius),
+            @min(config.corner_radius.bottom_right * scale_x, min_radius),
+            @min(config.corner_radius.top_left * scale_x, min_radius),
+            @min(config.corner_radius.bottom_left * scale_x, min_radius),
+        },
+        .border = .{
+            border_left,
             border_top,
-            r,
-            g,
-            b,
-            a,
-            allocator,
-            is_dashed,
-            win_dims,
-        );
-    }
-    if (clamped_radii.top_right > 0) {
-        try geometry.renderArc(
-            vertices,
-            .{
-                .x = rect.x + rect.w - clamped_radii.top_right,
-                .y = rect.y + clamped_radii.top_right,
-            },
-            clamped_radii.top_right,
-            270.0,
-            360.0,
-            border_top,
-            r,
-            g,
-            b,
-            a,
-            allocator,
-            is_dashed,
-            win_dims,
-        );
-    }
-    if (clamped_radii.bottom_left > 0) {
-        try geometry.renderArc(
-            vertices,
-            .{
-                .x = rect.x + clamped_radii.bottom_left,
-                .y = rect.y + rect.h - clamped_radii.bottom_left,
-            },
-            clamped_radii.bottom_left,
-            90.0,
-            180.0,
+            border_right,
             border_bottom,
-            r,
-            g,
-            b,
-            a,
-            allocator,
-            is_dashed,
-            win_dims,
-        );
-    }
-    if (clamped_radii.bottom_right > 0) {
-        try geometry.renderArc(
-            vertices,
-            .{
-                .x = rect.x + rect.w - clamped_radii.bottom_right,
-                .y = rect.y + rect.h - clamped_radii.bottom_right,
-            },
-            clamped_radii.bottom_right,
-            0.0,
-            90.0,
-            border_bottom,
-            r,
-            g,
-            b,
-            a,
-            allocator,
-            is_dashed,
-            win_dims,
-        );
-    }
-
-    const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
-    if (count > 0) {
-        try addBatch(
-            batches,
-            allocator,
-            start_batch,
-            count,
-            gpu_res.uiTexture(),
-            .ui_element,
-            scissor,
-        );
-    }
+        },
+        .border_color = packRgba255(config.color),
+        .flags = flags,
+    });
+    try addBatch(
+        batches,
+        allocator,
+        start,
+        1,
+        gpu_res.uiTexture(),
+        .sdf_ui,
+        scissor,
+    );
 }
 
 fn appendSingleTextRun(
@@ -782,6 +546,7 @@ fn buildGeometryFromCommands(
     build_ctx: PacketBuildContext,
     r_commands: []const UiCommand,
     vertices: *std.ArrayList(Vertex),
+    instances: *std.ArrayList(UiQuadInstance),
     batches: *std.ArrayList(BatchItem),
 ) !void {
     _ = ensureUiAtlasTexture(build_ctx);
@@ -848,13 +613,12 @@ fn buildGeometryFromCommands(
             .scissor_start, .scissor_end => unreachable,
             .rectangle => |config| {
                 try appendRectangleCommand(
-                    vertices,
+                    instances,
                     batches,
                     build_ctx.frame_allocator,
                     rect,
                     config,
                     scale_x,
-                    win_dims,
                     build_ctx.gpu_res,
                     current_scissor,
                 );
@@ -893,13 +657,12 @@ fn buildGeometryFromCommands(
             },
             .border => |config| {
                 try appendBorderCommand(
-                    vertices,
+                    instances,
                     batches,
                     build_ctx.frame_allocator,
                     rect,
                     config,
                     scale_x,
-                    win_dims,
                     build_ctx.gpu_res,
                     current_scissor,
                 );
@@ -968,6 +731,7 @@ pub fn buildRenderPacket(
         build_ctx,
         r_commands,
         &packet.vertices,
+        &packet.instances,
         &packet.batches,
     );
 

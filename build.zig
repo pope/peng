@@ -590,8 +590,18 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
         },
         .{
             .stage = "frag",
-            .src_name = "ui.frag.glsl",
-            .out_name = "ui.frag",
+            .src_name = "blit.frag.glsl",
+            .out_name = "blit.frag",
+        },
+        .{
+            .stage = "vert",
+            .src_name = "sdf.vert.glsl",
+            .out_name = "sdf.vert",
+        },
+        .{
+            .stage = "frag",
+            .src_name = "sdf.frag.glsl",
+            .out_name = "sdf.frag",
         },
         .{
             .stage = "frag",

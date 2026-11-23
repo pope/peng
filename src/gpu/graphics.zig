@@ -91,6 +91,54 @@ const quad_vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
     },
 };
 
+const sdf_vertex_attribs = [_]sdl.gpu.VertexAttribute{
+    .{
+        .location = 0,
+        .buffer_slot = 0,
+        .format = .float4,
+        .offset = @offsetOf(geometry.UiQuadInstance, "rect"),
+    },
+    .{
+        .location = 1,
+        .buffer_slot = 0,
+        .format = .float4,
+        .offset = @offsetOf(geometry.UiQuadInstance, "radii"),
+    },
+    .{
+        .location = 2,
+        .buffer_slot = 0,
+        .format = .float4,
+        .offset = @offsetOf(geometry.UiQuadInstance, "border"),
+    },
+    .{
+        .location = 3,
+        .buffer_slot = 0,
+        .format = .ubyte4_norm,
+        .offset = @offsetOf(geometry.UiQuadInstance, "fill_color"),
+    },
+    .{
+        .location = 4,
+        .buffer_slot = 0,
+        .format = .ubyte4_norm,
+        .offset = @offsetOf(geometry.UiQuadInstance, "border_color"),
+    },
+    .{
+        .location = 5,
+        .buffer_slot = 0,
+        .format = .float2,
+        .offset = @offsetOf(geometry.UiQuadInstance, "softness"),
+    },
+};
+
+const sdf_vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
+    .{
+        .slot = 0,
+        .pitch = @sizeOf(geometry.UiQuadInstance),
+        .input_rate = .instance,
+        .instance_step_rate = 0,
+    },
+};
+
 /// Manages pipelines and offscreen textures for the 2-pass Dual Kawase
 /// backdrop blur. State is modeled as a tagged union to guarantee that callers
 /// can never observe or assume partially-initialized resources, with no
@@ -487,7 +535,8 @@ pub const RenderResources = struct {
     device: sdl.gpu.Device,
     swapchain_format: sdl.gpu.TextureFormat = .rgba8_unorm,
     image_pipeline: LazyPipeline(sdl.gpu.Pipeline) = .uninitialized,
-    ui_pipeline: sdl.gpu.Pipeline,
+    blit_pipeline: sdl.gpu.Pipeline,
+    sdf_pipeline: sdl.gpu.Pipeline,
     fullscreen_vertex_buffer: sdl.gpu.Buffer,
     unpack_compute_pipeline: LazyPipeline(sdl.gpu.ComputePipeline) =
         .uninitialized,
@@ -802,7 +851,8 @@ pub const RenderResources = struct {
         if (self.image_pipeline.get()) |pipe| {
             self.device.releasePipeline(pipe);
         }
-        self.device.releasePipeline(self.ui_pipeline);
+        self.device.releasePipeline(self.blit_pipeline);
+        self.device.releasePipeline(self.sdf_pipeline);
         if (self.unpack_compute_pipeline.get()) |pipe| {
             self.device.releaseComputePipeline(pipe);
         }
@@ -1077,8 +1127,8 @@ pub fn initGpuResources(
     // compiled lazily on first demand).
     const vert_code_spv = @embedFile("shaders/vert.spv");
     const vert_code_msl = @embedFile("shaders/vert.msl");
-    const ui_frag_code_spv = @embedFile("shaders/ui.frag.spv");
-    const ui_frag_code_msl = @embedFile("shaders/ui.frag.msl");
+    const blit_frag_code_spv = @embedFile("shaders/blit.frag.spv");
+    const blit_frag_code_msl = @embedFile("shaders/blit.frag.msl");
 
     const shader_formats = dev.getShaderFormats();
 
@@ -1093,16 +1143,16 @@ pub fn initGpuResources(
     );
     defer dev.releaseShader(vert_shader);
 
-    const ui_frag_shader = try createShaderFromFormat(
+    const blit_frag_shader = try createShaderFromFormat(
         dev,
         shader_formats,
         .fragment,
-        ui_frag_code_spv,
-        ui_frag_code_msl,
+        blit_frag_code_spv,
+        blit_frag_code_msl,
         1,
-        1,
+        0,
     );
-    defer dev.releaseShader(ui_frag_shader);
+    defer dev.releaseShader(blit_frag_shader);
 
     // Create sampler
     const sampler_info = sdl.gpu.SamplerCreateInfo{
@@ -1144,21 +1194,69 @@ pub fn initGpuResources(
     };
     errdefer dev.releaseTexture(white_texture);
 
-    // Create UI / fast-blit Graphics Pipeline
+    // Create textured-quad blit Graphics Pipeline (glyphs, fast image blit)
     const color_targets = makeAlphaBlendColorTargets(target_format);
-    const ui_pipeline_info = makeQuadPipelineInfo(
+    const blit_pipeline_info = makeQuadPipelineInfo(
         vert_shader,
-        ui_frag_shader,
+        blit_frag_shader,
         &color_targets,
     );
-    const ui_pipeline = dev.createPipeline(&ui_pipeline_info) orelse {
+    const blit_pipeline = dev.createPipeline(&blit_pipeline_info) orelse {
         std.log.err(
-            "Failed to create UI graphics pipeline: {s}",
+            "Failed to create blit graphics pipeline: {s}",
             .{sdl.getError()},
         );
         return error.PipelineCreationFailed;
     };
-    errdefer dev.releasePipeline(ui_pipeline);
+    errdefer dev.releasePipeline(blit_pipeline);
+
+    // Create instanced SDF UI Graphics Pipeline
+    const sdf_vert_spv = @embedFile("shaders/sdf.vert.spv");
+    const sdf_vert_msl = @embedFile("shaders/sdf.vert.msl");
+    const sdf_frag_spv = @embedFile("shaders/sdf.frag.spv");
+    const sdf_frag_msl = @embedFile("shaders/sdf.frag.msl");
+
+    const sdf_vert = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .vertex,
+        sdf_vert_spv,
+        sdf_vert_msl,
+        0,
+        1,
+    );
+    defer dev.releaseShader(sdf_vert);
+
+    const sdf_frag = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .fragment,
+        sdf_frag_spv,
+        sdf_frag_msl,
+        1,
+        0,
+    );
+    defer dev.releaseShader(sdf_frag);
+
+    var sdf_pipeline_info = makeQuadPipelineInfo(
+        sdf_vert,
+        sdf_frag,
+        &color_targets,
+    );
+    sdf_pipeline_info.vertex_input_state = .{
+        .num_vertex_attributes = sdf_vertex_attribs.len,
+        .vertex_attributes = &sdf_vertex_attribs,
+        .num_vertex_buffers = sdf_vertex_buf_descs.len,
+        .vertex_buffer_descriptions = &sdf_vertex_buf_descs,
+    };
+    const sdf_pipeline = dev.createPipeline(&sdf_pipeline_info) orelse {
+        std.log.err(
+            "Failed to create SDF graphics pipeline: {s}",
+            .{sdl.getError()},
+        );
+        return error.PipelineCreationFailed;
+    };
+    errdefer dev.releasePipeline(sdf_pipeline);
 
     // Create static 6-vertex buffer for fullscreen passes
     const fullscreen_vertex_buffer = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
@@ -1220,7 +1318,8 @@ pub fn initGpuResources(
         .device = dev,
         .swapchain_format = target_format,
         .image_pipeline = .uninitialized,
-        .ui_pipeline = ui_pipeline,
+        .blit_pipeline = blit_pipeline,
+        .sdf_pipeline = sdf_pipeline,
         .blur = .uninitialized,
         .fullscreen_vertex_buffer = fullscreen_vertex_buffer,
         .unpack_compute_pipeline = .uninitialized,

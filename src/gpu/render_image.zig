@@ -19,6 +19,7 @@ pub const MaterialType = enum {
     ui_element,
     image_viewer,
     blurred_surface,
+    sdf_ui,
 };
 
 /// Fragment shader push uniform block for image viewer photo adjustments and
@@ -64,15 +65,6 @@ comptime {
     std.debug.assert(@offsetOf(ImageUniforms, "texture") == 56);
     std.debug.assert(@offsetOf(ImageUniforms, "pad1") == 60);
 }
-
-/// Fragment shader push uniform block for UI shapes, text, and frosted glass
-/// panels.
-pub const UiUniforms = extern struct {
-    is_blurred_surface: i32,
-    padding1: f32 = 0.0,
-    padding2: f32 = 0.0,
-    padding3: f32 = 0.0,
-};
 
 /// Draw call batch grouping vertex offset/count, texture binding, material
 /// type, and scissor rectangle.

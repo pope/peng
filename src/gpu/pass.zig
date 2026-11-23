@@ -27,7 +27,8 @@ const PositiveDimsU32 = geom.PositiveDimsU32;
 const Rect = geom.Rect;
 const RenderResources = graphics.RenderResources;
 const saveTextureToPng = graphics.saveTextureToPng;
-const UiUniforms = render_image.UiUniforms;
+const UiQuadInstance = geometry.UiQuadInstance;
+const UiSdfVertUniforms = geometry.UiSdfVertUniforms;
 const Vertex = geometry.Vertex;
 const ViewportParams = state.ViewportParams;
 
@@ -425,31 +426,46 @@ pub fn getOrRasterizeGlyph(
     return val;
 }
 
-/// Data-driven render packet holding geometry vertices, batch draw calls,
-/// and transfer buffer offsets for 2-pass UI frame rendering.
+/// Data-driven render packet holding geometry vertices, instanced SDF UI
+/// quads, batch draw calls, and transfer buffer offsets for 2-pass UI frame
+/// rendering.
 pub const RenderPacket = struct {
     vertices: std.ArrayList(Vertex) = .empty,
+    instances: std.ArrayList(UiQuadInstance) = .empty,
     batches: std.ArrayList(BatchItem) = .empty,
     tb_offset: usize = 0,
 
-    /// Releases vertex and batch command memory.
+    /// Releases vertex, instance, and batch command memory.
     pub fn deinit(self: *RenderPacket, allocator: std.mem.Allocator) void {
         self.vertices.deinit(allocator);
+        self.instances.deinit(allocator);
         self.batches.deinit(allocator);
     }
 };
 
-fn uploadVertexData(
+const FrameGeometryBuffer = struct {
+    buffer: sdl.gpu.Buffer,
+    instance_offset: u32,
+};
+
+fn uploadFrameGeometry(
     gpu_res: *RenderResources,
     frame_idx: usize,
     copy_pass: sdl.gpu.CopyPass,
     frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     vertex_items: []const Vertex,
+    instance_items: []const UiQuadInstance,
     tb_offset: usize,
-) !?sdl.gpu.Buffer {
+) !?FrameGeometryBuffer {
     const dev = gpu_res.device;
-    const needed_size = vertex_items.len * @sizeOf(Vertex);
+    const vert_bytes = vertex_items.len * @sizeOf(Vertex);
+    const inst_offset = std.mem.alignForward(usize, vert_bytes, 64);
+    const inst_bytes = instance_items.len * @sizeOf(UiQuadInstance);
+    const needed_size = if (inst_bytes > 0)
+        inst_offset + inst_bytes
+    else
+        vert_bytes;
     if (needed_size == 0) return null;
 
     const vb_acq = gpu_res.ensureFrameVertexBuffer(
@@ -476,8 +492,18 @@ fn uploadVertexData(
         tb,
         cycle_tb,
     ) orelse return error.GPUMapFailed;
-    const mapped: [*]Vertex = @ptrCast(@alignCast(mapped_raw + vert_offset));
-    @memcpy(mapped[0..vertex_items.len], vertex_items);
+    if (vert_bytes > 0) {
+        const mapped_v: [*]Vertex = @ptrCast(
+            @alignCast(mapped_raw + vert_offset),
+        );
+        @memcpy(mapped_v[0..vertex_items.len], vertex_items);
+    }
+    if (inst_bytes > 0) {
+        const mapped_i: [*]UiQuadInstance = @ptrCast(
+            @alignCast(mapped_raw + vert_offset + inst_offset),
+        );
+        @memcpy(mapped_i[0..instance_items.len], instance_items);
+    }
     dev.unmapTransferBuffer(tb);
 
     const cycle_vb = shouldCycleFrameBuffer(vb_acq.reallocated, 0);
@@ -490,7 +516,10 @@ fn uploadVertexData(
         .size = @intCast(needed_size),
     }, cycle_vb);
 
-    return vb;
+    return .{
+        .buffer = vb,
+        .instance_offset = @intCast(inst_offset),
+    };
 }
 
 fn drawBatches(
@@ -499,15 +528,17 @@ fn drawBatches(
     render_pass: sdl.gpu.RenderPass,
     cmd_buf: sdl.gpu.CommandBuffer,
     batches: []const BatchItem,
+    geom_buf: FrameGeometryBuffer,
     target_dims: PositiveDimsU32,
 ) void {
-    const DrawnUbo = enum {
-        image,
-        ui_solid,
-        ui_blur,
+    const BufferBindingKind = enum {
+        vertices,
+        instances,
     };
     var last_pipeline: ?sdl.gpu.Pipeline = null;
-    var last_ubo: ?DrawnUbo = null;
+    var last_binding: ?BufferBindingKind = null;
+    var image_ubo_pushed = false;
+    var sdf_vert_ubo_pushed = false;
     const win_w: i32 = @intCast(target_dims.w);
     const win_h: i32 = @intCast(target_dims.h);
 
@@ -525,7 +556,52 @@ fn drawBatches(
             render_pass.setScissor(0, 0, win_w, win_h);
         }
 
-        const is_image = (batch.material == .image_viewer);
+        const is_image = switch (batch.material) {
+            .sdf_ui, .blurred_surface => {
+                if (last_pipeline == null or
+                    last_pipeline.?.ptr != gpu.sdf_pipeline.ptr)
+                {
+                    render_pass.bindPipeline(gpu.sdf_pipeline);
+                    last_pipeline = gpu.sdf_pipeline;
+                }
+                if (last_binding != .instances) {
+                    render_pass.bindVertexBuffers(
+                        0,
+                        &[_]sdl.gpu.BufferBinding{.{
+                            .buffer = geom_buf.buffer,
+                            .offset = geom_buf.instance_offset,
+                        }},
+                    );
+                    last_binding = .instances;
+                }
+                if (!sdf_vert_ubo_pushed) {
+                    const sdf_ubo = UiSdfVertUniforms{
+                        .win_dims = .{
+                            @floatFromInt(target_dims.w),
+                            @floatFromInt(target_dims.h),
+                        },
+                    };
+                    cmd_buf.pushVertexUniform(0, std.mem.asBytes(&sdf_ubo));
+                    sdf_vert_ubo_pushed = true;
+                }
+                render_pass.bindFragmentSamplers(
+                    0,
+                    &[_]sdl.gpu.TextureSamplerBinding{.{
+                        .texture = batch.texture,
+                        .sampler = gpu.sampler,
+                    }},
+                );
+                render_pass.drawPrimitives(
+                    6,
+                    batch.vertex_count,
+                    0,
+                    batch.vertex_start,
+                );
+                continue;
+            },
+            .image_viewer => true,
+            .ui_element => false,
+        };
         const show_original = view_params.compare_original;
         const apply_adj = !show_original and view_params.edits.hasEdits();
         const scale_mode = view_params.getShaderScaleModeInt();
@@ -540,87 +616,74 @@ fn drawBatches(
         else
             null;
         const use_image_pipeline = (active_image_pipe != null);
-        const pipeline = active_image_pipe orelse gpu.ui_pipeline;
+        const pipeline = active_image_pipe orelse gpu.blit_pipeline;
 
         if (last_pipeline == null or last_pipeline.?.ptr != pipeline.ptr) {
             render_pass.bindPipeline(pipeline);
             last_pipeline = pipeline;
         }
+        if (last_binding != .vertices) {
+            render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+                .buffer = geom_buf.buffer,
+                .offset = 0,
+            }});
+            last_binding = .vertices;
+        }
 
-        const desired_ubo: DrawnUbo = if (use_image_pipeline)
-            .image
-        else if (batch.material == .blurred_surface)
-            .ui_blur
-        else
-            .ui_solid;
-
-        if (last_ubo == null or last_ubo.? != desired_ubo) {
-            switch (desired_ubo) {
-                .image => {
-                    const edits = view_params.edits;
-                    const img_ubo = ImageUniforms{
-                        .brightness = if (apply_adj)
-                            edits.get(.brightness)
-                        else
-                            0.0,
-                        .contrast = if (apply_adj)
-                            edits.get(.contrast)
-                        else
-                            1.0,
-                        .temperature = if (apply_adj)
-                            edits.get(.temperature)
-                        else
-                            0.0,
-                        .tint = if (apply_adj)
-                            edits.get(.tint)
-                        else
-                            0.0,
-                        .highlights = if (apply_adj)
-                            edits.get(.highlights)
-                        else
-                            0.0,
-                        .shadows = if (apply_adj)
-                            edits.get(.shadows)
-                        else
-                            0.0,
-                        .whites = if (apply_adj)
-                            edits.get(.whites)
-                        else
-                            0.0,
-                        .blacks = if (apply_adj)
-                            edits.get(.blacks)
-                        else
-                            0.0,
-                        .saturation = if (apply_adj)
-                            edits.get(.saturation)
-                        else
-                            0.0,
-                        .vibrance = if (apply_adj)
-                            edits.get(.vibrance)
-                        else
-                            0.0,
-                        .contrast_blend = if (apply_adj)
-                            edits.get(.contrast_blend)
-                        else
-                            1.0,
-                        .scale_mode = scale_mode,
-                        .has_adjustments = if (apply_adj) 1 else 0,
-                        .clarity = if (apply_adj) edits.get(.clarity) else 0.0,
-                        .texture = if (apply_adj) edits.get(.texture) else 0.0,
-                    };
-                    cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
-                },
-                .ui_solid, .ui_blur => {
-                    const ui_ubo = UiUniforms{
-                        .is_blurred_surface = if (desired_ubo == .ui_blur)
-                            1
-                        else
-                            0,
-                    };
-                    cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ui_ubo));
-                },
-            }
-            last_ubo = desired_ubo;
+        if (use_image_pipeline and !image_ubo_pushed) {
+            const edits = view_params.edits;
+            const img_ubo = ImageUniforms{
+                .brightness = if (apply_adj)
+                    edits.get(.brightness)
+                else
+                    0.0,
+                .contrast = if (apply_adj)
+                    edits.get(.contrast)
+                else
+                    1.0,
+                .temperature = if (apply_adj)
+                    edits.get(.temperature)
+                else
+                    0.0,
+                .tint = if (apply_adj)
+                    edits.get(.tint)
+                else
+                    0.0,
+                .highlights = if (apply_adj)
+                    edits.get(.highlights)
+                else
+                    0.0,
+                .shadows = if (apply_adj)
+                    edits.get(.shadows)
+                else
+                    0.0,
+                .whites = if (apply_adj)
+                    edits.get(.whites)
+                else
+                    0.0,
+                .blacks = if (apply_adj)
+                    edits.get(.blacks)
+                else
+                    0.0,
+                .saturation = if (apply_adj)
+                    edits.get(.saturation)
+                else
+                    0.0,
+                .vibrance = if (apply_adj)
+                    edits.get(.vibrance)
+                else
+                    0.0,
+                .contrast_blend = if (apply_adj)
+                    edits.get(.contrast_blend)
+                else
+                    1.0,
+                .scale_mode = scale_mode,
+                .has_adjustments = if (apply_adj) 1 else 0,
+                .clarity = if (apply_adj) edits.get(.clarity) else 0.0,
+                .texture = if (apply_adj) edits.get(.texture) else 0.0,
+            };
+            cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
+            image_ubo_pushed = true;
         }
 
         render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
@@ -663,7 +726,7 @@ fn renderBatchPass(
     cmd_buf: sdl.gpu.CommandBuffer,
     target_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
-    vert_buf: ?sdl.gpu.Buffer,
+    geom_buf: ?FrameGeometryBuffer,
     target_dims: PositiveDimsU32,
 ) bool {
     const color_target = sdl.gpu.ColorTargetAttachment{
@@ -680,17 +743,14 @@ fn renderBatchPass(
     };
     defer render_pass.end();
 
-    if (vert_buf) |vb| {
-        render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
-            .buffer = vb,
-            .offset = 0,
-        }});
+    if (geom_buf) |gb| {
         drawBatches(
             view_params,
             gpu,
             render_pass,
             cmd_buf,
             batches,
+            gb,
             target_dims,
         );
     }
@@ -752,7 +812,7 @@ fn executeRenderPass(
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
-    vert_buf: ?sdl.gpu.Buffer,
+    geom_buf: ?FrameGeometryBuffer,
     target_dims: PositiveDimsU32,
 ) void {
     const split = findBlurSplit(batches, gpu.blur) orelse {
@@ -762,7 +822,7 @@ fn executeRenderPass(
             cmd_buf,
             swap_tex,
             batches,
-            vert_buf,
+            geom_buf,
             target_dims,
         );
         return;
@@ -780,7 +840,7 @@ fn executeRenderPass(
         cmd_buf,
         tex.scene,
         batches[0..idx],
-        vert_buf,
+        geom_buf,
         tex.target_dims,
     )) {
         return;
@@ -834,15 +894,11 @@ fn executeRenderPass(
         defer final_pass.end();
 
         // 4a. Blit sharp base scene
-        final_pass.bindPipeline(gpu.ui_pipeline);
+        final_pass.bindPipeline(gpu.blit_pipeline);
         final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
             .buffer = gpu.fullscreen_vertex_buffer,
             .offset = 0,
         }});
-        const fs_ubo = UiUniforms{
-            .is_blurred_surface = 0,
-        };
-        cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&fs_ubo));
         final_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
             .texture = tex.scene,
             .sampler = gpu.sampler,
@@ -856,17 +912,14 @@ fn executeRenderPass(
         final_pass.drawPrimitives(6, 1, 0, 0);
 
         // 4b. Draw remaining batches (blurred surfaces, text, controls)
-        if (vert_buf) |vb| {
-            final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
-                .buffer = vb,
-                .offset = 0,
-            }});
+        if (geom_buf) |gb| {
             drawBatches(
                 view_params,
                 gpu,
                 final_pass,
                 cmd_buf,
                 batches[idx..],
+                gb,
                 target_dims,
             );
         }
@@ -886,13 +939,14 @@ fn executeRenderPacket(
 ) !void {
     const frame_idx = gpu_res.frame_index % 2;
 
-    const vert_buf = try uploadVertexData(
+    const geom_buf = try uploadFrameGeometry(
         gpu_res,
         frame_idx,
         copy_pass,
         frame_allocator,
         temp_buffers,
         packet.vertices.items,
+        packet.instances.items,
         packet.tb_offset,
     );
 
@@ -904,7 +958,7 @@ fn executeRenderPacket(
         cmd_buf,
         swap_tex,
         packet.batches.items,
-        vert_buf,
+        geom_buf,
         target_dims,
     );
 }
