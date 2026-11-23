@@ -117,34 +117,29 @@
           };
           formatter.${system} = treefmt-eval.config.build.wrapper;
           checks.${system} = {
+            inherit (self.packages.${system}) peng;
             treefmt = treefmt-eval.config.build.check self;
-            unit-tests = pkgs.peng.overrideAttrs {
-              pname = "peng-unit-tests";
-              desktopItems = [ ];
-              env = {
-                SDL_VIDEO_DRIVER = "dummy";
-              };
-              zigBuildFlags = [
-                "test-unit"
-                "--system"
-                ".zig-cache/p"
-                "-Dcpu=baseline"
-              ];
-              installPhase = ''
-                runHook preInstall
-                touch "$out"
-                runHook postInstall
-              '';
-            };
             hot-reload = pkgs.peng.overrideAttrs {
               pname = "peng-hot-reload";
               desktopItems = [ ];
+              # test-hot-reload depends on install, so skip buildPhase to avoid
+              # invoking `zig build` twice; $out is an empty sentinel file.
+              dontBuild = true;
+              dontFixup = true;
+              doCheck = true;
               zigBuildFlags = [
                 "--system"
                 ".zig-cache/p"
                 "-Dcpu=baseline"
                 "-Dhot_reload=true"
               ];
+              checkPhase = ''
+                runHook preCheck
+                local flagsArray=("-j''${NIX_BUILD_CORES:-1}")
+                concatTo flagsArray zigBuildFlags zigBuildFlagsArray
+                TERM=dumb zig build test-hot-reload "''${flagsArray[@]}" --verbose
+                runHook postCheck
+              '';
               installPhase = ''
                 runHook preInstall
                 touch "$out"

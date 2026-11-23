@@ -902,3 +902,15 @@ pub fn main(init: std.process.Init) !void {
         exportClassificationsToStdout(&app_ctx.state.viewer.navigation, app_ctx.io);
     }
 }
+
+test "hot-reload LibViewer init" {
+    if (!build_options.hot_reload) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var lib_viewer: LibViewer = try .init(io);
+    defer lib_viewer.deinit(io);
+
+    try std.testing.expect(lib_viewer.is_valid);
+    lib_viewer.load_assets();
+    try std.testing.expect(!try lib_viewer.check_outdated(io));
+}

@@ -539,6 +539,25 @@ pub fn build(b: *std.Build) void {
     );
     test_integration_step.dependOn(&run_integration_tests.step);
 
+    const test_hot_reload_step = b.step(
+        "test-hot-reload",
+        "Run hot-reload dynamic library smoke test",
+    );
+    if (hot_reload) {
+        const hot_reload_tests = addModuleTest(b, exe.root_module);
+        hot_reload_tests.step.dependOn(compile_shaders);
+        hot_reload_tests.rdynamic = true;
+        const run_hot_reload_tests = b.addRunArtifact(hot_reload_tests);
+        run_hot_reload_tests.step.dependOn(b.getInstallStep());
+        run_hot_reload_tests.setCwd(b.path("."));
+        test_hot_reload_step.dependOn(&run_hot_reload_tests.step);
+    } else {
+        const fail_step = b.addFail(
+            "test-hot-reload requires -Dhot_reload=true",
+        );
+        test_hot_reload_step.dependOn(&fail_step.step);
+    }
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(test_unit_step);
     test_step.dependOn(&run_integration_tests.step);

@@ -140,13 +140,22 @@ stdenv.mkDerivation (_finalAttrs: {
     mkdir -p .zig-cache/p
     cp -r --no-preserve=mode ${callPackage ./deps.nix { }}/* .zig-cache/p/
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache
+  ''
+  + lib.optionalString static ''
+    export PKG_CONFIG="${lib.getExe pkgConfigStatic}"
   '';
 
   dontPatchELF = static;
   dontPatchShebangs = static;
 
-  preBuild = lib.optionalString static ''
-    export PKG_CONFIG="${lib.getExe pkgConfigStatic}"
+  doCheck = true;
+
+  checkPhase = ''
+    runHook preCheck
+    local flagsArray=("-j''${NIX_BUILD_CORES:-1}")
+    concatTo flagsArray zigCheckFlags zigCheckFlagsArray
+    SDL_VIDEO_DRIVER=dummy TERM=dumb zig build test-unit "''${flagsArray[@]}" --verbose
+    runHook postCheck
   '';
 
   zigBuildFlags = [
@@ -159,6 +168,18 @@ stdenv.mkDerivation (_finalAttrs: {
     "-Dstatic_sdl=true"
     "-Dtarget=${zigTarget}"
   ];
+
+  # On Linux, omit -Dtarget during checkPhase so test binaries use the Nix
+  # sandbox's glibc dynamic linker rather than /lib64/ld-linux-x86-64.so.2.
+  zigCheckFlags = [
+    "--system"
+    ".zig-cache/p"
+    "-Dcpu=${cpu}"
+    "-Doptimize=${optimize}"
+  ]
+  ++ lib.optionals static (
+    [ "-Dstatic_sdl=true" ] ++ lib.optionals (!stdenv.hostPlatform.isLinux) [ "-Dtarget=${zigTarget}" ]
+  );
 
   nativeBuildInputs = [
     glslang
