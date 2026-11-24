@@ -343,12 +343,13 @@ pub fn main(init: std.process.Init) !void {
         var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
         const preview_opt = parsed_resp.value.getPreview();
         if (preview_opt) |prev| {
-            termgfx.writeKittyPreview(
-                &stdout_writer.interface,
-                prev.path,
-                prev.dims,
-                clear_preview,
-            ) catch |err| {
+            termgfx.writePreview(&stdout_writer.interface, .{
+                .kitty = .{
+                    .temp_path = prev.path,
+                    .dims = prev.dims,
+                    .clear_first = clear_preview,
+                },
+            }) catch |err| {
                 std.log.err(
                     "Failed to write Kitty preview to stdout: {any}",
                     .{err},

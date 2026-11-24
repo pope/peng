@@ -1,18 +1,43 @@
-//! Terminal Graphics Protocol Encoders
+//! Terminal Graphics Protocol Encoders & Detection
 //!
-//! Pure, zero-SDL encoders for rendering image previews directly in terminal
-//! emulators (currently Kitty Graphics Protocol `t=t`, extensible to Sixel,
-//! iTerm2 inline images, etc.).
+//! Pure, zero-SDL encoders and environment-based protocol detection for
+//! rendering image previews directly in terminal emulators (Kitty Graphics
+//! Protocol `t=t` and VT340 Sixel).
 
+const detect = @import("detect.zig");
 const geom = @import("geom");
+const sixel = @import("sixel.zig");
 const std = @import("std");
 
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
-/// Writes a Kitty Graphics Protocol `t=t` escape sequence for raw RGBA32
-/// temp file `temp_path` with dimensions `dims` to `writer`, optionally
-/// clearing prior terminal graphics when `clear_first` is true.
-pub fn writeKittyPreview(
+pub const Protocol = detect.Protocol;
+pub const ProtocolMode = detect.ProtocolMode;
+pub const protocol_modes_string = detect.protocol_modes_string;
+
+/// Payload for Kitty Graphics Protocol `t=t` emission from an RGBA32 temp
+/// file.
+pub const KittyFilePayload = struct {
+    temp_path: []const u8,
+    dims: PositiveDimsU32,
+    clear_first: bool = false,
+};
+
+/// Payload for VT340 Sixel emission directly from in-memory RGBA32 pixels.
+pub const SixelPixelsPayload = struct {
+    allocator: std.mem.Allocator,
+    rgba_pixels: []const u8,
+    pitch: usize,
+    dims: PositiveDimsU32,
+};
+
+/// Protocol-tagged payload for terminal graphics preview emission.
+pub const PreviewPayload = union(Protocol) {
+    kitty: KittyFilePayload,
+    sixel: SixelPixelsPayload,
+};
+
+fn writeKittyPreview(
     writer: *std.Io.Writer,
     temp_path: []const u8,
     dims: PositiveDimsU32,
@@ -30,27 +55,52 @@ pub fn writeKittyPreview(
     );
 }
 
-test "writeKittyPreview formats t=t escape sequences with and without clear" {
+/// Encodes and writes `payload` to `writer` using its tagged terminal
+/// graphics protocol.
+pub fn writePreview(
+    writer: *std.Io.Writer,
+    payload: PreviewPayload,
+) !void {
+    return switch (payload) {
+        .kitty => |k| writeKittyPreview(
+            writer,
+            k.temp_path,
+            k.dims,
+            k.clear_first,
+        ),
+        .sixel => |s| sixel.writeSixelPreview(
+            s.allocator,
+            writer,
+            s.rgba_pixels,
+            s.pitch,
+            s.dims,
+        ),
+    };
+}
+
+test "writePreview formats Kitty t=t and Sixel escape sequences" {
     var buf: [256]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    try writeKittyPreview(
-        &w,
-        "/dev/shm/a.rgba",
-        .{ .w = 320, .h = 240 },
-        false,
-    );
+    try writePreview(&w, .{
+        .kitty = .{
+            .temp_path = "/dev/shm/a.rgba",
+            .dims = .{ .w = 320, .h = 240 },
+            .clear_first = false,
+        },
+    });
     try std.testing.expectEqualStrings(
         "\x1b_Ga=T,f=32,s=320,v=240,t=t,q=2;L2Rldi9zaG0vYS5yZ2Jh\x1b\\",
         w.buffered(),
     );
 
     var w2 = std.Io.Writer.fixed(&buf);
-    try writeKittyPreview(
-        &w2,
-        "/dev/shm/a.rgba",
-        .{ .w = 320, .h = 240 },
-        true,
-    );
+    try writePreview(&w2, .{
+        .kitty = .{
+            .temp_path = "/dev/shm/a.rgba",
+            .dims = .{ .w = 320, .h = 240 },
+            .clear_first = true,
+        },
+    });
     try std.testing.expectEqualStrings(
         "\x1b_Ga=d,d=A,q=2\x1b\\" ++
             "\x1b_Ga=T,f=32,s=320,v=240,t=t,q=2;L2Rldi9zaG0vYS5yZ2Jh\x1b\\",
@@ -61,6 +111,32 @@ test "writeKittyPreview formats t=t escape sequences with and without clear" {
     var w3 = std.Io.Writer.fixed(&buf);
     try std.testing.expectError(
         error.PathTooLong,
-        writeKittyPreview(&w3, &long_path, .{ .w = 10, .h = 10 }, false),
+        writePreview(&w3, .{
+            .kitty = .{
+                .temp_path = &long_path,
+                .dims = .{ .w = 10, .h = 10 },
+                .clear_first = false,
+            },
+        }),
     );
+
+    var px: [4]u8 = .{ 255, 0, 0, 255 };
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+    try writePreview(&aw.writer, .{
+        .sixel = .{
+            .allocator = std.testing.allocator,
+            .rgba_pixels = &px,
+            .pitch = 4,
+            .dims = .{ .w = 1, .h = 1 },
+        },
+    });
+    try std.testing.expect(
+        std.mem.startsWith(u8, aw.written(), "\x1bP0;1;0q\"1;1;1;1"),
+    );
+}
+
+test {
+    _ = detect;
+    _ = sixel;
 }

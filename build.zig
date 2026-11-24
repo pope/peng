@@ -187,6 +187,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "vfs", .module = vfs_module },
         },
     );
+    const termgfx_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/termgfx/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+        },
+    );
     const config_module = createInternalModule(
         b,
         target,
@@ -195,16 +204,8 @@ pub fn build(b: *std.Build) void {
         &.{
             .{ .name = "geom", .module = geom_module },
             .{ .name = "intents", .module = intents_module },
+            .{ .name = "termgfx", .module = termgfx_module },
             .{ .name = "thumbcache", .module = thumbcache_module },
-        },
-    );
-    const termgfx_module = createInternalModule(
-        b,
-        target,
-        optimize,
-        "src/termgfx/root.zig",
-        &.{
-            .{ .name = "geom", .module = geom_module },
         },
     );
     const palette_module = createInternalModule(

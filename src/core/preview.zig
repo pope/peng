@@ -38,6 +38,19 @@ pub const NoCancel = struct {
     }
 };
 
+/// Result of rendering a scaled, EXIF-oriented RGBA32 preview surface in
+/// memory (used directly by inline terminal encoders like Sixel or written
+/// to a temp file for Kitty `t=t`).
+pub const PreviewSurface = struct {
+    surface: sdl.Surface,
+    dims: PositiveDimsU32,
+
+    /// Destroys the owned `sdl.Surface`.
+    pub fn deinit(self: PreviewSurface) void {
+        self.surface.destroy();
+    }
+};
+
 /// Result of rendering a raw RGBA32 preview file for the Kitty Graphics
 /// Protocol (`t=t`).
 pub const PreviewRenderResult = struct {
@@ -300,16 +313,15 @@ fn decodePreviewSourceSurface(
 
 /// Decodes `path` (supporting standard raster images, Camera RAW embedded
 /// previews, `.cbz` archives, and Freedesktop cached thumbnails), scales and
-/// rotates it to fit within `max_dims`, and writes raw RGBA32 pixels to a
-/// Kitty Graphics Protocol `t=t` temporary file.
-pub fn renderPreviewRgbaFile(
+/// rotates it to fit within `max_dims`, and returns an owned RGBA32 surface.
+pub fn renderPreviewSurface(
     allocator: std.mem.Allocator,
     io: std.Io,
     thumb_cfg: ThumbCacheConfig,
     path: []const u8,
     max_dims: PositiveDimsU32,
     cancel: anytype,
-) !PreviewRenderResult {
+) !PreviewSurface {
     const decoded = try decodePreviewSourceSurface(
         allocator,
         io,
@@ -318,7 +330,8 @@ pub fn renderPreviewRgbaFile(
         max_dims,
         cancel,
     );
-    defer decoded.surface.destroy();
+    var owns_decoded = true;
+    errdefer if (owns_decoded) decoded.surface.destroy();
 
     if (cancel.isCanceled()) return error.Canceled;
 
@@ -361,10 +374,50 @@ pub fn renderPreviewRgbaFile(
         decoded.orientation,
         true,
     );
-    defer transformed.deinit();
-    const final_surf = transformed.surface;
+    if (transformed.owned) {
+        decoded.surface.destroy();
+        owns_decoded = false;
+    }
+    errdefer if (transformed.owned) transformed.surface.destroy();
 
+    const final_surf = transformed.surface;
     if (cancel.isCanceled()) return error.Canceled;
+
+    const out_w = final_surf.w();
+    const out_h = final_surf.h();
+    if (out_w <= 0 or out_h <= 0) return error.InvalidDimensions;
+
+    return .{
+        .surface = final_surf,
+        .dims = .{
+            .w = @intCast(out_w),
+            .h = @intCast(out_h),
+        },
+    };
+}
+
+/// Decodes `path` (supporting standard raster images, Camera RAW embedded
+/// previews, `.cbz` archives, and Freedesktop cached thumbnails), scales and
+/// rotates it to fit within `max_dims`, and writes raw RGBA32 pixels to a
+/// Kitty Graphics Protocol `t=t` temporary file.
+pub fn renderPreviewRgbaFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    thumb_cfg: ThumbCacheConfig,
+    path: []const u8,
+    max_dims: PositiveDimsU32,
+    cancel: anytype,
+) !PreviewRenderResult {
+    const preview = try renderPreviewSurface(
+        allocator,
+        io,
+        thumb_cfg,
+        path,
+        max_dims,
+        cancel,
+    );
+    defer preview.deinit();
+    const final_surf = preview.surface;
 
     const seq = preview_file_seq.fetchAdd(1, .monotonic);
     const tick: u64 =
@@ -377,10 +430,7 @@ pub fn renderPreviewRgbaFile(
 
     var res: PreviewRenderResult = .{
         .path_len = 0,
-        .dims = .{
-            .w = @intCast(final_surf.w()),
-            .h = @intCast(final_surf.h()),
-        },
+        .dims = preview.dims,
     };
 
     const candidate_dirs = [_][]const u8{ "/dev/shm", "/tmp" };

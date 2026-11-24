@@ -2,11 +2,14 @@ const builtin = @import("builtin");
 const geom = @import("geom");
 const intents = @import("intents");
 const std = @import("std");
+const termgfx = @import("termgfx");
 const thumbcache = @import("thumbcache");
 
 const PositiveDimsU32 = geom.PositiveDimsU32;
+const ProtocolMode = termgfx.ProtocolMode;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const ThumbTier = thumbcache.ThumbTier;
+const protocol_modes_string = termgfx.protocol_modes_string;
 const thumb_cache_modes_string = thumbcache.thumb_cache_modes_string;
 const thumb_tiers_string = thumbcache.thumb_tiers_string;
 const ZoomPreset = intents.ZoomPreset;
@@ -722,6 +725,7 @@ pub const PreviewArgs = struct {
     path: ?[]u8 = null,
     max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
     clear_first: bool = false,
+    protocol: ProtocolMode = .auto,
     thumb_cache: ThumbCacheMode = .all,
     help: bool = false,
 
@@ -739,12 +743,13 @@ pub fn printPreviewHelp(io: std.Io) void {
     printHelpString(
         io,
         "Usage: peng-preview [OPTIONS] [W H] <PATH>\n\n" ++
-            "Render a Kitty Graphics Protocol (t=t) " ++
-            "terminal image preview.\n\n" ++
+            "Render a terminal image preview (Kitty or Sixel).\n\n" ++
             "Options:\n" ++
             "  -h, --help                Show this help message and exit\n" ++
             "  -c, --clear               " ++
-            "Clear prior terminal graphics first\n" ++
+            "Clear prior terminal graphics first (Kitty)\n" ++
+            "      --protocol <MODE>     Terminal graphics protocol (" ++
+            protocol_modes_string ++ "; default: auto)\n" ++
             "      --size <WxH>          " ++
             "Maximum pixel dimensions (default: 800x600)\n" ++
             "      --thumb-cache <MODE>  XDG thumbnail cache policy (" ++
@@ -760,6 +765,7 @@ fn parsePreviewArgsIterator(
     var clear_first = false;
     var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
     var has_flag_size = false;
+    var protocol: ProtocolMode = .auto;
     var thumb_cache: ThumbCacheMode = .all;
     var help = false;
     var end_of_options = false;
@@ -781,6 +787,22 @@ fn parsePreviewArgsIterator(
                 clear_first = true;
             } else if (std.mem.eql(u8, arg, "--no-thumb-cache")) {
                 thumb_cache = .off;
+            } else if (std.mem.eql(u8, arg, "--protocol")) {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err("Missing value for --protocol flag.", .{});
+                    }
+                    return error.MissingFlagValue;
+                };
+                protocol = ProtocolMode.parse(val) orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Unknown protocol: {s}. Valid: {s}.",
+                            .{ val, protocol_modes_string },
+                        );
+                    }
+                    return error.InvalidProtocol;
+                };
             } else if (std.mem.eql(u8, arg, "--size")) {
                 const val = args_it.next() orelse {
                     if (!builtin.is_test) {
@@ -873,6 +895,7 @@ fn parsePreviewArgsIterator(
         .path = owned_path,
         .max_dims = max_dims,
         .clear_first = clear_first,
+        .protocol = protocol,
         .thumb_cache = thumb_cache,
         .help = false,
     };
@@ -1694,6 +1717,30 @@ test "parseIpcArgsIterator handles explicit/default socket and --spawn" {
         try testing.expectError(
             error.MissingCommand,
             parseIpcArgsIterator(&it, testing.allocator),
+        );
+    }
+}
+
+test "parsePreviewArgsIterator parses --protocol flag" {
+    const testing = std.testing;
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--protocol", "sixel", "photo.jpg" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ProtocolMode.sixel, parsed.protocol);
+        try testing.expectEqualStrings("photo.jpg", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--protocol", "invalid", "photo.jpg" },
+        };
+        try testing.expectError(
+            error.InvalidProtocol,
+            parsePreviewArgsIterator(&it, testing.allocator),
         );
     }
 }
