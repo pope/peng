@@ -7,16 +7,18 @@ ______________________________________________________________________
 
 ## 1. Build, Test & Formatting Commands
 
-- `zig build` — Build `peng`, `peng-msg`, and `peng-test-runner`.
-- `zig build test-unit` — Fast unit suite across all 17 modules (`geom`, `probe`,
+- `zig build` — Build `peng`, `peng-msg`, `peng-preview`, `peng-precache`, and
+  `peng-test-runner`.
+- `zig build test-unit` — Fast unit suite across all 18 modules (`geom`, `probe`,
   `vfs`, `triage`, `palette`, `sdl`, `gpu`, `state`, `cache`, `core`, `app`,
-  `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`).
+  `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`, `termgfx`).
 - `zig build test-<mod>` — Isolated module tests (`geom`, `probe`, `vfs`,
-  `triage`, `palette`, `thumbcache`, `cache`, `core`, `state`, `gpu`, `ui`,
-  `ipc`).
+  `triage`, `palette`, `thumbcache`, `termgfx`, `cache`, `core`, `state`, `gpu`,
+  `ui`, `ipc`).
 - `zig build test-integration` — Headless integration & golden screenshot suite.
 - `zig build test` — Full unit + headless integration suite.
-- `zig build -Dhot_reload=true` — Verify shared-library (`libviewer`) build.
+- `zig build -Dhot_reload=true` — Verify shared-library (`libviewer`) build
+  (and `zig build test-hot-reload -Dhot_reload=true`).
 - `zig build shaders` — Compile `src/gpu/shaders/*.glsl` to `.spv` and `.msl`.
 - `zig fmt --check src/ build.zig` — Verify canonical Zig formatting.
 
@@ -55,28 +57,30 @@ ______________________________________________________________________
     (`buildUiViewModel(*const AppState, *const RenderResources, now_ms)` $\\to$
     `ui.layout.renderFrame`, recording next-frame hit rects on explicit
     `*InteractionState`).
-  - **Intentional Nuances**: (a) Phase 2b runs *before* `renderFrame` so staged
-    thumbnails/surfaces promote to GPU and draw with **0-frame lag**; (b)
-    data-plane worker surfaces stage directly on CPU cache unions while only
-    `ipc_command`s emit `AppIntent`s (keeping `AppIntent` pure value data); (c)
-    startup/discrete directory opens spawn scan/slot-0 workers immediately to
-    overlap cold-start I/O with window/Vulkan initialization.
+  - **Intentional Pipeline Trade-Offs**: Pre-render sync (0-frame lag),
+    data-plane CPU staging vs. pure-value `AppIntent`s, and overlapped
+    cold-start/discrete scans are detailed in
+    [`02_concurrency_and_architecture.md`](.agents/rules/02_concurrency_and_architecture.md).
 - **Zero-SDL Pure Packages**:
   - `geom` (pure `std` 2D geometry, DPI, `FRect` `RectCut`), `probe` (MIME,
     EXIF, RAW headers), `vfs` (dir scan, CBZ seek, RAW+JPEG pairs), `triage`
     (picks/rejects, 256-bit SIMD filter), `palette` (unmanaged fuzzy/nav state),
-    `thumbcache` (Freedesktop MD5/PNG `tEXt`), `intents` (`AppIntent`,
-    `actions.zig`), `ipc` (UDS JSON protocol), `state` (`ViewerState`, `UiState`,
-    `InteractionState`, `AnimationState`, motion controllers), `config` (CLI).
+    `thumbcache` (Freedesktop MD5/PNG `tEXt`, DPI-mapped `ThumbTier` selection,
+    precache scheduling), `termgfx` (Kitty Graphics Protocol `t=t` encoder),
+    `intents` (`AppIntent`, `actions.zig`), `ipc` (UDS JSON protocol), `state`
+    (`ViewerState`, `UiState`, `InteractionState`, `AnimationState`, motion
+    controllers), `config` (CLI).
   - `ui`: Immediate-mode `RectCut` layouts, `UiViewModel`, `UiDrawList` & 2-pass
     `RenderPacket` builder. **Zero `@import("sdl")`, zero `@import("core")`**
-    (imports `cache`, `geom`, `gpu`, `intents`, `palette`, `state`).
+    (imports `cache`, `geom`, `gpu`, `intents`, `palette`, `state`, `triage`,
+    `vfs`).
 - **Engine & Hardware Packages**:
-  - `sdl` (sole C wrapper via private `src/sdl/c.zig`), `core` (`display`,
-    `mpsc_queue`, `thumbcache`), `cache` (`ImageCache`, `CacheEntry`,
-    `job_epochs`), `input` (`FrameInput` polling & shortcuts), `gpu` (pipelines,
-    shaders, `TextCache`, `UploadStagingBuffer`, `pass.zig`), `app` (`state.zig`,
-    `events.zig`, `systems/`, `workers/` — **zero `@import("ui")`**).
+  - `sdl` (sole C wrapper via private `src/sdl/c.zig`, plus `libturbojpeg` on
+    non-Windows), `core` (`display`, `mpsc_queue`, `preview`, `thumbcache`),
+    `cache` (`ImageCache`, `CacheEntry`, `job_epochs`), `input` (`FrameInput`
+    polling & shortcuts), `gpu` (pipelines, shaders, `TextCache`,
+    `UploadStagingBuffer`, `pass.zig`), `app` (`state.zig`, `events.zig`,
+    `systems/`, `workers/` — **zero `@import("ui")`**).
   - `src/viewer.zig`: Composition root bridging `app` and `ui` via
     `buildUiViewModel(*const AppState, *const RenderResources, now_ms)`
     (static or `-Dhot_reload=true`).
@@ -110,9 +114,9 @@ ______________________________________________________________________
     `AdjustIntent`, `IpcCommand`, `ZoomPreset`, `TextureScaleMode`,
     `DecodeMode`, `DecodePriority`, `ScrollCadence`, `PresentCadence`,
     `SlideshowMode`, `SlideshowClock`, `PanTap`, `ZoomPhase`, `ZoomDirection`,
-    `ResidentAsset`, `InFlightState`, `ThumbnailState`, `DisplayState`,
-    `DragState`, `MediaEntry`, `BackgroundEvent`) **MUST** list every variant
-    without `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec`
+    `ResidentAsset`, `InFlightState`, `ThumbnailState`, `AsyncGpuUploadSlot`,
+    `ThumbTier`, `DisplayState`, `DragState`, `MediaEntry`, `BackgroundEvent`)
+    **MUST** list every variant without `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec`
     for `EditParam` metadata.
   - Default declarations to private; delete dead/write-only zombie symbols and
     trivial getter tests.

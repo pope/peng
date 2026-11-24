@@ -9,9 +9,11 @@ description: SDL3 C-ABI encapsulation, hot-reload extern boundaries, IPC JSON co
 ## 1. C-ABI Encapsulation & Hot-Reload Boundaries
 
 - **Single Private C Translation Unit (`src/sdl/c.zig`)**:
-  - Consolidate all C headers (`SDL3`, `SDL3_ttf`, `SDL3_image`) into `sdl_c`
-    (`addTranslateC` in `build.zig`), re-exported solely via private
-    `src/sdl/c.zig`. Never import `sdl_c` outside `src/sdl/`.
+  - Consolidate all C headers (`SDL3`, `SDL3_ttf`, `SDL3_image`, and
+    `libturbojpeg` `<turbojpeg.h>` on non-Windows gated by
+    `sdl_options.has_turbojpeg`) into `sdl_c` (`addTranslateC` in `build.zig`),
+    re-exported solely via private `src/sdl/c.zig`. Never import `sdl_c` outside
+    `src/sdl/`.
   - Wrap C handles and structs in native Zig types (`src/geom/` for 2D geometry
     converted at the `src/sdl/` boundary; `src/sdl/` for `FColor`, `Vertex`, and
     GPU handles; `pub const FRect = c.SDL_FRect;` is forbidden).
@@ -19,8 +21,8 @@ description: SDL3 C-ABI encapsulation, hot-reload extern boundaries, IPC JSON co
   - Declare any handle wrapper passed by value across `callconv(.c)` as
     `extern struct` (e.g. `pub const Window = extern struct { ptr: *c.SDL_Window };`).
   - Retain concrete single-item pointers (`*AppState`, `Window`,
-    `*RenderResources`, `*MeasureTextUserData`) across `viewer_update` in
-    `src/viewer.zig` rather than erasing to `*anyopaque`.
+    `?*RenderResources`, `?*SoftwarePresenter`, `*MeasureTextUserData`) across
+    `viewer_update` in `src/viewer.zig` rather than erasing to `*anyopaque`.
   - Provide `inline for (std.meta.tags(Enum))` C-constant mapping helpers on
     wrapper enums, and pass C strings as `[:0]const u8` (never `[*c]const u8`,
     except `(ptr, len)` APIs like `TTF_GetStringSize`).
@@ -37,8 +39,9 @@ description: SDL3 C-ABI encapsulation, hot-reload extern boundaries, IPC JSON co
     `pub fn`.
   - In `src/ui/`, only top-level renderers (`renderFrame`, `renderPalette`,
     `renderEditPanel`, `renderStatsOverlay`, `buildRenderPacket`,
-    `hasBlurredSurface`), `computeDrawDims`, and `text_utils`/`theme` APIs are
-    `pub fn`.
+    `hasBlurredSurface`), `computeDrawDims`, `edit_panel` helpers
+    (`formatValue`, `formatBrightness`, `formatContrast`, `renderSlider`), and
+    `text_utils`/`theme` APIs are `pub fn`.
   - In executable roots (`*main.zig`), only `pub fn main` is public. Never mark
     declarations `pub` solely for same-file `test` blocks.
 
@@ -46,8 +49,9 @@ description: SDL3 C-ABI encapsulation, hot-reload extern boundaries, IPC JSON co
 
 - **No `refAllDecls` in Executable/Hot-Reload Roots**:
   - Never call `refAllDecls` or `refAllDeclsRecursive` in `src/main.zig`,
-    `src/msg_main.zig`, or `src/viewer.zig`; wire submodule tests from each
-    standalone package's own `root.zig` `test` block.
+    `src/msg_main.zig`, `src/preview_main.zig`, `src/precache_main.zig`,
+    `src/test_runner_main.zig`, or `src/viewer.zig`; wire submodule tests from
+    each standalone package's own `root.zig` `test` block.
 - **No Fake Opaque Pointers (`@ptrFromInt`)**:
   - Never forge non-null C/GPU handle pointers via `@ptrFromInt(0x1000)` in
     tests; use real headless/GPU handles (`sdl.Surface.create`,

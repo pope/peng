@@ -58,8 +58,8 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
     Vulkan deferred destroy queues via `sdl.gpu.Device.reclaimMemory()`, and call
     `sdl.reclaimProcessHeap()` (`malloc_trim(0)`, gated on
     `active_decode_threads == 0` or `.hidden`).
-  - `UploadStagingBuffer` (`src/gpu/upload.zig`) keeps buffers `<= 32 MiB`
-    (`WARM_STAGING_CAP_BYTES`) warm and decays oversized buffers after `5000 ms`
+  - `UploadStagingBuffer` (`src/gpu/upload.zig`) keeps buffers `<= 96 MiB`
+    (`WARM_STAGING_CAP_BYTES`) warm and decays oversized buffers after `30000 ms`
     (`IDLE_DECAY_MS`) idle via `maybeShrinkIdle` + `decayTimeoutMs`.
 
 ## 2. Tagged Unions, Weak Keys & Domain Modeling
@@ -71,9 +71,9 @@ description: Memory arenas, errdefer lifecycles, --server reclamation, tagged un
     `ScrollCadence`, `PresentCadence`, `PresentTracker.Accumulator`,
     `PresentTracker.Display`, `PanTap`, `ZoomPhase`, `PaletteLifecycle`,
     `ActivePaletteMode`, `DisplayState`, `DisplayBackend`, `ResidentAsset`,
-    `ThumbnailState`, `InFlightState`, `RawMetadata`, `ArchiveTelemetry`,
-    `UploadMode`, `MipmapTelemetry`, `ImageTransition`, `BlurResources`,
-    `RetainedBuffer`, `RetainedTransferBuffer`) via `union(enum)`
+    `ThumbnailState`, `InFlightState`, `AsyncGpuUploadSlot`, `RawMetadata`,
+    `ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`, `ImageTransition`,
+    `BlurResources`, `RetainedBuffer`, `RetainedTransferBuffer`) via `union(enum)`
     and validation constructors (`PhysicalDims.initPositive`), never loose
     booleans, `0`/`0.0` dimension sentinels, interdependent optionals, or
     optional-surface event multiplexing (`dimensions_probed` vs

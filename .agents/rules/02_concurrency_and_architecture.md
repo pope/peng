@@ -9,10 +9,11 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
 ## 1. State & View Model Split
 
 - **`AppState` (`src/app/state.zig`)**: Owns hardware (`display`, `gpu_device`,
-  `gpu_enabled`, `unpack_compute_pipeline`, `upload_staging`), `allocator`, `io`,
-  `cache: ImageCache`, `workers: WorkerManager`, `frame_metrics: FrameMetrics`,
-  IPC queues/streams, `pending_intents`, `event_batch`, and embeds
-  `viewer: ViewerState`.
+  `gpu_enabled`, `unpack_compute_pipeline`, `upload_staging`, plus 2-phase async
+  upload fields `pending_gpu_upload: AsyncGpuUploadSlot`, `upload_stage_done`,
+  `upload_stage_result`, `upload_group`), `allocator`, `io`, `cache: ImageCache`,
+  `workers: WorkerManager`, `frame_metrics: FrameMetrics`, IPC queues/streams,
+  `pending_intents`, `event_batch`, and embeds `viewer: ViewerState`.
 - **`ViewerState` (`src/state/viewer_state.zig`)**: 100% main-thread visual/UI
   model. **Purity Invariant**: MUST hold **ZERO** GPU handles, worker pools,
   `std.Io`, mutexes/queues, or stored `std.mem.Allocator` fields (`rotation_map`
@@ -58,45 +59,29 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
     `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`).
   - Complete visible rendered frames in `updateFrame` call
-    `app_state.frame_metrics.present.settle(input.now_ms)` right before
-    `buildUiViewModel` and record `{ ingest_ms, intents_ms, sync_ms,`
-    `ui_layout_ms, gpu_encode_ms, swapchain_wait_ms }` alongside
-    `pass_timings.swapchain_present_ts` into `app_state.frame_metrics` (reset
-    on `hideWindow` and `.hidden` without recording partial/suspended frames).
-    `ui.layout.renderFrame` stays clock-free and returns `gpu.pass.PassTimings`
-    (`total_pass_ms`, `gpu_encode_ms`, `swapchain_wait_ms`,
-    `swapchain_present_ts`), while `viewer.zig` measures Phase 3 with
-    `std.Io.Clock.awake.now(io)` and derives
-    `ui_layout_ms = @max(0.0, phase3_total_ms - pass_timings.total_pass_ms)`;
-    `executeFrame` brackets `waitAndAcquireSwapchainTexture` as
-    `swapchain_wait_ms` (subtracted with `-|` and excluded from
-    `FrameSample.totalMs()`) and stamps `swapchain_present_ts` upon window
-    swapchain `cmd_buf.submit()`.
-- **Unified `std.Io.Clock.awake` Rule (Logical `now_ms` & Stopwatches)**:
-  - **Single Monotonic Clock (`std.Io.Clock.awake.now(io)`)**: Every clock read
-    across the entire codebase uses native Zig `std.Io.Clock.awake.now(io)`
-    (with `state.timestampToMs`, `state.durationToMs`, and
-    `state.activeDurationMs`; `sdl` exposes zero C timer wrappers).
-  - **Simulation / Logical Time (`now_ms: u64`)**: All animation, timeout,
-    cadence, and `inflight` timestamp logic threads explicit `now_ms: u64`
-    from `updateFrame` (`pre_wait_ms`, `input.now_ms` -> `FrameContext.now_ms`,
-    `buildUiViewModel(..., input.now_ms)`), `drainWorkerEvents(state, now_ms)`,
-    and `openPath(path, now_ms)` / `reloadPath(path, now_ms)`. Never sample
-    wall/monotonic clocks ad-hoc inside `src/state/` or `src/ui/` (both remain
-    100% pure and clock-free; `RenderResources.io` supplies `gpu/pass.zig`
-    without passing `io` through `ui`).
+    `app_state.frame_metrics.present.settle(input.now_ms)` before
+    `buildUiViewModel` and record phase timings + `swapchain_present_ts`
+    (`reset` on `hideWindow`/`.hidden`). `ui.layout.renderFrame` stays
+    clock-free, returning `gpu.pass.PassTimings`, and `FrameSample.totalMs()`
+    excludes `swapchain_wait_ms` (see `systems-architecture.md` Pattern 6).
+- **Unified `std.Io.Clock.awake` Rule**:
+  - Every clock read uses `std.Io.Clock.awake.now(io)` (`sdl` wraps zero C
+    timers). Thread explicit logical `now_ms: u64` from `updateFrame` through
+    `FrameContext`, `drainWorkerEvents`, `buildUiViewModel`, and
+    `openPath`/`reloadPath`; keep `src/state/` and `src/ui/` 100% clock-free
+    (`RenderResources.io` supplies `gpu/pass.zig`).
 - **Intentional Pipeline Trade-Offs (Preserve)**:
   1. *Pre-Render Sync*: `sysProcessAssetUploads` and `sysUpdateCache` run right
-     *before* `renderFrame` (not after) so staged CPU surfaces/thumbnails promote
-     to GPU and display on the **same frame** with 0-frame lag.
-  2. *Data-Plane vs Control-Plane Events*: Only `ipc_command` events push
+     *before* `renderFrame` so staged CPU surfaces/thumbnails promote to GPU
+     with 0-frame lag.
+  2. *Data-Plane vs Control-Plane Events*: Only `ipc_command` pushes
      `AppIntent`s; decoded `sdl.Surface` and scan payloads stage directly onto
      CPU state in `drainWorkerEvents` so `AppIntent` stays pure value data.
   3. *Startup & Discrete Scan Overlap*: Continuous decodes dispatch via
-     `sysUpdateCache`, while `openPathInternal` / `loadPaletteDirectory`
-     (2-stage `paletteScanWorker` after zero-I/O `beginDirectoryLoad`) / IPC
-     `preview` & `precache` launch one-shot workers directly on transition to
-     hide cold-start window/Vulkan init latency.
+     `sysUpdateCache`, while `openPathInternal`, `loadPaletteDirectory`, and
+     IPC `preview`/`precache` launch one-shot workers directly on transition to
+     hide cold-start latency (standalone `peng-preview` and `peng-precache`
+     invoke `core.preview` and `core.thumbcache` directly).
 - **Intents, Registry & Input Isolation**:
   - All UI, keyboard, and IPC actions enqueue `intents.AppIntent` via
     `pushIntent` rather than mutating state inline.
@@ -109,10 +94,13 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
 
 ## 3. Workers, Cancellation & Demand-First Gating
 
-- **Main-Thread GPU Exclusivity & Mutex Safety**:
-  - Execute all SDL GPU calls exclusively on the main thread (Phase 2
-    `sysProcessAssetUploads` and Phase 3). Unlock `std.Io.Mutex` via `defer` and
-    never re-enter on the same stack.
+- **Main-Thread GPU Exclusivity & 2-Phase Async Staging**:
+  - Execute all SDL GPU API calls exclusively on the main thread (Phase 2
+    `sysProcessAssetUploads` and Phase 3). Transfer-buffer staging `memcpy` and
+    `sdl.Surface` teardown may be offloaded to `stageCopyWorker`
+    (`upload_group`) via `beginAsyncUpload` $\\to$
+    `StagedTransferJob.executeStagingCopy` $\\to$ `finishAsyncUpload`. Unlock
+    `std.Io.Mutex` via `defer` and never re-enter on the same stack.
 - **`std.Io.Group` Lifecycle & Daemon Separation**:
   - Spawn cancellable batch jobs via `workers.group.async(io, ...)` (never
     discard futures); run long-lived listeners (IPC server) on dedicated
@@ -140,11 +128,12 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     dispatch via `WorkerManager.canSpawnDecode(priority)` (`DecodePriority`:
     `.foreground` `min(12, base + 2)` for `cur_id`, `.promotion` `base` for
     `checkPairPromotion`, `.background` `max(1, base - 1)` for neighbors).
-  - In `prepareCacheTextures` (`src/app/systems/asset_upload.zig`), upload active
-    `ThumbnailState.staged_cpu` first, pace full-image uploads (`.loaded_cpu` /
-    `.promoting_gpu`) at **1 texture/frame** (active first, then closest
-    neighbor), transfer `surface` zero-copy to `enqueueDecodedThumbWrite`
-    (`MAX_QUEUED_THUMB_WRITES = 8`, yielding when decodes run), and run
+  - In `prepareCacheTextures` (`src/app/systems/asset_upload.zig`), finalize
+    `pending_gpu_upload`, upload active `ThumbnailState.staged_cpu` first, pace
+    full-image uploads (`.loaded_cpu`/`.promoting_gpu`) at **1 texture/frame**
+    (active first, then closest neighbor) via 2-phase async staging, transfer
+    `surface` zero-copy to `enqueueDecodedThumbWrite`
+    (`MAX_QUEUED_THUMB_WRITES = 8`, yielding while decodes run), and run
     `upload_staging.maybeShrinkIdle`.
   - `loadPaletteDirectory` dispatches the 2-stage `paletteScanWorker`
     (Stage 1 `.palette_dir_loaded` with optional `walk_up_if_empty` and O(1)

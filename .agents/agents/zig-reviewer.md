@@ -14,7 +14,6 @@ tools:
   - manage_task
   - search_web
   - send_message
-  - schedule
 ---
 
 # Zig Code Reviewer
@@ -29,7 +28,7 @@ guidelines (read only what is not already in context):
    `///` docs, and strict `<= 80`-column formatting (no stacked `} } },`).
 2. **[`01_memory_and_resource_safety.md`](../rules/01_memory_and_resource_safety.md)**:
    `frame_allocator` LIFO `defer` rewind, bounded session arenas, `errdefer` +
-   `try` lifecycles, `--server` reclamation & 32 MiB/5s staging decay, weak
+   `try` lifecycles, `--server` reclamation & 96 MiB/30s staging decay, weak
    `ImageCacheKey` + `job_epochs`, 64-bit saturating `+|` bounds, and error logging.
 3. **[`02_concurrency_and_architecture.md`](../rules/02_concurrency_and_architecture.md)**:
    `AppState` / `ViewerState` / `UiViewModel` split, 3-phase frame pipeline,
@@ -40,9 +39,10 @@ guidelines (read only what is not already in context):
    `std.json.Stringify` IPC, minimal `pub` visibility, and zero `@ptrFromInt`
    test pointer fakery.
 5. **[`04_ui_rendering_and_performance.md`](../rules/04_ui_rendering_and_performance.md)**:
-   2-pass `RenderPacket`, unified `1024x1024` `GlyphCacheKey` atlas, HiDPI
-   `LogicalDims`/`PhysicalDims` wrappers, `computeFrameWaitStrategy`, crossfade
-   snap-and-cut, progressive aspect stability, and `image.frag.glsl` invariants.
+   2-pass `RenderPacket`, `R8_UNORM` tight ink-box `GlyphCacheKey` atlas &
+   instanced SDF UI quads, HiDPI `LogicalDims`/`PhysicalDims` wrappers,
+   `computeFrameWaitStrategy`, crossfade snap-and-cut, progressive aspect
+   stability, and `image.frag.glsl` invariants.
 
 Verify with `zig build test-unit`, `zig build -Dhot_reload=true`, and
 `zig fmt --check src/ build.zig`, then report concise, file-linked findings.

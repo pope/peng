@@ -9,10 +9,10 @@ description: >-
 
 # Zig GUI & GPU Animation Recipes
 
-## 1. Data-Oriented Animation Engine (`src/state/animation.zig`)
+## 1. Data-Oriented Animation Engine (`src/state/animation_state.zig`)
 
 Store all channel parameters in flat parallel static arrays (`MAX_CHANNELS = 32`,
-676 bytes total, zero heap allocations):
+zero heap allocations):
 
 ```zig
 pub const AnimationState = struct {
@@ -22,7 +22,10 @@ pub const AnimationState = struct {
     elapsed_ms: [MAX_CHANNELS]f32 = @splat(0.0),
     durations_ms: [MAX_CHANNELS]f32 = @splat(0.0),
     easings: [MAX_CHANNELS]EasingType = @splat(.linear),
+    velocities: [MAX_CHANNELS]f32 = @splat(0.0),
+    spring_omegas: [MAX_CHANNELS]f32 = @splat(0.0),
     active_mask: u32 = 0,
+    spring_mask: u32 = 0,
 };
 ```
 
@@ -34,17 +37,18 @@ pub const AnimationState = struct {
 
 ______________________________________________________________________
 
-## 2. Easing Guards & Proportional Interruption
+## 2. Critically-Damped Springs, Easing Guards & Proportional Interruption
 
-- **NaN & Clamp Guard**: Guard normalized $t = \\text{elapsed} / \\text{duration}$
-  with `if (std.math.isNan(t)) return 0.0;` and `std.math.clamp(t, 0.0, 1.0)`.
-- **Proportional Reversal**: When closing a scalar UI element mid-open, scale
-  close duration by current progress `p` with a `30ms` floor:
-  ```zig
-  const progress = self.viewer.animations.get(.palette_reveal);
-  const close_dur = @max(DURATION_PALETTE_CLOSE_MS * progress, 30.0);
-  self.viewer.animations.start(.palette_reveal, 0.0, close_dur, .ease_out_quad);
-  ```
+- **Critically-Damped Springs (`startSpring`)**: Interactive UI surfaces
+  (`palette_reveal`, `edit_panel`, `title_overlay`, `snackbar`) use
+  velocity-preserving critically-damped springs (`startSpring(ch, target, SPRING_OMEGA_*)`, tracked in `spring_mask` / `velocities` / `spring_omegas`)
+  so mid-flight reversals stay $C^1$-continuous without velocity pops.
+- **NaN & Clamp Guard**: For timed easing channels (`start`), guard normalized
+  $t = \\text{elapsed} / \\text{duration}$ with
+  `if (std.math.isNan(t)) return 0.0;` and `std.math.clamp(t, 0.0, 1.0)`.
+- **Proportional Reversal**: When reversing a non-spring timed scalar channel
+  mid-open, scale close duration by current progress `p` with a `30ms` floor
+  (`@max(base_close_ms * progress, 30.0)`).
 
 ______________________________________________________________________
 
@@ -53,8 +57,8 @@ ______________________________________________________________________
 - **Immediate-Mode Alpha**: Scale colors explicitly via
   `theme.withAlpha(color, progress)` (`progress == 1.0` is an exact identity for
   golden screenshot parity).
-- **Atlas & Modal References**: For per-glyph white atlas RGBA vertex modulation
-  and `isAcceptingInput()` modal close decoupling, follow
+- **Atlas & Modal References**: For per-glyph `R8_UNORM` coverage atlas RGBA
+  vertex modulation and `isAcceptingInput()` modal close decoupling, follow
   [`04_ui_rendering_and_performance.md`](../../rules/04_ui_rendering_and_performance.md)
   §1 & §3 and
   [`sdl3-gpu-rendering.md`](../zig-gui-practices/references/sdl3-gpu-rendering.md) §1.
@@ -69,12 +73,12 @@ mud or luminance pops). Use **snap-and-cut** when `< 200ms`
 require outgoing `.loaded_gpu` residency.
 
 - **Dual-Quad Alpha & Layering**:
-  - Outgoing quad (`ImageTransitionPrevQuad` at $z = 0$):
+  - Outgoing quad (back layer, $z = 0$):
     $A\_{\\text{prev}} = 1.0 - p^2$ (quadratic falloff preserves perceived
     luminance), sized from unrotated source dims $\\times Z\_{\\text{prev}}$
     (`dst_w = sw * prev_zoom`, `dst_h = sh * prev_zoom`) anchored at viewport
     center + `prev_pan`.
-  - Incoming quad (`ImageCanvas` at $z = 1$): $A\_{\\text{cur}} = p$, seeded on
+  - Incoming quad (front layer, $z = 1$): $A\_{\\text{cur}} = p$, seeded on
     navigation via `updateCurrentRotation()` -> `ZoomFactor.init(getBaseScale())`
     for Frame-1 aspect stability.
   - Settled ($p \\ge 0.999$): `image_transition = .none`, single quad at $A = 1.0$.

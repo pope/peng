@@ -17,7 +17,7 @@
     07. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)` — Updates pan/zoom glide & slideshow timers -> `pending_intents`.
     08. `sysExecuteIntents(ctx)` — Single-pass execution of all queued `AppIntent` items.
     09. `sysSyncWindow(ctx)` — Syncs OS window title and display state.
-    10. `sysProcessAssetUploads(ctx)` — Updates EXIF rotation, paces GPU texture uploads, and decays oversized staging buffers (> 32 MiB after 5s idle).
+    10. `sysProcessAssetUploads(ctx)` — Updates EXIF rotation, paces GPU texture uploads with 2-phase async staging offload (`AsyncGpuUploadSlot` / `stageCopyWorker`), and decays oversized staging buffers (> 96 MiB after 30s idle).
     11. `sysUpdateCache(ctx)` — Enforces VRAM budget, evicts slots, and spawns `DecodeMode` / `DecodePriority` workers.
 
 ______________________________________________________________________
@@ -27,17 +27,9 @@ ______________________________________________________________________
 - **Pattern 2 — Frame Arena Lifetimes & Capacity Pre-allocation**
   - Every system function signature accepts `ctx: FrameContext` containing
     `state: *AppState`, `frame_allocator: Allocator`, `input: ?FrameInput`,
-    `delta_time_ms: f64`, and `now_ms: u64`.
-  - **Unified `std.Io.Clock.awake` Rule**: All clock queries across the codebase
-    use native Zig `std.Io.Clock.awake.now(io)` (`sdl` wraps zero C timer APIs).
-    Simulation, animation, timeout, and cadence paths consume explicit
-    `now_ms: u64` threaded from `updateFrame` (`pre_wait_ms` via
-    `state.timestampToMs(pre_ingest_start)` before `pollFrameInput`,
-    `input.now_ms` post-wait -> `ctx.now_ms` -> `buildUiViewModel`), while
-    sub-millisecond stopwatches use `std.Io.Clock.awake.now(io)` with
-    `state.durationToMs` / `state.activeDurationMs` (`RenderResources.io`
-    supplies `gpu/pass.zig` so `src/ui/` and `src/state/` remain 100% pure and
-    clock-free).
+    `delta_time_ms: f64`, and `now_ms: u64` (see
+    `02_concurrency_and_architecture.md` for the unified
+    `std.Io.Clock.awake` logical-time rule).
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
   - **Dynamic Array Pre-allocation**: State constructors
     (`NavigationState.init`, `PaletteState.init`,
@@ -349,10 +341,9 @@ ______________________________________________________________________
     - Opening any mode enters via `AppState.openPalette` /
       `openDirectoryPalette` (resetting stale state, setting `.open`, starting
       `.palette_reveal`, and enabling text input); in-place directory reload
-      only applies when `openMode()` is already `.directory_navigator`. Both
-      `.directory_navigator` entry listing (with `walk_up_if_empty`) and child
-      folder counts run asynchronously off-thread via 2-stage
-      `paletteScanWorker` under `dir_scan_generation` and `active_dir_scans`.
+      only applies when `openMode()` is already `.directory_navigator` (using
+      2-stage `paletteScanWorker` under `dir_scan_generation` /
+      `active_dir_scans`).
     - Confirming a slideshow interval pushes
       `AppIntent.start_slideshow_interval` so interval clamping and
       `NavigationState.slideshow` mutation stay inside `sysExecuteIntents`.

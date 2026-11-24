@@ -9,24 +9,29 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
 ## 1. 2-Pass `RenderPacket`, Unified Font Atlas & Scissor Safety
 
 - **2-Pass Render Pipeline (`src/ui/renderer.zig`, `src/gpu/pass.zig`)**:
-  1. `buildRenderPacket`: Extracts `UiDrawList` into vertices, scissors, and
-     batches (`RenderPacket`), ensuring the `1024x1024` UI+glyph atlas and
-     rasterizing uncached glyphs via `getOrRasterizeGlyph` with zero render passes.
-  2. `executeFrame` / `executeRenderPacket`: Uploads geometry via double-buffered
-     transfer buffers, runs lazy 2-pass quarter-res Dual Kawase blur
-     (`BlurResources`: `tex.scene` -> `tex.blur_down` -> `tex.blur` when
-     `enable_blur` and `.blurred_surface` batches exist), and submits draws.
+  1. `executeFrame` opens a shared `CopyPass` and calls
+     `text_cache.beginFrameGlyphUploads()` *before* invoking
+     `buildRenderPacket` (`PacketBuildContext.copy_pass`), which extracts
+     `UiDrawList` into instanced SDF quads (`UiQuadInstance`,
+     `sdf.vert.glsl`/`sdf.frag.glsl`), glyph vertices, scissors, and batches
+     (`RenderPacket`), recording uncached glyph uploads directly into the open
+     `CopyPass` via `getOrRasterizeGlyph`.
+  2. `executeRenderPacket` uploads geometry via double-buffered transfer
+     buffers, runs lazy 3-pass 2-level half/quarter-res Dual Kawase blur with
+     vibrancy (`BlurResources` when `enable_blur` and `.blurred_surface`
+     batches exist — see `sdl3-gpu-rendering.md` §4), and submits draws.
   - `ImageConfig` (`src/ui/renderer.zig`) and `appendImageCommand`
     (`src/gpu/render_image.zig`) pass non-null `gpu.TextureRef` handles
     (`src/gpu/root.zig`) without `*anyopaque` erasure or `@import("sdl")` in
     `src/ui/`.
-- **Unified `1024x1024` UI + Per-Glyph Atlas (`src/gpu/text_cache.zig`)**:
-  - Reserve top-left `4x4` opaque white (`0xFFFFFFFF`) at `uv = (0, 0)` for solid
-    UI primitives (`gpu_res.uiTexture()`) so chrome and text merge into single
-    scissor batches.
-  - Key glyphs strictly by `GlyphCacheKey{ .font_id, .font_size, .codepoint }`,
-    rasterized once in pure white `(255, 255, 255, 255)` with a 1px `0x00FFFFFF`
-    gutter, and modulate RGBA via `Vertex.color` (`packRgba255`).
+- **Tight Ink-Box `1024x1024` `R8_UNORM` Glyph Atlas (`src/gpu/text_cache.zig`)**:
+  - Reserve top-left `4x4` opaque coverage (`255`) block at `uv = (0, 0)` on the
+    `R8_UNORM` atlas (`glyph.frag.glsl`); draw rounded/shadowed UI chrome via
+    instanced SDF quads (`sdf.frag.glsl`).
+  - Key glyphs by `GlyphCacheKey{ .font_id, .font_size, .codepoint }` (mapping
+    logical `target_size` via `FontMeasurer.dpi_scale`), rasterized to tight
+    ink bounds with a 1px `0` gutter, and modulate RGBA via `Vertex.color`
+    (`packRgba255`).
 - **Scissor & SIMD Bounds**: Clip scissors to physical bounds, skip draws with
   `scissor.w <= 0` or `scissor.h <= 0`, and check `offset + 4 <= slice.len`
   before SIMD `@ptrCast`.
@@ -54,8 +59,9 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
 - **Frame Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
   - Return `.wait_indefinite` (0% CPU) when `.hidden` or settled idle; `.poll`
     when background events were drained or during active `hasVisualMotion` on a
-    visible GPU swapchain window; `8ms` tick when `hasPendingAsyncWork()` or
-    headless motion is active; and `getWaitTimeoutMs` for transient overlays,
+    visible GPU swapchain window; `8ms` tick when `hasPendingAsyncWork()`
+    (including `pending_gpu_upload.isActive()`) or headless motion is active;
+    and `getWaitTimeoutMs` for transient overlays,
     unpaused `SlideshowMode.remainingTimeoutMs`,
     `ScrollCadence.settleTimeoutMs` (`35ms` `.single_step`, `200ms`
     `.brisk_scroll`, `251ms` promotion), `upload_staging.decayTimeoutMs`, and

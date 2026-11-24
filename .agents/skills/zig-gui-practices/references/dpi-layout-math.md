@@ -1,4 +1,4 @@
-# DPI Layout & Arc Geometry Math Reference
+# DPI Layout & SDF Geometry Math Reference
 
 ## High-DPI Coordinate Transformations
 
@@ -11,16 +11,18 @@
 
 ______________________________________________________________________
 
-## Continuous Arc & Annular Quad Geometry Formulas
+## Instanced Analytic SDF UI Quads & Optical Pill Centering
 
-- When building circular or rounded UI layout boxes, compute quadrant vertices
-  using continuous `@sin` and `@cos` floating-point math:
-  $$x = \\text{center_x} + \\text{radius} \\times \\sin(\\theta)$$
-  $$y = \\text{center_y} + \\text{radius} \\times \\cos(\\theta)$$
-
-- For inner/outer rounded borders (annular quad vertices), maintain separate
-  inner and outer radii using single-precision floats (`f32`) to prevent vertex
-  overlapping and anti-aliasing artifacts.
+- **Analytic SDF Chrome (`sdf.vert.glsl` / `sdf.frag.glsl`)**:
+  Rounded rectangles, borders, soft SDF drop shadows, and analytic close icons
+  are emitted as single instanced `UiQuadInstance` quads rather than
+  CPU-tessellated `@sin`/`@cos` vertex fans. Corner radii and border widths
+  are evaluated analytically per fragment in physical pixels, guaranteeing crisp
+  sub-pixel anti-aliasing at any DPI scale.
+- **Optical Vertical Centering for Pill Badges & Buttons**:
+  Center pill badge and button text vertically using measured glyph ink bounds
+  (rather than full line-height ascender/descender box) so uppercase and
+  short-label pills align optically within compact capsules.
 
 ______________________________________________________________________
 
@@ -79,7 +81,7 @@ ______________________________________________________________________
   `logical_center.toPhysical(scale)`.
 
 - **Logical UI Overlays vs Physical Viewport**:
-  UI overlay elements (`"InfoOverlayCard"`, `"StatsPanel"`) store drag
+  UI overlay elements (Info overlay card, Stats panel) store drag
   offsets in **logical points** (`input.mouse_x`), whereas Viewport pan and
   zoom-at-cursor operations operate strictly in **physical pixels**
   (`input.physicalMousePos()`).
@@ -145,19 +147,35 @@ ______________________________________________________________________
   `isHovered`):
 
   ```zig
-  // src/state/interaction.zig: hit-test against recorded slider track FRect
-  pub fn getHoveredSliderTrack() ?SliderTrackHit {
-      if (!state.has_layout) return null;
-      if (!state.edit_scroll_list.contains(state.pointer)) return null;
-      inline for (intents.specs, 0..) |spec, idx| {
-          const track = state.slider_tracks[idx];
-          const knob = state.slider_knobs[idx];
-          if (track.contains(state.pointer) or knob.contains(state.pointer)) {
-              return .{
-                  .param = spec.param,
-                  .x = track.x,
-                  .w = track.w,
-              };
+  // src/state/interaction.zig: hit-test against recorded edit panel ?FRects
+  pub fn hitTestEditPanel(self: *const InteractionState) ?EditPanelHit {
+      if (!self.has_layout) return null;
+      if (self.edit_close_btn) |btn| {
+          if (btn.contains(self.pointer)) return .close;
+      }
+      if (self.edit_reset_btn) |btn| {
+          if (btn.contains(self.pointer)) return .reset_all;
+      }
+      if (self.edit_compare_btn) |btn| {
+          if (btn.contains(self.pointer)) return .toggle_compare;
+      }
+      inline for (std.enums.values(EditParam)) |param| {
+          const idx = @backingInt(param);
+          if (self.slider_resets[idx]) |rbtn| {
+              if (rbtn.contains(self.pointer)) return .{ .reset_param = param };
+          }
+          const track_opt = self.slider_tracks[idx];
+          const knob_opt = self.slider_knobs[idx];
+          const over_track = if (track_opt) |t| t.contains(self.pointer) else false;
+          const over_knob = if (knob_opt) |k| k.contains(self.pointer) else false;
+          if (over_track or over_knob) {
+              if (track_opt) |t| {
+                  return .{ .slider = .{
+                      .param = param,
+                      .track_x = t.x,
+                      .track_w = t.w,
+                  } };
+              }
           }
       }
       return null;

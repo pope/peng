@@ -13,8 +13,8 @@
     2. A background worker exits after cancellation (`cancel.isCanceled()` in `decodeWorker`) or background thumbnail/precache batch completion (`thumbWriterWorker`, `precacheDirectoryWorker`), or
     3. The window transitions to `.hidden` in `--server` mode (`AppState.hideWindow` + `viewer.zig`, alongside `RenderResources.releaseTransientResources` and `sdl.gpu.Device.reclaimMemory()`).
 - **Staging Buffer Warm Cap & Idle Decay (`UploadStagingBuffer`)**:
-  - `UploadStagingBuffer` (`src/gpu/upload.zig`) keeps retained transfer and compute storage buffers up to `WARM_STAGING_CAP_BYTES = 32 * 1024 * 1024` (32 MiB) warm across frames.
-  - At the end of `sysProcessAssetUploads` (`src/app/systems/asset_upload.zig`), `maybeShrinkIdle(gpu_dev, ctx.now_ms, is_idle)` evaluates idle state (`!did_upload and !cache.hasPendingCpuUploads(true) and active_decode_threads == 0`): active frames refresh `oversized_since_ms = now_ms`, and after `IDLE_DECAY_MS = 5000` (5s) idle, any buffer exceeding 32 MiB is released back to `.unallocated` while buffers `<= 32 MiB` stay warm.
+  - `UploadStagingBuffer` (`src/gpu/upload.zig`) keeps retained transfer and compute storage buffers up to `WARM_STAGING_CAP_BYTES = 96 * 1024 * 1024` (96 MiB) warm across frames.
+  - At the end of `sysProcessAssetUploads` (`src/app/systems/asset_upload.zig`), `maybeShrinkIdle(gpu_dev, ctx.now_ms, is_idle)` evaluates idle state (`!did_upload and !state.pending_gpu_upload.isActive() and !cache.hasPendingCpuUploads(true) and active_decode_threads == 0`): active frames refresh `oversized_since_ms = now_ms`, and after `IDLE_DECAY_MS = 30_000` (30s) idle, any buffer exceeding 96 MiB is released back to `.unallocated` while buffers `<= 96 MiB` stay warm.
   - `AppState.getWaitTimeoutMs` (`src/app/state.zig`) incorporates
     `upload_staging.decayTimeoutMs(now)` and (when `stats_panel.visible` is
     `true`) `frame_metrics.present.settleTimeoutMs(now)` so idle viewers wake
@@ -50,9 +50,12 @@ ______________________________________________________________________
     `WorkerManager.enqueueThumbWrite` (`MAX_QUEUED_THUMB_WRITES = 8`) after GPU
     upload and `enforceVramBudget`. `thumbWriterWorker` pops jobs under
     `thumb_write_mutex` (exiting immediately when empty), yields while
-    `active_decode_threads > 0`, downscales to `.large` ($256\\times256$),
-    applies orthogonal EXIF rotation (`scaleAndOrientSurface` in
-    `src/core/thumbcache.zig`), splices `tEXt` metadata chunks (`Thumb::URI`,
+    `active_decode_threads > 0`, downscales to the DPI-mapped `cfg.write_tier`
+    selected via `ThumbTier.fromDpiScale` (`<= 1.0` -> `.normal` $128\\times128$,
+    `<= 2.0` -> `.large` $256\\times256$, `> 2.0` -> `.x_large` $512\\times512$;
+    headless/unavailable defaults to `.normal`), applies orthogonal EXIF
+    rotation (`scaleAndOrientSurface` in `src/core/thumbcache.zig`), splices
+    `tEXt` metadata chunks (`Thumb::URI`,
     `Thumb::MTime`, `Thumb::Size`, `Thumb::Mimetype`,
     `Thumb::Image::Width`/`Height`, `Software`) immediately after the 33-byte
     `IHDR`, and writes via `0600` temp file + atomic `rename`.
@@ -62,9 +65,9 @@ ______________________________________________________________________
 - **Loading Grace Period (`LOADING_GRACE_PERIOD_MS = 35`)**:
   When `entry.resident.asset == .none` with an active `InFlightState`
   (`.queued_decode`, `.decoding`, or `.uploading`) and no thumbnail is ready,
-  `renderViewport` sizes `ImageCanvas` to `.fixed(draw_w)` / `.fixed(draw_h)`
-  and delays the `"Loading image..."` text until `elapsed > 35ms` (~2 frames
-  at 60Hz), preventing UI text flashes on fast decodes.
+  `renderViewport` sizes the image rect to `draw_w` / `draw_h` and delays the
+  `"Loading image..."` text until `elapsed > 35ms` (~2 frames at 60Hz),
+  preventing UI text flashes on fast decodes.
 - **EXIF APP1 & TIFF Rules**:
   - **APP1 Skipping**: When scanning JPEG markers for main image `SOF0`/`SOF2` dimensions, explicitly skip `APP1` (`0xFF, 0xE1`) segments (`idx += seg_len`) so embedded thumbnail SOF headers are not mistaken for main image dimensions.
   - **Truncated APP1 Tolerance**: Never discard an APP1 segment solely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and TIFF IFD0 headers.
@@ -119,9 +122,10 @@ Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`
      `.promoting_gpu` (`PromotingGpuComponent`) without calling
      `uploadSurfaceToGpu` or destroying any existing `.loaded_gpu` texture.
      Phase 2 (`prepareCacheTextures` / `completeGpuUpload` in
-     `src/app/systems/asset_upload.zig`) performs all GPU uploads, atomically
-     resolves `ImageCacheKey` via `getEntry` after `enforceVramBudget` before
-     transferring `surface` to `enqueueDecodedThumbWrite`.
+     `src/app/systems/asset_upload.zig`) runs the 2-phase async staging flow
+     (see `sdl3-gpu-rendering.md` §3) and atomically resolves `ImageCacheKey`
+     via `getEntry` after `enforceVramBudget` before transferring `surface` to
+     `enqueueDecodedThumbWrite`.
 
 ______________________________________________________________________
 
@@ -195,8 +199,8 @@ ______________________________________________________________________
   ($\\pm 1, \\pm 2$) with `DecodePriority.background`. Completed surfaces are
   staged in `ResidentAsset.loaded_cpu` (`CpuAsset`) or `.promoting_gpu`
   (`PromotingGpuComponent`), then trickled to the GPU at 1 texture per frame
-  (active slot first, then closest neighbor) in `prepareCacheTextures`
-  (`src/app/systems/asset_upload.zig`).
+  (active slot first, then closest neighbor) via 2-phase async staging in
+  `prepareCacheTextures` (`src/app/systems/asset_upload.zig`).
 
 ______________________________________________________________________
 
@@ -297,4 +301,5 @@ ______________________________________________________________________
 - **SIMD Surface Inspection & Single-Pass RGBA32 Downscaling (`Surface.scaleRgba32Smooth`)**:
   - Scan contiguous horizontal rows with `@Vector(16, u8)` and `@reduce(.Or, ...)`; scan strided vertical columns with scalar/4-byte reads and early exit.
   - Derive endian-agnostic RGB masks from `details.*.Rmask | details.*.Gmask | details.*.Bmask`.
-  - When downscaling CPU surfaces (`RGB24`, `BGR24`, `RGBA32`) for Freedesktop thumbnail generation (`writeThumbnailPng`) or Kitty terminal previews (`renderPreviewRgbaFile` -> `/dev/shm/tty-graphics-protocol-peng-...` `t=t` transfer), use `Surface.scaleRgba32Smooth` (`resampleDirectToRgba32`) instead of `SDL_ScaleSurface(..., SDL_SCALEMODE_LINEAR)` (which falls back to nearest-neighbor on 24-bit `RGB24` surfaces and exhibits single-pass bilinear aliasing on $>2\\times$ reductions). `scaleRgba32Smooth` performs single-pass `i64` 16.16 fixed-point $4\\times 4$ / $2\\times 2$ box-grid area averaging (or bilinear for $\<2\\times$) directly into the target `RGBA32` buffer with zero intermediate surface allocations.
+  - When downscaling CPU surfaces (`RGB24`, `BGR24`, `RGBA32`) for Freedesktop thumbnail generation (`writeThumbnailPng` in `src/core/thumbcache.zig`) or Kitty terminal previews (`renderPreviewRgbaFile` in `src/core/preview.zig`, shared by standalone `peng-preview` + `termgfx.writeKittyPreview` and IPC `previewWorker` -> `/dev/shm/tty-graphics-protocol-peng-...` `t=t` transfer), use `Surface.scaleRgba32Smooth` (`resampleDirectToRgba32`) instead of `SDL_ScaleSurface(..., SDL_SCALEMODE_LINEAR)` (which falls back to nearest-neighbor on 24-bit `RGB24` surfaces and exhibits single-pass bilinear aliasing on $>2\\times$ reductions). `scaleRgba32Smooth` performs single-pass `i64` 16.16 fixed-point $4\\times 4$ / $2\\times 2$ box-grid area averaging (or bilinear for $\<2\\times$) directly into the target `RGBA32` buffer with zero intermediate surface allocations.
+  - **JPEG DCT Scaling (`libturbojpeg`) & RAW Medium Preview Preference**: On non-Windows builds (`sdl_options.has_turbojpeg`), `Surface.loadConstMemScaledOpt` and `Surface.loadConstMemScaledWithDimsOpt` (`src/sdl/surface.zig`) decode JPEGs at the smallest `libturbojpeg` DCT scaling factor `>= target_dim` (returning full unscaled source dimensions for `Thumb::Image::Width`/`Height` metadata). Both `src/core/thumbcache.zig` (batch precaching) and `src/core/preview.zig` (terminal previews, which also prefer medium RAW embedded previews when large enough) use this fast path before final `scaleRgba32Smooth` resampling.
