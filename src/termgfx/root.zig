@@ -2,10 +2,11 @@
 //!
 //! Pure, zero-SDL encoders and environment-based protocol detection for
 //! rendering image previews directly in terminal emulators (Kitty Graphics
-//! Protocol `t=t` and VT340 Sixel).
+//! Protocol `t=t`, VT340 Sixel, and iTerm2 Inline Images OSC 1337).
 
 const detect = @import("detect.zig");
 const geom = @import("geom");
+const iterm2 = @import("iterm2.zig");
 const sixel = @import("sixel.zig");
 const std = @import("std");
 
@@ -31,10 +32,18 @@ pub const SixelPixelsPayload = struct {
     dims: PositiveDimsU32,
 };
 
+/// Payload for iTerm2 Inline Images (OSC 1337) emission from encoded PNG or
+/// JPEG bytes.
+pub const Iterm2Payload = struct {
+    image_bytes: []const u8,
+    dims: PositiveDimsU32,
+};
+
 /// Protocol-tagged payload for terminal graphics preview emission.
 pub const PreviewPayload = union(Protocol) {
     kitty: KittyFilePayload,
     sixel: SixelPixelsPayload,
+    iterm2: Iterm2Payload,
 };
 
 fn writeKittyPreview(
@@ -74,6 +83,11 @@ pub fn writePreview(
             s.rgba_pixels,
             s.pitch,
             s.dims,
+        ),
+        .iterm2 => |it| iterm2.writeIterm2Preview(
+            writer,
+            it.image_bytes,
+            it.dims,
         ),
     };
 }
@@ -134,9 +148,23 @@ test "writePreview formats Kitty t=t and Sixel escape sequences" {
     try std.testing.expect(
         std.mem.startsWith(u8, aw.written(), "\x1bP0;1;0q\"1;1;1;1"),
     );
+
+    var w4 = std.Io.Writer.fixed(&buf);
+    try writePreview(&w4, .{
+        .iterm2 = .{
+            .image_bytes = "abc",
+            .dims = .{ .w = 16, .h = 12 },
+        },
+    });
+    try std.testing.expectEqualStrings(
+        "\x1b]1337;File=inline=1;size=3;width=16px;height=12px;" ++
+            "preserveAspectRatio=1:YWJj\x07",
+        w4.buffered(),
+    );
 }
 
 test {
     _ = detect;
+    _ = iterm2;
     _ = sixel;
 }

@@ -743,7 +743,7 @@ pub fn printPreviewHelp(io: std.Io) void {
     printHelpString(
         io,
         "Usage: peng-preview [OPTIONS] [W H] <PATH>\n\n" ++
-            "Render a terminal image preview (Kitty or Sixel).\n\n" ++
+            "Render a terminal image preview (Kitty, Sixel, or iTerm2).\n\n" ++
             "Options:\n" ++
             "  -h, --help                Show this help message and exit\n" ++
             "  -c, --clear               " ++
@@ -1731,6 +1731,16 @@ test "parsePreviewArgsIterator parses --protocol flag" {
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expectEqual(ProtocolMode.sixel, parsed.protocol);
+        try testing.expectEqualStrings("photo.jpg", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--protocol", "iterm2", "photo.jpg" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ProtocolMode.iterm2, parsed.protocol);
         try testing.expectEqualStrings("photo.jpg", parsed.path.?);
     }
 

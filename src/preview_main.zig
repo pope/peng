@@ -10,8 +10,8 @@ const renderPreviewSurface = core.preview.renderPreviewSurface;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 
 /// Standalone CLI entry point for rendering a terminal image preview
-/// (Kitty Graphics Protocol `t=t` or VT340 Sixel) without a GUI window,
-/// Vulkan device, or server.
+/// (Kitty Graphics Protocol `t=t`, VT340 Sixel, or iTerm2 Inline Images)
+/// without a GUI window, Vulkan device, or server.
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -130,6 +130,57 @@ pub fn main(init: std.process.Init) !void {
                 const write_err: anyerror = stdout_writer.err orelse err;
                 if (write_err != error.BrokenPipe) {
                     std.log.err("Failed to write Sixel preview: {s}", .{
+                        @errorName(write_err),
+                    });
+                }
+                std.process.exit(1);
+            }
+        },
+        .iterm2 => {
+            const preview = renderPreviewSurface(
+                gpa,
+                io,
+                thumb_cfg,
+                target_path,
+                parsed.max_dims,
+                NoCancel{},
+            ) catch |err| {
+                std.log.err(
+                    "Failed to render preview for '{s}': {s}",
+                    .{ target_path, @errorName(err) },
+                );
+                std.process.exit(1);
+            };
+            defer preview.deinit();
+
+            const image_bytes = preview.surface.encodePreviewImageAlloc(
+                gpa,
+                85,
+            ) catch |err| {
+                std.log.err(
+                    "Failed to encode iTerm2 preview for '{s}': {s}",
+                    .{ target_path, @errorName(err) },
+                );
+                std.process.exit(1);
+            };
+            defer gpa.free(image_bytes);
+
+            var stdout_buf: [16 * 1024]u8 = undefined;
+            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+            const write_res: ?anyerror = blk: {
+                termgfx.writePreview(&stdout_writer.interface, .{
+                    .iterm2 = .{
+                        .image_bytes = image_bytes,
+                        .dims = preview.dims,
+                    },
+                }) catch |err| break :blk err;
+                stdout_writer.interface.flush() catch |err| break :blk err;
+                break :blk null;
+            };
+            if (write_res) |err| {
+                const write_err: anyerror = stdout_writer.err orelse err;
+                if (write_err != error.BrokenPipe) {
+                    std.log.err("Failed to write iTerm2 preview: {s}", .{
                         @errorName(write_err),
                     });
                 }

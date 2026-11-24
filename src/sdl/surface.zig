@@ -92,6 +92,131 @@ pub const Surface = struct {
         return allocator.dupe(u8, src_bytes[0..size]);
     }
 
+    /// Returns `true` if any pixel in this surface has alpha `< 255`.
+    /// O(1) `false` for formats without an alpha channel; SIMD-accelerated
+    /// for `RGBA32`/`BGRA32`.
+    pub fn hasTransparency(self: Surface) bool {
+        const fmt = self.format();
+        if (fmt == PixelFormat.rgb24 or
+            fmt == PixelFormat.bgr24 or
+            fmt == PixelFormat.xrgb8888 or
+            fmt == PixelFormat.xbgr8888 or
+            fmt == PixelFormat.rgbx8888 or
+            fmt == PixelFormat.bgrx8888)
+        {
+            return false;
+        }
+
+        if (self.ptr.pixels == null) return false;
+        const w_i = self.w();
+        const h_i = self.h();
+        const pitch_i = self.pitch();
+        if (w_i <= 0 or h_i <= 0 or pitch_i <= 0) return false;
+        if (fmt != PixelFormat.rgba32 and fmt != PixelFormat.bgra32) {
+            return true;
+        }
+
+        const u_w: usize = @intCast(w_i);
+        const u_h: usize = @intCast(h_i);
+        const u_pitch: usize = @intCast(pitch_i);
+        if (u_pitch < u_w * 4) return true;
+        const base = self.pixels();
+        const Vec8u8 = @Vector(8, u8);
+        const opaque_vec: Vec8u8 = @splat(255);
+
+        for (0..u_h) |y| {
+            const row = base[y * u_pitch .. y * u_pitch + u_w * 4];
+            var x: usize = 0;
+            while (x + 8 <= u_w) : (x += 8) {
+                const off = x * 4;
+                const alphas: Vec8u8 = .{
+                    row[off + 3],
+                    row[off + 7],
+                    row[off + 11],
+                    row[off + 15],
+                    row[off + 19],
+                    row[off + 23],
+                    row[off + 27],
+                    row[off + 31],
+                };
+                if (!@reduce(.And, alphas == opaque_vec)) return true;
+            }
+            while (x < u_w) : (x += 1) {
+                if (row[x * 4 + 3] < 255) return true;
+            }
+        }
+        return false;
+    }
+
+    /// Encodes the surface pixel data as a JPEG byte slice using
+    /// `libturbojpeg` when available, returning `null` if TurboJPEG is
+    /// unavailable or the surface format is unsupported.
+    pub fn encodeJpegAlloc(
+        self: Surface,
+        allocator: std.mem.Allocator,
+        quality: u8,
+    ) !?[]u8 {
+        if (!has_turbojpeg) return null;
+        if (self.ptr.pixels == null) return null;
+        const w_i = self.w();
+        const h_i = self.h();
+        const pitch_i = self.pitch();
+        if (w_i <= 0 or h_i <= 0 or pitch_i <= 0) return null;
+
+        const fmt = self.format();
+        const tj_info: struct { fmt: c_int, bpp: i64 } =
+            if (fmt == PixelFormat.rgba32)
+                .{ .fmt = c.TJPF_RGBA, .bpp = 4 }
+            else if (fmt == PixelFormat.bgra32)
+                .{ .fmt = c.TJPF_BGRA, .bpp = 4 }
+            else if (fmt == PixelFormat.rgb24)
+                .{ .fmt = c.TJPF_RGB, .bpp = 3 }
+            else if (fmt == PixelFormat.bgr24)
+                .{ .fmt = c.TJPF_BGR, .bpp = 3 }
+            else
+                return null;
+        if (@as(i64, pitch_i) < @as(i64, w_i) * tj_info.bpp) return null;
+
+        const handle = c.tjInitCompress() orelse return null;
+        defer _ = c.tjDestroy(handle);
+
+        var jpeg_buf: [*c]u8 = null;
+        var jpeg_size: c_ulong = 0;
+        const rc = c.tjCompress2(
+            handle,
+            self.pixels(),
+            @intCast(w_i),
+            @intCast(pitch_i),
+            @intCast(h_i),
+            tj_info.fmt,
+            &jpeg_buf,
+            &jpeg_size,
+            c.TJSAMP_420,
+            @intCast(std.math.clamp(quality, 1, 100)),
+            c.TJFLAG_FASTDCT,
+        );
+        defer if (jpeg_buf != null) c.tjFree(jpeg_buf);
+        if (rc != 0 or jpeg_buf == null or jpeg_size == 0) return null;
+
+        return try allocator.dupe(u8, jpeg_buf[0..@intCast(jpeg_size)]);
+    }
+
+    /// Encodes this surface for inline terminal image protocols: uses fast
+    /// TurboJPEG when the image is fully opaque, falling back to lossless PNG
+    /// to preserve alpha transparency (or when TurboJPEG is unavailable).
+    pub fn encodePreviewImageAlloc(
+        self: Surface,
+        allocator: std.mem.Allocator,
+        jpeg_quality: u8,
+    ) ![]u8 {
+        if (!self.hasTransparency()) {
+            if (try self.encodeJpegAlloc(allocator, jpeg_quality)) |jpeg| {
+                return jpeg;
+            }
+        }
+        return self.encodePngAlloc(allocator);
+    }
+
     /// Returns a newly allocated RGBA32 surface rotated clockwise by
     /// `quarter_turns_cw * 90` degrees.
     pub fn rotateOrthogonal(self: Surface, quarter_turns_cw: u2) ?Surface {
@@ -1324,4 +1449,45 @@ test "Surface.loadConstMemScaledOpt falls back on PNG and corrupt JPEG" {
     try std.testing.expect(
         Surface.loadConstMemScaledOpt(corrupt_jpg, 128, 128) == null,
     );
+}
+
+test "Surface.encodePreviewImageAlloc uses JPEG opaque, PNG alpha" {
+    const allocator = std.testing.allocator;
+    const surf = Surface.create(17, 13, PixelFormat.rgba32) orelse
+        return error.CreateFailed;
+    defer surf.destroy();
+
+    const pitch_u: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    for (0..13) |y| {
+        const row = px[y * pitch_u .. y * pitch_u + 17 * 4];
+        for (0..17) |x| {
+            row[x * 4 + 0] = 120;
+            row[x * 4 + 1] = 180;
+            row[x * 4 + 2] = 220;
+            row[x * 4 + 3] = 255;
+        }
+    }
+
+    try std.testing.expect(!surf.hasTransparency());
+    const opaque_bytes = try surf.encodePreviewImageAlloc(allocator, 85);
+    defer allocator.free(opaque_bytes);
+    if (has_turbojpeg) {
+        try std.testing.expect(
+            opaque_bytes.len >= 2 and
+                opaque_bytes[0] == 0xFF and
+                opaque_bytes[1] == 0xD8,
+        );
+    } else {
+        try std.testing.expect(
+            std.mem.startsWith(u8, opaque_bytes, "\x89PNG"),
+        );
+    }
+
+    // Introduce one semi-transparent pixel in the tail column (x = 16).
+    px[12 * pitch_u + 16 * 4 + 3] = 128;
+    try std.testing.expect(surf.hasTransparency());
+    const alpha_bytes = try surf.encodePreviewImageAlloc(allocator, 85);
+    defer allocator.free(alpha_bytes);
+    try std.testing.expect(std.mem.startsWith(u8, alpha_bytes, "\x89PNG"));
 }
