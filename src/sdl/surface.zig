@@ -24,6 +24,14 @@ pub const ScaleMode = enum(c_int) {
     pixel_art = c.SDL_SCALEMODE_PIXELART,
 };
 
+/// Decoded CPU surface paired with the original unscaled source pixel
+/// dimensions (which may exceed `surface.w()`/`surface.h()` when DCT-scaled).
+pub const DecodedSurface = struct {
+    surface: Surface,
+    source_w: u32,
+    source_h: u32,
+};
+
 /// Safe typed wrapper handle around an underlying `SDL_Surface` CPU pixel buffer.
 pub const Surface = struct {
     ptr: *c.SDL_Surface,
@@ -171,6 +179,30 @@ pub const Surface = struct {
 
     /// Decodes an image from an in-memory byte slice, using libturbojpeg fast
     /// DCT decoding (with native DCT downscaling when the source exceeds
+    /// `(max_w, max_h)`) for JPEG inputs when available, and returning the
+    /// original unscaled source dimensions alongside the decoded surface.
+    /// Falls back to `loadConstMemOpt` for non-JPEG inputs, fatal TurboJPEG
+    /// errors, or builds without TurboJPEG.
+    pub fn loadConstMemScaledWithDimsOpt(
+        bytes: []const u8,
+        max_w: u32,
+        max_h: u32,
+    ) ?DecodedSurface {
+        if (has_turbojpeg and max_w > 0 and max_h > 0) {
+            if (loadJpegScaledTurbo(bytes, max_w, max_h)) |dec| {
+                return dec;
+            }
+        }
+        const surf = loadConstMemOpt(bytes) orelse return null;
+        return .{
+            .surface = surf,
+            .source_w = @intCast(@max(0, surf.w())),
+            .source_h = @intCast(@max(0, surf.h())),
+        };
+    }
+
+    /// Decodes an image from an in-memory byte slice, using libturbojpeg fast
+    /// DCT decoding (with native DCT downscaling when the source exceeds
     /// `(max_w, max_h)`) for JPEG inputs when available. Falls back to
     /// `loadConstMemOpt` for non-JPEG inputs, fatal TurboJPEG errors, or
     /// builds without TurboJPEG.
@@ -179,12 +211,9 @@ pub const Surface = struct {
         max_w: u32,
         max_h: u32,
     ) ?Surface {
-        if (has_turbojpeg and max_w > 0 and max_h > 0) {
-            if (loadJpegScaledTurbo(bytes, max_w, max_h)) |surf| {
-                return surf;
-            }
-        }
-        return loadConstMemOpt(bytes);
+        const dec = loadConstMemScaledWithDimsOpt(bytes, max_w, max_h) orelse
+            return null;
+        return dec.surface;
     }
 
     /// Converts this surface to `target_format`, utilizing SIMD-optimized
@@ -1123,7 +1152,7 @@ fn loadJpegScaledTurbo(
     bytes: []const u8,
     max_w: u32,
     max_h: u32,
-) ?Surface {
+) ?DecodedSurface {
     if (!has_turbojpeg) return null;
     if (bytes.len < 3 or
         bytes[0] != 0xFF or
@@ -1215,7 +1244,11 @@ fn loadJpegScaledTurbo(
         dst.destroy();
         return null;
     }
-    return dst;
+    return .{
+        .surface = dst,
+        .source_w = std.math.cast(u32, src_w) orelse @intCast(@max(0, out_w)),
+        .source_h = std.math.cast(u32, src_h) orelse @intCast(@max(0, out_h)),
+    };
 }
 
 test "Surface.scaleRgba32Smooth box-averages RGB24 and 4x downscales" {
@@ -1256,16 +1289,18 @@ test "Surface.loadConstMemScaledOpt decodes JPEG with DCT scaling" {
     );
     defer allocator.free(bytes);
 
-    const surf = Surface.loadConstMemScaledOpt(bytes, 256, 256) orelse
+    const dec = Surface.loadConstMemScaledWithDimsOpt(bytes, 256, 256) orelse
         return error.DecodeFailed;
-    defer surf.destroy();
+    defer dec.surface.destroy();
 
-    try std.testing.expect(surf.w() >= 256);
-    try std.testing.expect(surf.h() >= 170);
+    try std.testing.expectEqual(@as(u32, 1024), dec.source_w);
+    try std.testing.expectEqual(@as(u32, 682), dec.source_h);
+    try std.testing.expect(dec.surface.w() >= 256);
+    try std.testing.expect(dec.surface.h() >= 170);
     if (has_turbojpeg) {
-        try std.testing.expectEqual(PixelFormat.rgba32, surf.format());
-        try std.testing.expect(surf.w() <= 512);
-        try std.testing.expect(surf.h() <= 341);
+        try std.testing.expectEqual(PixelFormat.rgba32, dec.surface.format());
+        try std.testing.expect(dec.surface.w() <= 512);
+        try std.testing.expect(dec.surface.h() <= 341);
     }
 }
 

@@ -128,10 +128,17 @@ fn encodeSurfaceToPngAlloc(
     surface: sdl.Surface,
     tier: ThumbTier,
     orientation: Orientation,
+    source_dims_opt: ?PositiveDimsU32,
 ) ![]u8 {
-    const src_w = surface.w();
-    const src_h = surface.h();
-    const scaled_dims = tier.computeScaledDims(src_w, src_h) orelse
+    const dim_w: i32 = if (source_dims_opt) |d|
+        std.math.cast(i32, d.w) orelse surface.w()
+    else
+        surface.w();
+    const dim_h: i32 = if (source_dims_opt) |d|
+        std.math.cast(i32, d.h) orelse surface.h()
+    else
+        surface.h();
+    const scaled_dims = tier.computeScaledDims(dim_w, dim_h) orelse
         return error.InvalidDimensions;
 
     const transformed = try scaleAndOrientSurface(
@@ -164,6 +171,7 @@ pub fn writeThumbnailPng(
         surface,
         cfg.write_tier,
         orientation,
+        null,
     );
     defer allocator.free(raw_png);
 
@@ -177,30 +185,35 @@ pub fn writeThumbnailPng(
     );
 }
 
-/// Decodes `source_bytes` into an SDL surface, computes downscaled dimensions
-/// for `tier`, applies orthogonal EXIF `orientation`, and encodes the result
-/// as an allocated PNG buffer.
+/// Decodes `source_bytes` into an SDL surface (using DCT-scaled JPEG decoding
+/// when available), computes downscaled dimensions for `tier`, applies
+/// orthogonal EXIF `orientation`, and encodes the result as an allocated PNG
+/// buffer while preserving original unscaled `decoded_dims`.
 pub fn encodeBytesToThumbnailPng(
     allocator: std.mem.Allocator,
     source_bytes: []const u8,
     tier: ThumbTier,
     orientation: Orientation,
 ) ?thumbcache.EncodedThumbPng {
-    const surf = sdl.Surface.loadConstMemOpt(source_bytes) orelse return null;
-    defer surf.destroy();
+    const max_dim: u32 = @intCast(tier.maxDim());
+    const dec = sdl.Surface.loadConstMemScaledWithDimsOpt(
+        source_bytes,
+        max_dim,
+        max_dim,
+    ) orelse return null;
+    defer dec.surface.destroy();
 
-    const w = surf.w();
-    const h = surf.h();
-    const dims: ?PositiveDimsU32 = if (w > 0 and h > 0)
-        .{ .w = @intCast(w), .h = @intCast(h) }
+    const dims: ?PositiveDimsU32 = if (dec.source_w > 0 and dec.source_h > 0)
+        .{ .w = dec.source_w, .h = dec.source_h }
     else
         null;
 
     const png = encodeSurfaceToPngAlloc(
         allocator,
-        surf,
+        dec.surface,
         tier,
         orientation,
+        dims,
     ) catch return null;
     return .{
         .png_bytes = png,
@@ -370,6 +383,23 @@ test "precacheFileThumbnail and precachePathsParallel valid thumbnails" {
         encodeBytesToThumbnailPng,
     );
     try std.testing.expectEqual(PrecacheOutcome.already_valid, second_outcome);
+
+    // Verify PNG metadata retains original unscaled dimensions (1024x682)
+    // and exact large-tier thumbnail dimensions (256x170)
+    const key = ThumbCacheKey.fromFilePath(io, test_img, abs_cache_dir).?;
+    const s = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, test_img, .{});
+    const loaded = loadCachedThumbnail(
+        allocator,
+        io,
+        enabled_cfg,
+        &key,
+        s.mtime.toSeconds(),
+    ) orelse return error.CacheLoadFailed;
+    defer loaded.surface.destroy();
+    try std.testing.expectEqual(@as(i32, 256), loaded.surface.w());
+    try std.testing.expectEqual(@as(i32, 170), loaded.surface.h());
+    try std.testing.expectEqual(@as(f32, 1024.0), loaded.source_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 682.0), loaded.source_dims.?.h);
 }
 
 test "scaleAndOrientSurface - identity, rgba32 conversion, and invalid dims" {
