@@ -227,7 +227,8 @@ fn decodePreviewSourceSurface(
         return .{ .surface = surf, .orientation = orientation };
     }
 
-    if (max_dims.w <= 256 and max_dims.h <= 256) {
+    const req_max_dim = @max(max_dims.w, max_dims.h);
+    if (req_max_dim <= 1024) {
         switch (thumb_cfg) {
             .enabled => |cfg| {
                 if (ThumbCacheKey.fromFilePath(
@@ -241,6 +242,7 @@ fn decodePreviewSourceSurface(
                         cfg,
                         &cache_key,
                         mtime_sec,
+                        req_max_dim,
                     )) |cached| {
                         return .{
                             .surface = cached.surface,

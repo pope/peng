@@ -4,7 +4,9 @@ const std = @import("std");
 const thumbcache = @import("thumbcache");
 
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
+const ThumbTier = thumbcache.ThumbTier;
 const thumb_cache_modes_string = thumbcache.thumb_cache_modes_string;
+const thumb_tiers_string = thumbcache.thumb_tiers_string;
 const ZoomPreset = intents.ZoomPreset;
 
 /// Startup process flags that configure runtime initialization (not runtime actions).
@@ -23,6 +25,14 @@ pub const process_flags = [_]intents.CliOption{
         .arg_name = "<MODE>",
         .description = "Set XDG thumbnail cache policy (" ++
             thumb_cache_modes_string ++ ")",
+    },
+    .{
+        .id = .thumb_size,
+        .target = .main,
+        .long = "--thumb-size",
+        .arg_name = "<TIER>",
+        .description = "Override XDG thumbnail write tier (" ++
+            thumb_tiers_string ++ ")",
     },
     .{
         .id = .no_thumb_cache,
@@ -313,6 +323,7 @@ pub const ParsedArgs = struct {
     windowless: bool = false,
     stack_raw_jpeg: bool = true,
     thumb_cache: ThumbCacheMode = .all,
+    thumb_size: ?ThumbTier = null,
     precache: bool = false,
     recursive: bool = false,
     help: bool = false,
@@ -394,6 +405,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var windowless = false;
     var stack_raw_jpeg = true;
     var thumb_cache: ThumbCacheMode = .all;
+    var thumb_size: ?ThumbTier = null;
     var precache = false;
     var recursive = false;
     var help = false;
@@ -480,6 +492,29 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                             return error.InvalidThumbCacheMode;
                         }
                     },
+                    .thumb_size => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --thumb-size flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        if (ThumbTier.parse(val)) |tier| {
+                            thumb_size = tier;
+                        } else {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Unknown thumb-size tier: {s}. " ++
+                                        "Valid: {s}.",
+                                    .{ val, thumb_tiers_string },
+                                );
+                            }
+                            return error.InvalidThumbSize;
+                        }
+                    },
                     .scale => {
                         const val = args_it.next() orelse {
                             if (!builtin.is_test) {
@@ -533,6 +568,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .windowless = windowless,
         .stack_raw_jpeg = stack_raw_jpeg,
         .thumb_cache = thumb_cache,
+        .thumb_size = thumb_size,
         .precache = precache,
         .recursive = recursive,
         .help = help,
@@ -620,6 +656,7 @@ pub fn parseIpcArgsIterator(
                     .stack_raw_jpeg,
                     .no_stack_raw_jpeg,
                     .thumb_cache,
+                    .thumb_size,
                     .no_thumb_cache,
                     .precache,
                     .recursive,
@@ -1041,6 +1078,44 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
         };
         try testing.expectError(
             error.InvalidThumbCacheMode,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-size", "normal" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ThumbTier.normal, parsed.thumb_size.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-size", "x-large" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ThumbTier.x_large, parsed.thumb_size.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--thumb-size"},
+        };
+        try testing.expectError(
+            error.MissingFlagValue,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-size", "invalid" },
+        };
+        try testing.expectError(
+            error.InvalidThumbSize,
             parseArgsIterator(&it, testing.allocator),
         );
     }

@@ -46,6 +46,7 @@ pub const OptionId = enum {
     stack_raw_jpeg,
     no_stack_raw_jpeg,
     thumb_cache,
+    thumb_size,
     no_thumb_cache,
     precache,
     recursive,

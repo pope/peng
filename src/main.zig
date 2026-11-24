@@ -16,6 +16,7 @@ const collectPrecacheFiles = thumbcache.collectPrecacheFiles;
 const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
 const precachePathsParallel = thumbcache.precachePathsParallel;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
+const ThumbTier = thumbcache.ThumbTier;
 const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
 
 const LibViewer = struct {
@@ -509,9 +510,15 @@ const AppGraphicsAndState = struct {
         self.state.viewer.resetToDefaults();
         errdefer self.state.deinit();
         try self.state.ensureInitialCapacities();
+        const thumb_mode = if (parsed.test_mode) .off else parsed.thumb_cache;
+        const thumb_tier = if (thumb_mode == .off)
+            ThumbTier.normal
+        else
+            resolveThumbWriteTier(parsed.thumb_size, parsed.headless);
         self.state.initThumbCache(
             proc_init.environ_map,
-            if (parsed.test_mode) .off else parsed.thumb_cache,
+            thumb_mode,
+            thumb_tier,
         );
 
         // Spawn initial directory scan & decode worker before window/GPU setup
@@ -815,6 +822,27 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     }
 }
 
+fn resolveThumbWriteTier(
+    override_opt: ?ThumbTier,
+    headless: bool,
+) ThumbTier {
+    if (override_opt) |tier| return tier;
+    if (headless) return .normal;
+    const scale = sdl.getPrimaryDisplayContentScale() orelse return .normal;
+    return ThumbTier.fromDpiScale(scale);
+}
+
+fn resolveCliPrecacheTier(
+    override_opt: ?ThumbTier,
+    headless: bool,
+) ThumbTier {
+    if (override_opt) |tier| return tier;
+    if (headless) return .normal;
+    if (!sdl.init(sdl.init_flags.video)) return .normal;
+    defer sdl.quit();
+    return resolveThumbWriteTier(null, false);
+}
+
 /// Runs headless CLI thumbnail pre-caching (`peng --precache [path]`) across CPU cores
 /// and prints a completion summary to standard output.
 fn runCliPrecache(
@@ -828,10 +856,15 @@ fn runCliPrecache(
         .missing => .missing_embedded_only,
         else => .all_missing,
     };
+    const write_tier = resolveCliPrecacheTier(
+        parsed.thumb_size,
+        parsed.headless,
+    );
     var cfg = ThumbCacheConfig.initFromEnviron(
         gpa,
         proc_init.environ_map,
         policy,
+        write_tier,
     );
     defer cfg.deinit(gpa);
 

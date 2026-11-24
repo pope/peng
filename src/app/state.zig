@@ -38,6 +38,7 @@ const stopTextInput = core.display.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const ThumbnailSource = state_pkg.ThumbnailSource;
+const ThumbTier = thumbcache.ThumbTier;
 const UploadMode = state_pkg.UploadMode;
 const UploadStagingBuffer = gpu.UploadStagingBuffer;
 const ViewerState = state_pkg.ViewerState;
@@ -178,11 +179,13 @@ pub const AppState = struct {
     }
 
     /// Initializes the Freedesktop Shared Thumbnail Cache configuration from
-    /// the process environment map (`proc_init.environ_map`) and `mode`.
+    /// the process environment map (`proc_init.environ_map`), `mode`, and
+    /// `write_tier`.
     pub fn initThumbCache(
         self: *AppState,
         environ_map: *const std.process.Environ.Map,
         mode: ThumbCacheMode,
+        write_tier: ThumbTier,
     ) void {
         self.workers.thumb_cache_config.deinit(self.allocator);
         self.workers.thumb_cache_config =
@@ -190,6 +193,7 @@ pub const AppState = struct {
                 self.allocator,
                 environ_map,
                 mode.toWritePolicy(),
+                write_tier,
             );
     }
 

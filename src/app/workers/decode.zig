@@ -236,6 +236,7 @@ fn probeFreedesktopThumbCache(
                 cfg,
                 &c_key,
                 mtime_sec,
+                0,
             )) |cached| {
                 if (cancel.isCanceled()) {
                     cached.surface.destroy();

@@ -22,6 +22,7 @@ pub const Event = events.Event;
 pub const event_type = events.event_type;
 pub const Font = font.Font;
 pub const getError = events.getError;
+pub const getPrimaryDisplayContentScale = window.getPrimaryDisplayContentScale;
 pub const hint = events.hint;
 pub const init = events.init;
 pub const init_flags = events.init_flags;

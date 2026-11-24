@@ -68,6 +68,43 @@ pub const ThumbTier = enum {
         };
     }
 
+    /// Maps a display DPI content scale factor to the matching Freedesktop
+    /// thumbnail tier (`<= 1.0` -> `.normal`, `<= 2.0` -> `.large`,
+    /// `> 2.0` -> `.x_large`; invalid or non-positive falls back to `.normal`).
+    pub fn fromDpiScale(dpi_scale: f32) ThumbTier {
+        if (!std.math.isFinite(dpi_scale) or dpi_scale <= 1.0) {
+            return .normal;
+        }
+        if (dpi_scale <= 2.0) return .large;
+        return .x_large;
+    }
+
+    /// Parses a thumbnail tier name or pixel dimension (`normal`/`128`,
+    /// `large`/`256`, `x-large`/`x_large`/`512`, `xx-large`/`xx_large`/`1024`).
+    pub fn parse(val: []const u8) ?ThumbTier {
+        if (std.mem.eql(u8, val, "normal") or std.mem.eql(u8, val, "128")) {
+            return .normal;
+        }
+        if (std.mem.eql(u8, val, "large") or std.mem.eql(u8, val, "256")) {
+            return .large;
+        }
+        if (std.mem.eql(u8, val, "x-large") or
+            std.mem.eql(u8, val, "x_large") or
+            std.mem.eql(u8, val, "xlarge") or
+            std.mem.eql(u8, val, "512"))
+        {
+            return .x_large;
+        }
+        if (std.mem.eql(u8, val, "xx-large") or
+            std.mem.eql(u8, val, "xx_large") or
+            std.mem.eql(u8, val, "xxlarge") or
+            std.mem.eql(u8, val, "1024"))
+        {
+            return .xx_large;
+        }
+        return null;
+    }
+
     /// Computes aspect-preserving dimensions scaled to fit within the tier's
     /// bounding box. Returns null if dimensions are invalid (<= 0).
     pub fn computeScaledDims(
@@ -191,6 +228,16 @@ pub const thumb_cache_modes_string: []const u8 = blk: {
     break :blk str;
 };
 
+/// Comptime-generated comma-separated list of valid `ThumbTier` CLI names.
+pub const thumb_tiers_string: []const u8 = blk: {
+    var str: []const u8 = "";
+    for (std.meta.tags(ThumbTier), 0..) |tier, i| {
+        const name = tier.dirName();
+        str = if (i > 0) str ++ ", " ++ name else name;
+    }
+    break :blk str;
+};
+
 /// Active configuration when Freedesktop thumbnail caching is enabled.
 pub const EnabledThumbCacheConfig = struct {
     cache_dir: []const u8,
@@ -205,8 +252,8 @@ pub const ThumbCacheConfig = union(enum) {
     enabled: EnabledThumbCacheConfig,
 
     /// Initializes the platform configuration from `environ_map`
-    /// (`proc_init.environ_map` provided by `std.process.Init`) and
-    /// `write_policy_opt`:
+    /// (`proc_init.environ_map` provided by `std.process.Init`),
+    /// `write_policy_opt`, and `write_tier`:
     /// - Enabled on Linux/FreeBSD using `$XDG_CACHE_HOME/thumbnails` or
     ///   `$HOME/.cache/thumbnails` when `write_policy_opt != null`.
     /// - Disabled when `write_policy_opt == null` or on macOS/Windows.
@@ -214,20 +261,27 @@ pub const ThumbCacheConfig = union(enum) {
         allocator: std.mem.Allocator,
         environ_map: *const std.process.Environ.Map,
         write_policy_opt: ?ThumbWritePolicy,
+        write_tier: ThumbTier,
     ) ThumbCacheConfig {
         if (builtin.os.tag != .linux and builtin.os.tag != .freebsd) {
             return .disabled;
         }
-        return initPosixFromEnviron(allocator, environ_map, write_policy_opt);
+        return initPosixFromEnviron(
+            allocator,
+            environ_map,
+            write_policy_opt,
+            write_tier,
+        );
     }
 
     /// Resolves `$XDG_CACHE_HOME/thumbnails` (or `$HOME/.cache/thumbnails` if
     /// `$XDG_CACHE_HOME` is unset or relative) from `environ_map` with
-    /// `write_policy_opt`.
+    /// `write_policy_opt` and `write_tier`.
     pub fn initPosixFromEnviron(
         allocator: std.mem.Allocator,
         environ_map: *const std.process.Environ.Map,
         write_policy_opt: ?ThumbWritePolicy,
+        write_tier: ThumbTier,
     ) ThumbCacheConfig {
         const policy = write_policy_opt orelse return .disabled;
 
@@ -240,6 +294,7 @@ pub const ThumbCacheConfig = union(enum) {
                     return .{
                         .enabled = .{
                             .cache_dir = dir,
+                            .write_tier = write_tier,
                             .write_policy = policy,
                         },
                     };
@@ -256,6 +311,7 @@ pub const ThumbCacheConfig = union(enum) {
                     return .{
                         .enabled = .{
                             .cache_dir = dir,
+                            .write_tier = write_tier,
                             .write_policy = policy,
                         },
                     };
@@ -657,17 +713,20 @@ fn readTierThumbnailBytes(
     };
 }
 
-/// Probes cached PNG files across `ThumbTier.read_probe_order` in
-/// `cfg.cache_dir`, validates `Thumb::MTime == source_mtime_sec`, and returns
-/// the first valid cached thumbnail byte buffer.
+/// Probes cached PNG files across `ThumbTier.read_probe_order` whose bounding
+/// box is at least `min_dim` pixels (`0` matches any tier), validates
+/// `Thumb::MTime == source_mtime_sec`, and returns the first valid cached
+/// thumbnail byte buffer.
 pub fn readCachedThumbnailBytes(
     allocator: std.mem.Allocator,
     io: std.Io,
     cfg: EnabledThumbCacheConfig,
     key: *const ThumbCacheKey,
     source_mtime_sec: i64,
+    min_dim: u32,
 ) ?CachedThumbBytes {
     for (ThumbTier.read_probe_order) |tier| {
+        if (@as(u32, @intCast(tier.maxDim())) < min_dim) continue;
         if (readTierThumbnailBytes(
             allocator,
             io,
@@ -1283,6 +1342,7 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
             allocator,
             &env,
             .all_missing,
+            .normal,
         );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .enabled);
@@ -1290,6 +1350,7 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
             "/custom/xdg_cache/thumbnails",
             cfg.enabled.cache_dir,
         );
+        try std.testing.expectEqual(ThumbTier.normal, cfg.enabled.write_tier);
         try std.testing.expectEqual(
             ThumbWritePolicy.all_missing,
             cfg.enabled.write_policy,
@@ -1308,6 +1369,7 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
             allocator,
             &env,
             .missing_embedded_only,
+            .large,
         );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .enabled);
@@ -1330,6 +1392,7 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
             allocator,
             &env,
             .all_missing,
+            .large,
         );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .disabled);
@@ -1339,10 +1402,42 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
             allocator,
             &env,
             null,
+            .large,
         );
         defer off_cfg.deinit(allocator);
         try std.testing.expect(off_cfg == .disabled);
     }
+}
+
+test "ThumbTier.fromDpiScale and ThumbTier.parse map scales and names" {
+    try std.testing.expectEqual(ThumbTier.normal, ThumbTier.fromDpiScale(1.0));
+    try std.testing.expectEqual(ThumbTier.normal, ThumbTier.fromDpiScale(0.75));
+    try std.testing.expectEqual(ThumbTier.large, ThumbTier.fromDpiScale(1.25));
+    try std.testing.expectEqual(ThumbTier.large, ThumbTier.fromDpiScale(1.5));
+    try std.testing.expectEqual(ThumbTier.large, ThumbTier.fromDpiScale(2.0));
+    try std.testing.expectEqual(ThumbTier.x_large, ThumbTier.fromDpiScale(2.5));
+    try std.testing.expectEqual(ThumbTier.x_large, ThumbTier.fromDpiScale(3.0));
+    try std.testing.expectEqual(ThumbTier.normal, ThumbTier.fromDpiScale(0.0));
+    try std.testing.expectEqual(
+        ThumbTier.normal,
+        ThumbTier.fromDpiScale(std.math.nan(f32)),
+    );
+
+    try std.testing.expectEqual(ThumbTier.normal, ThumbTier.parse("normal").?);
+    try std.testing.expectEqual(ThumbTier.normal, ThumbTier.parse("128").?);
+    try std.testing.expectEqual(ThumbTier.large, ThumbTier.parse("large").?);
+    try std.testing.expectEqual(ThumbTier.large, ThumbTier.parse("256").?);
+    try std.testing.expectEqual(
+        ThumbTier.x_large,
+        ThumbTier.parse("x-large").?,
+    );
+    try std.testing.expectEqual(ThumbTier.x_large, ThumbTier.parse("512").?);
+    try std.testing.expectEqual(
+        ThumbTier.xx_large,
+        ThumbTier.parse("xx-large").?,
+    );
+    try std.testing.expectEqual(ThumbTier.xx_large, ThumbTier.parse("1024").?);
+    try std.testing.expect(ThumbTier.parse("bogus") == null);
 }
 
 test "collectPrecacheFiles respects flat vs recursive directory traversal" {
@@ -1564,13 +1659,14 @@ test "writeCachedThumbnailBytes and hasValidTargetTierThumbnail roundtrip" {
         !hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec + 1),
     );
 
-    // Also test readCachedThumbnailBytes
+    // Also test readCachedThumbnailBytes (with min_dim filtering)
     const read_bytes = readCachedThumbnailBytes(
         allocator,
         io,
         enabled_cfg,
         &key,
         mtime_sec,
+        0,
     ) orelse return error.ReadTierFailed;
     defer read_bytes.deinit(allocator);
 
@@ -1578,6 +1674,29 @@ test "writeCachedThumbnailBytes and hasValidTargetTierThumbnail roundtrip" {
     try std.testing.expect(read_bytes.source_dims != null);
     try std.testing.expectEqual(@as(u32, 800), read_bytes.source_dims.?.w);
     try std.testing.expectEqual(@as(u32, 600), read_bytes.source_dims.?.h);
+
+    // min_dim <= 256 still matches .large; min_dim > 256 skips .large
+    const read_256 = readCachedThumbnailBytes(
+        allocator,
+        io,
+        enabled_cfg,
+        &key,
+        mtime_sec,
+        256,
+    ) orelse return error.ReadTierFailed;
+    defer read_256.deinit(allocator);
+    try std.testing.expectEqual(ThumbTier.large, read_256.tier);
+
+    try std.testing.expect(
+        readCachedThumbnailBytes(
+            allocator,
+            io,
+            enabled_cfg,
+            &key,
+            mtime_sec,
+            512,
+        ) == null,
+    );
 
     // Mismatched mtime must return null
     try std.testing.expect(
@@ -1587,6 +1706,7 @@ test "writeCachedThumbnailBytes and hasValidTargetTierThumbnail roundtrip" {
             enabled_cfg,
             &key,
             mtime_sec + 1,
+            0,
         ) == null,
     );
 }

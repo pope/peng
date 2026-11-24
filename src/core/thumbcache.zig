@@ -26,7 +26,8 @@ pub const CachedThumbResult = struct {
     source_dims: ?PhysicalDims = null,
 };
 
-/// Probes cached PNG files across `ThumbTier.read_probe_order`, validates
+/// Probes cached PNG files across `ThumbTier.read_probe_order` whose bounding
+/// box is at least `min_dim` pixels (`0` matches any tier), validates
 /// `Thumb::MTime == source_mtime_sec`, and decodes the cached PNG into an
 /// `sdl.Surface`.
 pub fn loadCachedThumbnail(
@@ -35,6 +36,7 @@ pub fn loadCachedThumbnail(
     cfg: EnabledThumbCacheConfig,
     key: *const ThumbCacheKey,
     source_mtime_sec: i64,
+    min_dim: u32,
 ) ?CachedThumbResult {
     const cached = thumbcache.readCachedThumbnailBytes(
         allocator,
@@ -42,6 +44,7 @@ pub fn loadCachedThumbnail(
         cfg,
         key,
         source_mtime_sec,
+        min_dim,
     ) orelse return null;
     defer cached.deinit(allocator);
 
@@ -310,6 +313,7 @@ test "writeThumbnailPng and loadCachedThumbnail roundtrip with rotation" {
         enabled_cfg,
         &key,
         mtime_sec,
+        0,
     ) orelse return error.CacheLoadFailed;
     defer loaded.surface.destroy();
 
@@ -322,8 +326,14 @@ test "writeThumbnailPng and loadCachedThumbnail roundtrip with rotation" {
 
     // Stale mtime must return null
     try std.testing.expect(
-        loadCachedThumbnail(allocator, io, enabled_cfg, &key, mtime_sec + 5) ==
-            null,
+        loadCachedThumbnail(
+            allocator,
+            io,
+            enabled_cfg,
+            &key,
+            mtime_sec + 5,
+            0,
+        ) == null,
     );
 }
 
@@ -394,6 +404,7 @@ test "precacheFileThumbnail and precachePathsParallel valid thumbnails" {
         enabled_cfg,
         &key,
         s.mtime.toSeconds(),
+        0,
     ) orelse return error.CacheLoadFailed;
     defer loaded.surface.destroy();
     try std.testing.expectEqual(@as(i32, 256), loaded.surface.w());

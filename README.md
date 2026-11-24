@@ -149,6 +149,7 @@ Start the image viewer by passing a file or directory path:
 | `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.  |
 | `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images. |
 | `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                        | Sets the XDG shared thumbnail cache policy.              |
+| `--thumb-size`        | `normal`, `large`, `x-large`, `xx-large`                    | Overrides the XDG thumbnail write tier (auto-DPI by default). |
 | `--no-thumb-cache`    | None                                                        | Disables the Freedesktop XDG shared thumbnail cache.     |
 | `--precache`          | None                                                        | Pre-generates Freedesktop thumbnails for path and exits. |
 | `-r`, `--recursive`   | None                                                        | Recursively scans subdirectories when pre-caching.       |

@@ -363,6 +363,24 @@ pub const SoftwarePresenter = union(enum) {
     }
 };
 
+/// Queries the primary display's content scale factor (e.g. `1.0` on standard
+/// 96 DPI displays, `2.0` on 2x HiDPI), returning `null` if unavailable or
+/// backed by a virtual driver (`dummy` / `offscreen`).
+pub fn getPrimaryDisplayContentScale() ?f32 {
+    const raw_driver = c.SDL_GetCurrentVideoDriver() orelse return null;
+    const driver = std.mem.span(raw_driver);
+    if (std.mem.eql(u8, driver, "dummy") or
+        std.mem.eql(u8, driver, "offscreen"))
+    {
+        return null;
+    }
+    const id = c.SDL_GetPrimaryDisplay();
+    if (id == 0) return null;
+    const scale = c.SDL_GetDisplayContentScale(id);
+    if (!std.math.isFinite(scale) or scale <= 0.0) return null;
+    return scale;
+}
+
 test "SoftwarePresenter tracks presented state and frame-key deduplication" {
     var presenter: SoftwarePresenter = .{ .sdl_surface = .{} };
     try std.testing.expect(!presenter.hasPresented());
