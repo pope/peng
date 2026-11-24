@@ -3,6 +3,7 @@
   copyDesktopItems,
   glslang,
   lib,
+  libjpeg,
   libxkbcommon,
   makeDesktopItem,
   pkg-config,
@@ -194,6 +195,7 @@ stdenv.mkDerivation (_finalAttrs: {
   ];
 
   buildInputs = [
+    (lib.getDev libjpeg)
     (lib.getDev sdl3)
     sdl3-ttf
     sdl3-image

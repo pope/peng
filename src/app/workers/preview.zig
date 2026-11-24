@@ -138,6 +138,20 @@ const DecodedPreviewSource = struct {
     orientation: Orientation,
 };
 
+fn preRotationMaxDims(
+    max_dims: PositiveDimsU32,
+    orientation: Orientation,
+) PositiveDimsU32 {
+    const quarter_turns: u2 = @backingInt(orientation);
+    const is_swapped = (quarter_turns & 1) != 0;
+    const raw_w = if (is_swapped) max_dims.h else max_dims.w;
+    const raw_h = if (is_swapped) max_dims.w else max_dims.h;
+    return .{
+        .w = @min(raw_w, 4096),
+        .h = @min(raw_h, 4096),
+    };
+}
+
 fn decodeEmbeddedLocSurface(
     allocator: std.mem.Allocator,
     file: std.Io.File,
@@ -146,6 +160,7 @@ fn decodeEmbeddedLocSurface(
     header_slice: []const u8,
     file_size: u64,
     loc: ThumbnailLocation,
+    raw_max: PositiveDimsU32,
 ) !?sdl.Surface {
     if (cancel.isCanceled()) return error.Canceled;
     var loc_bytes = (try readLocationBytes(
@@ -160,7 +175,11 @@ fn decodeEmbeddedLocSurface(
     )) orelse return null;
     defer loc_bytes.deinit(allocator);
     if (cancel.isCanceled()) return error.Canceled;
-    return sdl.Surface.loadConstMemOpt(loc_bytes.bytes);
+    return sdl.Surface.loadConstMemScaledOpt(
+        loc_bytes.bytes,
+        raw_max.w,
+        raw_max.h,
+    );
 }
 
 fn decodePreviewSourceSurface(
@@ -199,8 +218,12 @@ fn decodePreviewSourceSurface(
         if (cancel.isCanceled()) return error.Canceled;
         const hdr = decomp.bytes[0..@min(decomp.bytes.len, header_probe_limit)];
         const orientation = probe.parseExifOrientation(hdr) orelse .normal;
-        const surf = sdl.Surface.loadConstMemOpt(decomp.bytes) orelse
-            return error.DecodeFailed;
+        const raw_max = preRotationMaxDims(max_dims, orientation);
+        const surf = sdl.Surface.loadConstMemScaledOpt(
+            decomp.bytes,
+            raw_max.w,
+            raw_max.h,
+        ) orelse return error.DecodeFailed;
         return .{ .surface = surf, .orientation = orientation };
     }
 
@@ -262,9 +285,12 @@ fn decodePreviewSourceSurface(
         if (cancel.isCanceled()) return error.Canceled;
 
         const orientation = raw_probe.orientation;
+        const raw_max = preRotationMaxDims(max_dims, orientation);
         const candidates = raw_probe.selectPreviewCandidates(max_dims);
+        var small_fallback: ?sdl.Surface = null;
+        errdefer if (small_fallback) |fb| fb.destroy();
 
-        for (candidates) |cand_opt| {
+        for (candidates, 0..) |cand_opt, idx| {
             const loc = cand_opt orelse continue;
             if (try decodeEmbeddedLocSurface(
                 allocator,
@@ -274,14 +300,30 @@ fn decodePreviewSourceSurface(
                 header_slice,
                 file_size,
                 loc,
+                raw_max,
             )) |surf| {
+                const is_small_medium = idx == 0 and
+                    raw_probe.medium != null and
+                    raw_probe.preview != null and
+                    loc.file_offset == raw_probe.medium.?.file_offset and
+                    @as(u32, @intCast(@max(0, surf.w()))) < raw_max.w and
+                    @as(u32, @intCast(@max(0, surf.h()))) < raw_max.h;
+                if (is_small_medium) {
+                    small_fallback = surf;
+                    continue;
+                }
+                if (small_fallback) |fb| fb.destroy();
                 return .{ .surface = surf, .orientation = orientation };
             }
+        }
+        if (small_fallback) |surf| {
+            return .{ .surface = surf, .orientation = orientation };
         }
         return error.DecodeFailed;
     }
 
     const orientation = probe.parseExifOrientation(header_slice) orelse .normal;
+    const raw_max = preRotationMaxDims(max_dims, orientation);
     if (max_dims.w <= 200 and max_dims.h <= 200) {
         if (probe.extractValidJpegThumbnailLocation(
             header_slice,
@@ -297,6 +339,7 @@ fn decodePreviewSourceSurface(
                 header_slice,
                 file_size,
                 loc,
+                raw_max,
             )) |surf| {
                 return .{ .surface = surf, .orientation = orientation };
             }
@@ -327,8 +370,11 @@ fn decodePreviewSourceSurface(
     };
 
     if (cancel.isCanceled()) return error.Canceled;
-    const surf = sdl.Surface.loadConstMemOpt(bytes_to_decode) orelse
-        return error.DecodeFailed;
+    const surf = sdl.Surface.loadConstMemScaledOpt(
+        bytes_to_decode,
+        raw_max.w,
+        raw_max.h,
+    ) orelse return error.DecodeFailed;
     return .{ .surface = surf, .orientation = orientation };
 }
 
@@ -360,12 +406,9 @@ fn renderPreviewRgbaFile(
     const src_h = decoded.surface.h();
     if (src_w <= 0 or src_h <= 0) return error.InvalidDimensions;
 
-    const quarter_turns: u2 = @backingInt(decoded.orientation);
-    const is_swapped = (quarter_turns & 1) != 0;
-    const raw_max_w = if (is_swapped) max_dims.h else max_dims.w;
-    const raw_max_h = if (is_swapped) max_dims.w else max_dims.h;
-    const eff_max_w: i32 = @intCast(@min(raw_max_w, 4096));
-    const eff_max_h: i32 = @intCast(@min(raw_max_h, 4096));
+    const raw_max = preRotationMaxDims(max_dims, decoded.orientation);
+    const eff_max_w: i32 = @intCast(raw_max.w);
+    const eff_max_h: i32 = @intCast(raw_max.h);
 
     var target_w: i32 = src_w;
     var target_h: i32 = src_h;

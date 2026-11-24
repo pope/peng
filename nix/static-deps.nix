@@ -720,6 +720,7 @@ let
 in
 {
   inherit
+    libjpeg
     sdl3
     sdl3-ttf
     sdl3-image

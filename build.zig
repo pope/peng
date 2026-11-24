@@ -62,14 +62,26 @@ pub fn build(b: *std.Build) void {
     }
 
     // Create the standalone SDL boundary module
+    const is_darwin = target.result.os.tag.isDarwin();
+    const is_windows = target.result.os.tag == .windows;
+    const has_turbojpeg = !is_windows;
+
     const wf = b.addWriteFiles();
-    const sdl_c_h = wf.add("sdl_c.h",
+    const sdl_c_header = if (has_turbojpeg)
+        \\#include <SDL3/SDL.h>
+        \\#include <SDL3/SDL_gpu.h>
+        \\#include <SDL3_ttf/SDL_ttf.h>
+        \\#include <SDL3_image/SDL_image.h>
+        \\#include <turbojpeg.h>
+        \\
+    else
         \\#include <SDL3/SDL.h>
         \\#include <SDL3/SDL_gpu.h>
         \\#include <SDL3_ttf/SDL_ttf.h>
         \\#include <SDL3_image/SDL_image.h>
         \\
-    );
+    ;
+    const sdl_c_h = wf.add("sdl_c.h", sdl_c_header);
     const translate_sdl = b.addTranslateC(.{
         .root_source_file = sdl_c_h,
         .target = target,
@@ -77,14 +89,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const sdl_options = b.addOptions();
+    sdl_options.addOption(bool, "has_turbojpeg", has_turbojpeg);
+
     const sdl_module = b.createModule(.{
         .root_source_file = b.path("src/sdl/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    const is_darwin = target.result.os.tag.isDarwin();
-    const is_windows = target.result.os.tag == .windows;
+    sdl_module.addOptions("sdl_options", sdl_options);
 
     if (is_windows) {
         linkWindowsSdl(b, translate_sdl, sdl_module);
@@ -95,7 +109,12 @@ pub fn build(b: *std.Build) void {
             .dynamic;
         // translate_sdl.createModule() forwards system_libs into sdl_c; static
         // codecs (libjxl, harfbuzz, libyuv) also need C++ runtime linkage.
-        const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
+        const sys_libs = [_][]const u8{
+            "sdl3",
+            "sdl3-ttf",
+            "sdl3-image",
+            "libturbojpeg",
+        };
         inline for (sys_libs) |lib| {
             translate_sdl.linkSystemLibrary(lib, .{
                 .preferred_link_mode = link_mode,

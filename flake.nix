@@ -36,6 +36,7 @@
           final.peng.override {
             static = true;
             inherit (staticDeps)
+              libjpeg
               linuxDlopenLibraryPath
               sdl3
               sdl3-image

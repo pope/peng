@@ -1,7 +1,9 @@
 const c_pkg = @import("c.zig");
+const sdl_options = @import("sdl_options");
 const std = @import("std");
 
 const c = c_pkg.c;
+const has_turbojpeg = sdl_options.has_turbojpeg;
 
 /// SDL pixel format enumeration constants.
 pub const PixelFormat = struct {
@@ -165,6 +167,24 @@ pub const Surface = struct {
         const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return null;
         const raw = c.IMG_Load_IO(io, true);
         return if (raw) |r| .{ .ptr = r } else null;
+    }
+
+    /// Decodes an image from an in-memory byte slice, using libturbojpeg fast
+    /// DCT decoding (with native DCT downscaling when the source exceeds
+    /// `(max_w, max_h)`) for JPEG inputs when available. Falls back to
+    /// `loadConstMemOpt` for non-JPEG inputs, fatal TurboJPEG errors, or
+    /// builds without TurboJPEG.
+    pub fn loadConstMemScaledOpt(
+        bytes: []const u8,
+        max_w: u32,
+        max_h: u32,
+    ) ?Surface {
+        if (has_turbojpeg and max_w > 0 and max_h > 0) {
+            if (loadJpegScaledTurbo(bytes, max_w, max_h)) |surf| {
+                return surf;
+            }
+        }
+        return loadConstMemOpt(bytes);
     }
 
     /// Converts this surface to `target_format`, utilizing SIMD-optimized
@@ -1099,6 +1119,105 @@ fn resampleUvToRgba32(
     return dst;
 }
 
+fn loadJpegScaledTurbo(
+    bytes: []const u8,
+    max_w: u32,
+    max_h: u32,
+) ?Surface {
+    if (!has_turbojpeg) return null;
+    if (bytes.len < 3 or
+        bytes[0] != 0xFF or
+        bytes[1] != 0xD8 or
+        bytes[2] != 0xFF)
+    {
+        return null;
+    }
+    const jpeg_len = std.math.cast(c_ulong, bytes.len) orelse return null;
+
+    const handle = c.tjInitDecompress() orelse return null;
+    defer _ = c.tjDestroy(handle);
+
+    var src_w_c: c_int = 0;
+    var src_h_c: c_int = 0;
+    var subsamp: c_int = 0;
+    var colorspace: c_int = 0;
+    if (c.tjDecompressHeader3(
+        handle,
+        bytes.ptr,
+        jpeg_len,
+        &src_w_c,
+        &src_h_c,
+        &subsamp,
+        &colorspace,
+    ) != 0) {
+        return null;
+    }
+    if (src_w_c <= 0 or src_h_c <= 0) return null;
+
+    const src_w: u64 = @intCast(src_w_c);
+    const src_h: u64 = @intCast(src_h_c);
+    const max_w_u: u64 = max_w;
+    const max_h_u: u64 = max_h;
+
+    var target_w = src_w;
+    var target_h = src_h;
+    if (src_w > max_w_u or src_h > max_h_u) {
+        const sx = @as(f64, @floatFromInt(max_w_u)) /
+            @as(f64, @floatFromInt(src_w));
+        const sy = @as(f64, @floatFromInt(max_h_u)) /
+            @as(f64, @floatFromInt(src_h));
+        const factor = @min(sx, sy);
+        const scaled_w_f = @round(@as(f64, @floatFromInt(src_w)) * factor);
+        const scaled_h_f = @round(@as(f64, @floatFromInt(src_h)) * factor);
+        target_w = @max(1, @as(u64, @intFromFloat(scaled_w_f)));
+        target_h = @max(1, @as(u64, @intFromFloat(scaled_h_f)));
+    }
+
+    var best_w = src_w;
+    var best_h = src_h;
+    var num_factors: c_int = 0;
+    if (c.tjGetScalingFactors(&num_factors)) |factors| {
+        if (num_factors > 0) {
+            for (factors[0..@intCast(num_factors)]) |sf| {
+                if (sf.num <= 0 or sf.denom <= 0 or sf.num > sf.denom) {
+                    continue;
+                }
+                const num: u64 = @intCast(sf.num);
+                const denom: u64 = @intCast(sf.denom);
+                const sw = @divCeil(src_w * num, denom);
+                const sh = @divCeil(src_h * num, denom);
+                if (sw >= target_w and sh >= target_h and
+                    (sw < best_w or (sw == best_w and sh < best_h)))
+                {
+                    best_w = sw;
+                    best_h = sh;
+                }
+            }
+        }
+    }
+
+    const out_w = std.math.cast(i32, best_w) orelse return null;
+    const out_h = std.math.cast(i32, best_h) orelse return null;
+    const dst = Surface.create(out_w, out_h, PixelFormat.rgba32) orelse
+        return null;
+    const rc = c.tjDecompress2(
+        handle,
+        bytes.ptr,
+        jpeg_len,
+        dst.pixels(),
+        out_w,
+        dst.pitch(),
+        out_h,
+        c.TJPF_RGBA,
+        c.TJFLAG_FASTDCT | c.TJFLAG_FASTUPSAMPLE,
+    );
+    if (rc != 0 and c.tjGetErrorCode(handle) != c.TJERR_WARNING) {
+        dst.destroy();
+        return null;
+    }
+    return dst;
+}
+
 test "Surface.scaleRgba32Smooth box-averages RGB24 and 4x downscales" {
     // Create a 4x4 RGB24 checkerboard of 0 and 200
     const surf = Surface.create(4, 4, PixelFormat.rgb24) orelse return;
@@ -1124,4 +1243,50 @@ test "Surface.scaleRgba32Smooth box-averages RGB24 and 4x downscales" {
     try std.testing.expectEqual(@as(u8, 100), scaled.pixels()[1]);
     try std.testing.expectEqual(@as(u8, 100), scaled.pixels()[2]);
     try std.testing.expectEqual(@as(u8, 255), scaled.pixels()[3]);
+}
+
+test "Surface.loadConstMemScaledOpt decodes JPEG with DCT scaling" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "testfiles/images/000_0_1024x682.jpg",
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    defer allocator.free(bytes);
+
+    const surf = Surface.loadConstMemScaledOpt(bytes, 256, 256) orelse
+        return error.DecodeFailed;
+    defer surf.destroy();
+
+    try std.testing.expect(surf.w() >= 256);
+    try std.testing.expect(surf.h() >= 170);
+    if (has_turbojpeg) {
+        try std.testing.expectEqual(PixelFormat.rgba32, surf.format());
+        try std.testing.expect(surf.w() <= 512);
+        try std.testing.expect(surf.h() <= 341);
+    }
+}
+
+test "Surface.loadConstMemScaledOpt falls back on PNG and corrupt JPEG" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const png_bytes = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "testfiles/golden-screenshots/init.png",
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    defer allocator.free(png_bytes);
+
+    const png_surf = Surface.loadConstMemScaledOpt(png_bytes, 128, 128) orelse
+        return error.DecodeFailed;
+    defer png_surf.destroy();
+    try std.testing.expect(png_surf.w() > 0 and png_surf.h() > 0);
+
+    const corrupt_jpg = "\xFF\xD8\xFF\xE0\x00\x02bad";
+    try std.testing.expect(
+        Surface.loadConstMemScaledOpt(corrupt_jpg, 128, 128) == null,
+    );
 }

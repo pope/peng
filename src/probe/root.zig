@@ -1822,7 +1822,7 @@ pub const RawHeaderProbe = struct {
         self: RawHeaderProbe,
         max_dims: PositiveDimsU32,
     ) [3]?ThumbnailLocation {
-        return if (max_dims.w <= 320 and max_dims.h <= 320)
+        return if (max_dims.w <= 1600 and max_dims.h <= 1600)
             .{ self.medium, self.preview, self.thumbnail }
         else
             .{ self.preview, self.medium, self.thumbnail };
@@ -4155,9 +4155,17 @@ test "isRawContainer, isValid, and synthetic RAW builders" {
     try std.testing.expectEqual(p1, small_cands[1].?);
     try std.testing.expectEqual(p3, small_cands[2].?);
 
-    const large_cands = probe_3.selectPreviewCandidates(.{
+    const med_cands = probe_3.selectPreviewCandidates(.{
         .w = 800,
         .h = 600,
+    });
+    try std.testing.expectEqual(p2, med_cands[0].?);
+    try std.testing.expectEqual(p1, med_cands[1].?);
+    try std.testing.expectEqual(p3, med_cands[2].?);
+
+    const large_cands = probe_3.selectPreviewCandidates(.{
+        .w = 2000,
+        .h = 1500,
     });
     try std.testing.expectEqual(p1, large_cands[0].?);
     try std.testing.expectEqual(p2, large_cands[1].?);
