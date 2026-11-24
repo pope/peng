@@ -2,7 +2,6 @@ const app = @import("app");
 const app_config = @import("config");
 const build_options = @import("build_options");
 const builtin = @import("builtin");
-const core = @import("core");
 const gpu = @import("gpu");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
@@ -12,12 +11,7 @@ const thumbcache = @import("thumbcache");
 const ui = @import("ui");
 const viewer = if (!build_options.hot_reload) @import("viewer") else struct {};
 
-const collectPrecacheFiles = thumbcache.collectPrecacheFiles;
-const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
-const precachePathsParallel = thumbcache.precachePathsParallel;
-const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbTier = thumbcache.ThumbTier;
-const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
 
 const LibViewer = struct {
     const lib_ext = switch (builtin.target.os.tag) {
@@ -435,12 +429,6 @@ const AppGraphicsAndState = struct {
             return false;
         }
 
-        if (parsed.precache) {
-            try runCliPrecache(proc_init, &parsed);
-            parsed.deinit(gpa);
-            return false;
-        }
-
         if (parsed.ipc_mode == .default_socket) {
             const resolved_sock = ipc.resolveDefaultSocketPath(
                 gpa,
@@ -830,105 +818,6 @@ fn resolveThumbWriteTier(
     if (headless) return .normal;
     const scale = sdl.getPrimaryDisplayContentScale() orelse return .normal;
     return ThumbTier.fromDpiScale(scale);
-}
-
-fn resolveCliPrecacheTier(
-    override_opt: ?ThumbTier,
-    headless: bool,
-) ThumbTier {
-    if (override_opt) |tier| return tier;
-    if (headless) return .normal;
-    if (!sdl.init(sdl.init_flags.video)) return .normal;
-    defer sdl.quit();
-    return resolveThumbWriteTier(null, false);
-}
-
-/// Runs headless CLI thumbnail pre-caching (`peng --precache [path]`) across CPU cores
-/// and prints a completion summary to standard output.
-fn runCliPrecache(
-    proc_init: std.process.Init,
-    parsed: *const app_config.cli.ParsedArgs,
-) !void {
-    const gpa = proc_init.gpa;
-    const io = proc_init.io;
-
-    const policy: ThumbWritePolicy = switch (parsed.thumb_cache) {
-        .missing => .missing_embedded_only,
-        else => .all_missing,
-    };
-    const write_tier = resolveCliPrecacheTier(
-        parsed.thumb_size,
-        parsed.headless,
-    );
-    var cfg = ThumbCacheConfig.initFromEnviron(
-        gpa,
-        proc_init.environ_map,
-        policy,
-        write_tier,
-    );
-    defer cfg.deinit(gpa);
-
-    const enabled_cfg = switch (cfg) {
-        .enabled => |c| c,
-        .disabled => {
-            std.log.err(
-                "Freedesktop thumbnail cache unavailable " ++
-                    "(check HOME / XDG_CACHE_HOME)",
-                .{},
-            );
-            return error.ThumbCacheDisabled;
-        },
-    };
-
-    const target_path = parsed.arg_path orelse ".";
-    var path_arena: std.heap.ArenaAllocator = .init(gpa);
-    defer path_arena.deinit();
-    const path_alloc = path_arena.allocator();
-
-    var files: std.ArrayList([]const u8) = .empty;
-    collectPrecacheFiles(
-        path_alloc,
-        io,
-        target_path,
-        parsed.recursive,
-        &files,
-    ) catch |err| {
-        std.log.err(
-            "Failed to collect files from '{s}': {s}",
-            .{ target_path, @errorName(err) },
-        );
-        return err;
-    };
-
-    const cpu_count = std.Thread.getCpuCount() catch 4;
-    const max_workers = @max(@as(usize, 1), @min(@as(usize, 8), cpu_count));
-    const stats = precachePathsParallel(
-        gpa,
-        io,
-        enabled_cfg,
-        files.items,
-        max_workers,
-        .{},
-        encodeBytesToThumbnailPng,
-    );
-
-    var stdout_write_buf: [1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writerStreaming(
-        io,
-        &stdout_write_buf,
-    );
-    _ = stdout_writer.interface.print(
-        "Pre-cached {s}: {d} written, {d} already cached, {d} skipped, {d} failed ({d} total)\n",
-        .{
-            target_path,
-            stats.written,
-            stats.already_valid,
-            stats.skipped,
-            stats.failed,
-            stats.total_files,
-        },
-    ) catch {};
-    _ = stdout_writer.interface.flush() catch {};
 }
 
 /// Writes tab-separated image classifications (PICK / REJECT) to standard

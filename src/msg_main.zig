@@ -2,6 +2,7 @@ const app_config = @import("config");
 const builtin = @import("builtin");
 const ipc = @import("ipc");
 const std = @import("std");
+const termgfx = @import("termgfx");
 
 fn resolvePengBinary(
     gpa: std.mem.Allocator,
@@ -342,31 +343,26 @@ pub fn main(init: std.process.Init) !void {
         var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
         const preview_opt = parsed_resp.value.getPreview();
         if (preview_opt) |prev| {
-            var b64_buf: [512]u8 = undefined;
-            if (std.base64.standard.Encoder.calcSize(prev.path.len) >
-                b64_buf.len)
-            {
-                std.log.err("Preview temp file path too long for base64", .{});
-                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, prev.path) catch {};
-                std.process.exit(1);
-            }
-            const encoded = std.base64.standard.Encoder.encode(
-                &b64_buf,
+            termgfx.writeKittyPreview(
+                &stdout_writer.interface,
                 prev.path,
-            );
-            const clear_seq = if (clear_preview)
-                "\x1b_Ga=d,d=A,q=2\x1b\\"
-            else
-                "";
-            stdout_writer.interface.print(
-                "{s}\x1b_Ga=T,f=32,s={d},v={d},t=t,q=2;{s}\x1b\\",
-                .{ clear_seq, prev.dims.w, prev.dims.h, encoded },
+                prev.dims,
+                clear_preview,
             ) catch |err| {
                 std.log.err(
                     "Failed to write Kitty preview to stdout: {any}",
                     .{err},
                 );
-                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, prev.path) catch {};
+                std.Io.Dir.deleteFile(
+                    std.Io.Dir.cwd(),
+                    io,
+                    prev.path,
+                ) catch |del_e| {
+                    std.log.warn(
+                        "Failed to clean up preview temp file '{s}': {}",
+                        .{ prev.path, del_e },
+                    );
+                };
                 std.process.exit(1);
             };
         } else {
@@ -381,7 +377,16 @@ pub fn main(init: std.process.Init) !void {
         stdout_writer.interface.flush() catch |err| {
             std.log.err("Failed to flush stdout: {any}", .{err});
             if (preview_opt) |prev| {
-                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, prev.path) catch {};
+                std.Io.Dir.deleteFile(
+                    std.Io.Dir.cwd(),
+                    io,
+                    prev.path,
+                ) catch |del_e| {
+                    std.log.warn(
+                        "Failed to clean up preview temp file '{s}': {}",
+                        .{ prev.path, del_e },
+                    );
+                };
             }
             std.process.exit(1);
         };

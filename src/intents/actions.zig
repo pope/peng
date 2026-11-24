@@ -48,8 +48,6 @@ pub const OptionId = enum {
     thumb_cache,
     thumb_size,
     no_thumb_cache,
-    precache,
-    recursive,
 };
 
 /// Declarative schema describing a command-line option, its target app,

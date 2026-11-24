@@ -114,11 +114,13 @@ direnv allow
 zig build
 ```
 
-This compiles three executables to `./zig-out/bin/`:
+This compiles five executables to `./zig-out/bin/`:
 
-1. `peng`: The primary image viewer.
+1. `peng`: The primary image viewer and resident `--server`.
 2. `peng-msg`: A lightweight CLI client for sending IPC control messages.
-3. `peng-test-runner`: The automated visual regression test runner.
+3. `peng-preview`: Standalone Kitty Graphics Protocol (`t=t`) terminal image previewer.
+4. `peng-precache`: Standalone parallel Freedesktop thumbnail pre-cacher.
+5. `peng-test-runner`: The automated visual regression test runner.
 
 ______________________________________________________________________
 
@@ -136,33 +138,46 @@ Start the image viewer by passing a file or directory path:
 
 ### CLI Flags
 
-| Flag                  | Argument                                                    | Description                                              |
-| :-------------------- | :---------------------------------------------------------- | :------------------------------------------------------- |
-| `-h`, `--help`        | None                                                        | Displays the help message and available options.         |
-| `-W`, `--windowless`  | None                                                        | Runs in borderless/windowless mode (no titlebar chrome). |
-| `--scale`             | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets default image scaling / zoom preset.                |
-| `--blur`              | None                                                        | Enables background glassmorphism blur effect (default).  |
-| `--no-blur`           | None                                                        | Disables background glassmorphism blur effect.           |
-| `--title`             | None                                                        | Shows floating title bar overlay on startup.             |
-| `--headless`          | None                                                        | Runs without opening an OS display window.               |
-| `--profile-startup`   | None                                                        | Logs cold-start milestone timings in milliseconds.       |
-| `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.  |
-| `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images. |
-| `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                        | Sets the XDG shared thumbnail cache policy.              |
+| Flag                  | Argument                                                    | Description                                                   |
+| :-------------------- | :---------------------------------------------------------- | :------------------------------------------------------------ |
+| `-h`, `--help`        | None                                                        | Displays the help message and available options.              |
+| `-W`, `--windowless`  | None                                                        | Runs in borderless/windowless mode (no titlebar chrome).      |
+| `--scale`             | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets default image scaling / zoom preset.                     |
+| `--blur`              | None                                                        | Enables background glassmorphism blur effect (default).       |
+| `--no-blur`           | None                                                        | Disables background glassmorphism blur effect.                |
+| `--title`             | None                                                        | Shows floating title bar overlay on startup.                  |
+| `--headless`          | None                                                        | Runs without opening an OS display window.                    |
+| `--profile-startup`   | None                                                        | Logs cold-start milestone timings in milliseconds.            |
+| `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.       |
+| `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images.      |
+| `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                        | Sets the XDG shared thumbnail cache policy.                   |
 | `--thumb-size`        | `normal`, `large`, `x-large`, `xx-large`                    | Overrides the XDG thumbnail write tier (auto-DPI by default). |
-| `--no-thumb-cache`    | None                                                        | Disables the Freedesktop XDG shared thumbnail cache.     |
-| `--precache`          | None                                                        | Pre-generates Freedesktop thumbnails for path and exits. |
-| `-r`, `--recursive`   | None                                                        | Recursively scans subdirectories when pre-caching.       |
-| `--server`            | None                                                        | Runs as a resident background server (`q` hides window). |
-| `--ipc`               | None                                                        | Enables the IPC UNIX Domain Socket server.               |
-| `-S`, `--socket`      | `<PATH>`                                                    | Enables the IPC server bound to an explicit socket path. |
+| `--no-thumb-cache`    | None                                                        | Disables the Freedesktop XDG shared thumbnail cache.          |
+| `--server`            | None                                                        | Runs as a resident background server (`q` hides window).      |
+| `--ipc`               | None                                                        | Enables the IPC UNIX Domain Socket server.                    |
+| `-S`, `--socket`      | `<PATH>`                                                    | Enables the IPC server bound to an explicit socket path.      |
 
 Aliases:
 
 - `--windowless` can also be specified as `--borderless` or `--undecorated`.
 - `--scale` supports preset aliases: `fit` (alias for `full`), `fill` (alias
   for `crop`), `1:1` or `actual` (alias for `none`).
-- `--server` can also be specified as `--daemon`; `--socket` as `--ipc-socket`; `--precache` as `--cache-thumbs`.
+- `--server` can also be specified as `--daemon`; `--socket` as `--ipc-socket`.
+
+### Standalone CLI Utilities (`peng-preview` & `peng-precache`)
+
+```bash
+# Render a standalone Kitty terminal preview (no server or GUI window needed)
+./zig-out/bin/peng-preview -c 800 600 /path/to/photo.RAF
+./zig-out/bin/peng-preview --clear --size 800x600 /path/to/photo.RAF
+
+# Use peng-preview directly with fzf
+fd . -e jpg -e raf | fzf --preview './zig-out/bin/peng-preview -c 800 600 {}'
+
+# Pre-generate Freedesktop thumbnails in parallel across CPU cores
+./zig-out/bin/peng-precache -r /path/to/photos/
+./zig-out/bin/peng-precache --thumb-size large -r /path/to/photos/
+```
 
 ______________________________________________________________________
 

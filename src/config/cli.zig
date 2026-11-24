@@ -1,8 +1,10 @@
 const builtin = @import("builtin");
+const geom = @import("geom");
 const intents = @import("intents");
 const std = @import("std");
 const thumbcache = @import("thumbcache");
 
+const PositiveDimsU32 = geom.PositiveDimsU32;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const ThumbTier = thumbcache.ThumbTier;
 const thumb_cache_modes_string = thumbcache.thumb_cache_modes_string;
@@ -39,21 +41,6 @@ pub const process_flags = [_]intents.CliOption{
         .target = .main,
         .long = "--no-thumb-cache",
         .description = "Disable Freedesktop XDG shared thumbnail cache",
-    },
-    .{
-        .id = .precache,
-        .target = .main,
-        .long = "--precache",
-        .aliases = &.{"--cache-thumbs"},
-        .description = "Pre-generate Freedesktop thumbnails for path and exit",
-    },
-    .{
-        .id = .recursive,
-        .target = .main,
-        .short = "-r",
-        .long = "--recursive",
-        .aliases = &.{"-R"},
-        .description = "Recursively scan subdirectories when pre-caching",
     },
     .{
         .id = .ipc,
@@ -324,8 +311,6 @@ pub const ParsedArgs = struct {
     stack_raw_jpeg: bool = true,
     thumb_cache: ThumbCacheMode = .all,
     thumb_size: ?ThumbTier = null,
-    precache: bool = false,
-    recursive: bool = false,
     help: bool = false,
 
     /// Frees allocated memory associated with parsed command-line arguments.
@@ -388,6 +373,16 @@ fn parseZoomPreset(val: []const u8) ?ZoomPreset {
     return ZoomPreset.parse(val);
 }
 
+fn parsePreviewSize(val: []const u8) ?PositiveDimsU32 {
+    const sep = std.mem.findScalar(u8, val, 'x') orelse
+        std.mem.findScalar(u8, val, 'X') orelse
+        return null;
+    const w = std.fmt.parseInt(u32, val[0..sep], 10) catch return null;
+    const h = std.fmt.parseInt(u32, val[sep + 1 ..], 10) catch return null;
+    if (w == 0 or h == 0) return null;
+    return .{ .w = w, .h = h };
+}
+
 /// Parses flags and arguments from any iterator providing `next() ?[]const u8`.
 pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var arg_path: ?[]const u8 = null;
@@ -406,8 +401,6 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var stack_raw_jpeg = true;
     var thumb_cache: ThumbCacheMode = .all;
     var thumb_size: ?ThumbTier = null;
-    var precache = false;
-    var recursive = false;
     var help = false;
 
     var end_of_options = false;
@@ -467,8 +460,6 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .stack_raw_jpeg => stack_raw_jpeg = true,
                     .no_stack_raw_jpeg => stack_raw_jpeg = false,
                     .no_thumb_cache => thumb_cache = .off,
-                    .precache => precache = true,
-                    .recursive => recursive = true,
                     .thumb_cache => {
                         const val = args_it.next() orelse {
                             if (!builtin.is_test) {
@@ -569,8 +560,6 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .stack_raw_jpeg = stack_raw_jpeg,
         .thumb_cache = thumb_cache,
         .thumb_size = thumb_size,
-        .precache = precache,
-        .recursive = recursive,
         .help = help,
     };
 }
@@ -658,8 +647,6 @@ pub fn parseIpcArgsIterator(
                     .thumb_cache,
                     .thumb_size,
                     .no_thumb_cache,
-                    .precache,
-                    .recursive,
                     => unreachable,
                 }
                 continue;
@@ -728,6 +715,335 @@ pub fn parseIpcCommandLineArgs(
     _ = args_it.next();
 
     return parseIpcArgsIterator(&args_it, gpa);
+}
+
+/// Parsed command-line arguments for the `peng-preview` standalone utility.
+pub const PreviewArgs = struct {
+    path: ?[]u8 = null,
+    max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
+    clear_first: bool = false,
+    thumb_cache: ThumbCacheMode = .all,
+    help: bool = false,
+
+    /// Releases owned path memory.
+    pub fn deinit(self: *PreviewArgs, gpa: std.mem.Allocator) void {
+        if (self.path) |p| {
+            gpa.free(p);
+            self.path = null;
+        }
+    }
+};
+
+/// Prints `peng-preview` usage information to standard output.
+pub fn printPreviewHelp(io: std.Io) void {
+    printHelpString(
+        io,
+        "Usage: peng-preview [OPTIONS] [W H] <PATH>\n\n" ++
+            "Render a Kitty Graphics Protocol (t=t) " ++
+            "terminal image preview.\n\n" ++
+            "Options:\n" ++
+            "  -h, --help                Show this help message and exit\n" ++
+            "  -c, --clear               " ++
+            "Clear prior terminal graphics first\n" ++
+            "      --size <WxH>          " ++
+            "Maximum pixel dimensions (default: 800x600)\n" ++
+            "      --thumb-cache <MODE>  XDG thumbnail cache policy (" ++
+            thumb_cache_modes_string ++ ")\n" ++
+            "      --no-thumb-cache      Disable XDG shared thumbnail cache\n",
+    );
+}
+
+fn parsePreviewArgsIterator(
+    args_it: anytype,
+    gpa: std.mem.Allocator,
+) !PreviewArgs {
+    var clear_first = false;
+    var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
+    var has_flag_size = false;
+    var thumb_cache: ThumbCacheMode = .all;
+    var help = false;
+    var end_of_options = false;
+
+    var positional: std.ArrayList([]const u8) = .empty;
+    defer positional.deinit(gpa);
+
+    while (args_it.next()) |arg| {
+        if (!end_of_options and std.mem.eql(u8, arg, "--")) {
+            end_of_options = true;
+            continue;
+        }
+        if (!end_of_options and arg.len > 1 and arg[0] == '-') {
+            if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                help = true;
+            } else if (std.mem.eql(u8, arg, "-c") or
+                std.mem.eql(u8, arg, "--clear"))
+            {
+                clear_first = true;
+            } else if (std.mem.eql(u8, arg, "--no-thumb-cache")) {
+                thumb_cache = .off;
+            } else if (std.mem.eql(u8, arg, "--size")) {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err("Missing value for --size flag.", .{});
+                    }
+                    return error.MissingFlagValue;
+                };
+                max_dims = parsePreviewSize(val) orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Invalid --size value: {s}. Expected WxH.",
+                            .{val},
+                        );
+                    }
+                    return error.InvalidPreviewSize;
+                };
+                has_flag_size = true;
+            } else if (std.mem.eql(u8, arg, "--thumb-cache")) {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Missing value for --thumb-cache flag.",
+                            .{},
+                        );
+                    }
+                    return error.MissingFlagValue;
+                };
+                thumb_cache = ThumbCacheMode.parse(val) orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Unknown thumb-cache mode: {s}. Valid: {s}.",
+                            .{ val, thumb_cache_modes_string },
+                        );
+                    }
+                    return error.InvalidThumbCacheMode;
+                };
+            } else {
+                if (!builtin.is_test) {
+                    std.log.err(
+                        "Unknown flag: {s}. Use --help for usage.",
+                        .{arg},
+                    );
+                }
+                return error.UnknownFlag;
+            }
+            continue;
+        }
+        try positional.append(gpa, arg);
+    }
+
+    if (help) return .{ .help = true };
+
+    var path_slice: ?[]const u8 = null;
+    if (positional.items.len == 1) {
+        path_slice = positional.items[0];
+    } else if (positional.items.len == 3 and !has_flag_size) {
+        const w = std.fmt.parseInt(u32, positional.items[0], 10) catch {
+            if (!builtin.is_test) {
+                std.log.err("Invalid width: {s}", .{positional.items[0]});
+            }
+            return error.InvalidPreviewSize;
+        };
+        const h = std.fmt.parseInt(u32, positional.items[1], 10) catch {
+            if (!builtin.is_test) {
+                std.log.err("Invalid height: {s}", .{positional.items[1]});
+            }
+            return error.InvalidPreviewSize;
+        };
+        if (w == 0 or h == 0) {
+            if (!builtin.is_test) {
+                std.log.err("Preview dimensions must be positive.", .{});
+            }
+            return error.InvalidPreviewSize;
+        }
+        max_dims = .{ .w = w, .h = h };
+        path_slice = positional.items[2];
+    } else if (positional.items.len > 1) {
+        if (!builtin.is_test) {
+            std.log.err("Too many positional arguments. Use --help.", .{});
+        }
+        return error.TooManyArguments;
+    }
+
+    const owned_path: ?[]u8 = if (path_slice) |p|
+        try gpa.dupe(u8, p)
+    else
+        null;
+
+    return .{
+        .path = owned_path,
+        .max_dims = max_dims,
+        .clear_first = clear_first,
+        .thumb_cache = thumb_cache,
+        .help = false,
+    };
+}
+
+/// Parses `peng-preview` command-line flags and target path.
+pub fn parsePreviewArgs(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+) !PreviewArgs {
+    var args_it = try std.process.Args.Iterator.initAllocator(
+        init.minimal.args,
+        gpa,
+    );
+    defer args_it.deinit();
+    _ = args_it.next();
+    return parsePreviewArgsIterator(&args_it, gpa);
+}
+
+/// Parsed command-line arguments for the `peng-precache` standalone utility.
+pub const PrecacheArgs = struct {
+    path: ?[]u8 = null,
+    recursive: bool = false,
+    thumb_cache: ThumbCacheMode = .all,
+    thumb_size: ?ThumbTier = null,
+    help: bool = false,
+
+    /// Releases owned path memory.
+    pub fn deinit(self: *PrecacheArgs, gpa: std.mem.Allocator) void {
+        if (self.path) |p| {
+            gpa.free(p);
+            self.path = null;
+        }
+    }
+};
+
+/// Prints `peng-precache` usage information to standard output.
+pub fn printPrecacheHelp(io: std.Io) void {
+    printHelpString(
+        io,
+        "Usage: peng-precache [OPTIONS] [PATH]\n\n" ++
+            "Pre-generate Freedesktop shared thumbnails in parallel " ++
+            "(default PATH: '.').\n\n" ++
+            "Options:\n" ++
+            "  -h, --help                Show this help message and exit\n" ++
+            "  -r, --recursive           Recursively scan subdirectories\n" ++
+            "      --thumb-cache <MODE>  " ++
+            "XDG thumbnail write policy (all, missing)\n" ++
+            "      --thumb-size <TIER>   Override XDG thumbnail write tier (" ++
+            thumb_tiers_string ++ ")\n",
+    );
+}
+
+fn parsePrecacheArgsIterator(
+    args_it: anytype,
+    gpa: std.mem.Allocator,
+) !PrecacheArgs {
+    var path: ?[]u8 = null;
+    errdefer if (path) |p| gpa.free(p);
+    var recursive = false;
+    var thumb_cache: ThumbCacheMode = .all;
+    var thumb_size: ?ThumbTier = null;
+    var help = false;
+    var end_of_options = false;
+
+    while (args_it.next()) |arg| {
+        if (!end_of_options and std.mem.eql(u8, arg, "--")) {
+            end_of_options = true;
+            continue;
+        }
+        if (!end_of_options and arg.len > 1 and arg[0] == '-') {
+            if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+                help = true;
+            } else if (std.mem.eql(u8, arg, "-r") or
+                std.mem.eql(u8, arg, "-R") or
+                std.mem.eql(u8, arg, "--recursive"))
+            {
+                recursive = true;
+            } else if (std.mem.eql(u8, arg, "--thumb-cache")) {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Missing value for --thumb-cache flag.",
+                            .{},
+                        );
+                    }
+                    return error.MissingFlagValue;
+                };
+                const mode = ThumbCacheMode.parse(val) orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Unknown thumb-cache mode: {s}. " ++
+                                "Valid: all, missing.",
+                            .{val},
+                        );
+                    }
+                    return error.InvalidThumbCacheMode;
+                };
+                switch (mode) {
+                    .all, .missing => thumb_cache = mode,
+                    .read_only, .off => {
+                        if (!builtin.is_test) {
+                            std.log.err(
+                                "Invalid --thumb-cache mode for " ++
+                                    "peng-precache: {s}. Valid: all, missing.",
+                                .{val},
+                            );
+                        }
+                        return error.InvalidThumbCacheMode;
+                    },
+                }
+            } else if (std.mem.eql(u8, arg, "--thumb-size")) {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Missing value for --thumb-size flag.",
+                            .{},
+                        );
+                    }
+                    return error.MissingFlagValue;
+                };
+                thumb_size = ThumbTier.parse(val) orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Unknown thumb-size tier: {s}. Valid: {s}.",
+                            .{ val, thumb_tiers_string },
+                        );
+                    }
+                    return error.InvalidThumbSize;
+                };
+            } else {
+                if (!builtin.is_test) {
+                    std.log.err(
+                        "Unknown flag: {s}. Use --help for usage.",
+                        .{arg},
+                    );
+                }
+                return error.UnknownFlag;
+            }
+            continue;
+        }
+        if (path != null) {
+            if (!builtin.is_test) {
+                std.log.err("Too many positional arguments. Use --help.", .{});
+            }
+            return error.TooManyArguments;
+        }
+        path = try gpa.dupe(u8, arg);
+    }
+
+    return .{
+        .path = path,
+        .recursive = recursive,
+        .thumb_cache = thumb_cache,
+        .thumb_size = thumb_size,
+        .help = help,
+    };
+}
+
+/// Parses `peng-precache` command-line flags and optional target path.
+pub fn parsePrecacheArgs(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+) !PrecacheArgs {
+    var args_it = try std.process.Args.Iterator.initAllocator(
+        init.minimal.args,
+        gpa,
+    );
+    defer args_it.deinit();
+    _ = args_it.next();
+    return parsePrecacheArgsIterator(&args_it, gpa);
 }
 
 test "CliTarget appliesTo works correctly" {
@@ -1122,27 +1438,6 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
 
     {
         var it = SliceIterator{
-            .slice = &[_][]const u8{ "--precache", "-r", "photos" },
-        };
-        var parsed = try parseArgsIterator(&it, testing.allocator);
-        defer parsed.deinit(testing.allocator);
-        try testing.expect(parsed.precache);
-        try testing.expect(parsed.recursive);
-        try testing.expectEqualStrings("photos", parsed.arg_path.?);
-    }
-
-    {
-        var it = SliceIterator{
-            .slice = &[_][]const u8{ "--cache-thumbs", "--recursive" },
-        };
-        var parsed = try parseArgsIterator(&it, testing.allocator);
-        defer parsed.deinit(testing.allocator);
-        try testing.expect(parsed.precache);
-        try testing.expect(parsed.recursive);
-    }
-
-    {
-        var it = SliceIterator{
             .slice = &[_][]const u8{"--server"},
         };
         var parsed = try parseArgsIterator(&it, testing.allocator);
@@ -1166,6 +1461,149 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
         try testing.expectEqualStrings(
             "/tmp/srv.sock",
             parsed.ipc_mode.customPath().?,
+        );
+    }
+}
+
+test "parsePreviewArgsIterator supports positional W H and --size WxH" {
+    const testing = std.testing;
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "-c", "640", "480", "photo.jpg" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.clear_first);
+        try testing.expectEqual(@as(u32, 640), parsed.max_dims.w);
+        try testing.expectEqual(@as(u32, 480), parsed.max_dims.h);
+        try testing.expectEqualStrings("photo.jpg", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--clear",
+                "--size",
+                "1024x768",
+                "--no-thumb-cache",
+                "photo.RAF",
+            },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.clear_first);
+        try testing.expectEqual(@as(u32, 1024), parsed.max_dims.w);
+        try testing.expectEqual(@as(u32, 768), parsed.max_dims.h);
+        try testing.expectEqual(ThumbCacheMode.off, parsed.thumb_cache);
+        try testing.expectEqualStrings("photo.RAF", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--size", "0x600", "a.jpg" },
+        };
+        try testing.expectError(
+            error.InvalidPreviewSize,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--size",
+                "800x600",
+                "640",
+                "480",
+                "a.jpg",
+            },
+        };
+        try testing.expectError(
+            error.TooManyArguments,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "640", "a.jpg" },
+        };
+        try testing.expectError(
+            error.TooManyArguments,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--", "-dash.jpg" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqualStrings("-dash.jpg", parsed.path.?);
+    }
+}
+
+test "parsePrecacheArgsIterator parses flags and optional path" {
+    const testing = std.testing;
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "-r",
+                "--thumb-cache",
+                "missing",
+                "--thumb-size",
+                "x-large",
+                "photos",
+            },
+        };
+        var parsed = try parsePrecacheArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.recursive);
+        try testing.expectEqual(ThumbCacheMode.missing, parsed.thumb_cache);
+        try testing.expectEqual(ThumbTier.x_large, parsed.thumb_size.?);
+        try testing.expectEqualStrings("photos", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--recursive"},
+        };
+        var parsed = try parsePrecacheArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.recursive);
+        try testing.expect(parsed.path == null);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-cache", "read_only" },
+        };
+        try testing.expectError(
+            error.InvalidThumbCacheMode,
+            parsePrecacheArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-cache", "off" },
+        };
+        try testing.expectError(
+            error.InvalidThumbCacheMode,
+            parsePrecacheArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "dir1", "dir2" },
+        };
+        try testing.expectError(
+            error.TooManyArguments,
+            parsePrecacheArgsIterator(&it, testing.allocator),
         );
     }
 }

@@ -193,8 +193,18 @@ pub fn build(b: *std.Build) void {
         optimize,
         "src/config/root.zig",
         &.{
+            .{ .name = "geom", .module = geom_module },
             .{ .name = "intents", .module = intents_module },
             .{ .name = "thumbcache", .module = thumbcache_module },
+        },
+    );
+    const termgfx_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/termgfx/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
         },
     );
     const palette_module = createInternalModule(
@@ -267,6 +277,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "probe", .module = probe_module },
             .{ .name = "sdl", .module = sdl_module },
             .{ .name = "thumbcache", .module = thumbcache_module },
+            .{ .name = "vfs", .module = vfs_module },
         },
     );
     const gpu_module = createInternalModule(
@@ -352,7 +363,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "app", .module = app_module },
                 .{ .name = "config", .module = config_module },
-                .{ .name = "core", .module = core_module },
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "ipc", .module = ipc_module },
                 .{ .name = "sdl", .module = sdl_module },
@@ -398,11 +408,50 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "config", .module = config_module },
                 .{ .name = "ipc", .module = ipc_module },
+                .{ .name = "termgfx", .module = termgfx_module },
             },
         }),
     });
     msg_exe.dead_strip_dylibs = is_darwin;
     b.installArtifact(msg_exe);
+
+    const preview_exe = b.addExecutable(.{
+        .name = "peng-preview",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/preview_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "config", .module = config_module },
+                .{ .name = "core", .module = core_module },
+                .{ .name = "termgfx", .module = termgfx_module },
+                .{ .name = "thumbcache", .module = thumbcache_module },
+            },
+        }),
+    });
+    preview_exe.dead_strip_dylibs = is_darwin;
+    preview_exe.force_load_objc = is_darwin and static_sdl;
+    b.installArtifact(preview_exe);
+
+    const precache_exe = b.addExecutable(.{
+        .name = "peng-precache",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/precache_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "config", .module = config_module },
+                .{ .name = "core", .module = core_module },
+                .{ .name = "sdl", .module = sdl_module },
+                .{ .name = "thumbcache", .module = thumbcache_module },
+            },
+        }),
+    });
+    precache_exe.dead_strip_dylibs = is_darwin;
+    precache_exe.force_load_objc = is_darwin and static_sdl;
+    b.installArtifact(precache_exe);
 
     const test_runner_exe = b.addExecutable(.{
         .name = "peng-test-runner",
@@ -528,6 +577,11 @@ pub fn build(b: *std.Build) void {
             .module = ipc_module,
             .step_name = "test-ipc",
             .step_desc = "Run ipc tests",
+        },
+        .{
+            .module = termgfx_module,
+            .step_name = "test-termgfx",
+            .step_desc = "Run termgfx tests",
         },
     };
 
