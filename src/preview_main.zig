@@ -126,15 +126,21 @@ pub fn main(init: std.process.Init) !void {
                     max_dims,
                 );
                 defer preview.deinit();
-                const rgba = surfaceRgbaView(preview);
+
+                const png_bytes = preview.surface.encodePngAlloc(
+                    gpa,
+                ) catch |err| {
+                    std.log.err(
+                        "Failed to encode Kitty PNG preview for '{s}': {s}",
+                        .{ target_path, @errorName(err) },
+                    );
+                    std.process.exit(1);
+                };
+                defer gpa.free(png_bytes);
+
                 if (!termgfx.writePreviewToStdout(io, .{
                     .kitty = .{
-                        .medium = .{
-                            .direct_rgba = .{
-                                .rgba_pixels = rgba.pixels,
-                                .pitch = rgba.pitch,
-                            },
-                        },
+                        .medium = .{ .direct_png = png_bytes },
                         .dims = preview.dims,
                         .clear_first = parsed.clear_first,
                     },

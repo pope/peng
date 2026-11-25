@@ -37,7 +37,7 @@ pub const PreviewOptions = struct {
 };
 
 /// Payload for Kitty Graphics Protocol emission (`t=t` temp file or chunked
-/// `t=d` direct RGBA32).
+/// `t=d` direct RGBA32 / PNG).
 pub const KittyPayload = struct {
     medium: KittyMedium,
     dims: PositiveDimsU32,

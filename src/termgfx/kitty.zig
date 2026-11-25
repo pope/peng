@@ -67,13 +67,16 @@ fn writeUtf8Codepoint(writer: *std.Io.Writer, cp: u21) !void {
 
 /// Kitty Graphics Protocol pixel data transport medium:
 /// - `.temp_file`: local temporary RGBA32 file (`t=t`, unlinked by terminal).
-/// - `.direct_rgba`: inline 4096-byte base64 chunks (`t=d`, SSH-compatible).
+/// - `.direct_rgba`: inline 4096-byte base64 RGBA32 chunks (`f=32,t=d`).
+/// - `.direct_png`: inline 4096-byte base64 PNG chunks (`f=100,t=d`, best for
+///   SSH).
 pub const KittyMedium = union(enum) {
     temp_file: []const u8,
     direct_rgba: struct {
         rgba_pixels: []const u8,
         pitch: usize,
     },
+    direct_png: []const u8,
 };
 
 /// Validates `medium` and `dims` before emitting any Kitty escape sequence.
@@ -94,6 +97,9 @@ pub fn validateMedium(medium: KittyMedium, dims: PositiveDimsU32) !void {
             {
                 return error.BufferTooSmall;
             }
+        },
+        .direct_png => |png| {
+            if (png.len == 0) return error.EmptyPayload;
         },
     }
 }
@@ -117,9 +123,73 @@ fn imageIdFromMedium(medium: KittyMedium, dims: PositiveDimsU32) u24 {
                 hasher.update(d.rgba_pixels[start .. start + sample_len]);
             }
         },
+        .direct_png => |png| hasher.update(png),
     }
     const id: u24 = @truncate(hasher.final());
     return if (id == 0) 1 else id;
+}
+
+fn emitDirectChunk(
+    writer: *std.Io.Writer,
+    raw_chunk: []const u8,
+    first_header: []const u8,
+    is_first: bool,
+    more: u8,
+    tmux_wrap: bool,
+) !void {
+    // Up to 3072 raw bytes encode to at most 4096 base64 characters.
+    var b64_buf: [4096]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&b64_buf, raw_chunk);
+    if (tmux_wrap) {
+        if (is_first) {
+            try writer.print(
+                "\x1bPtmux;\x1b\x1b_G{s},t=d,m={d};{s}\x1b\x1b\\\x1b\\",
+                .{ first_header, more, encoded },
+            );
+        } else {
+            try writer.print(
+                "\x1bPtmux;\x1b\x1b_Gm={d};{s}\x1b\x1b\\\x1b\\",
+                .{ more, encoded },
+            );
+        }
+    } else {
+        if (is_first) {
+            try writer.print(
+                "\x1b_G{s},t=d,m={d};{s}\x1b\\",
+                .{ first_header, more, encoded },
+            );
+        } else {
+            try writer.print(
+                "\x1b_Gm={d};{s}\x1b\\",
+                .{ more, encoded },
+            );
+        }
+    }
+}
+
+fn writeDirectBytesChunks(
+    writer: *std.Io.Writer,
+    bytes: []const u8,
+    first_header: []const u8,
+    tmux_wrap: bool,
+) !void {
+    const chunk_raw_max: usize = 3072;
+    var offset: usize = 0;
+    var is_first = true;
+    while (offset < bytes.len) {
+        const end = @min(offset + chunk_raw_max, bytes.len);
+        const more: u8 = if (end < bytes.len) 1 else 0;
+        try emitDirectChunk(
+            writer,
+            bytes[offset..end],
+            first_header,
+            is_first,
+            more,
+            tmux_wrap,
+        );
+        offset = end;
+        is_first = false;
+    }
 }
 
 fn writeDirectRgbaChunks(
@@ -132,10 +202,7 @@ fn writeDirectRgbaChunks(
 ) !void {
     const row_bytes: usize = @as(usize, dims.w) * 4;
     const total_bytes: usize = row_bytes * @as(usize, dims.h);
-    // 3072 raw bytes encode to exactly 4096 base64 characters (Kitty chunk
-    // limit).
     var raw_buf: [3072]u8 = undefined;
-    var b64_buf: [4096]u8 = undefined;
     var raw_len: usize = 0;
     var emitted_bytes: usize = 0;
     var is_first = true;
@@ -154,36 +221,14 @@ fn writeDirectRgbaChunks(
             {
                 emitted_bytes += raw_len;
                 const more: u8 = if (emitted_bytes < total_bytes) 1 else 0;
-                const encoded = std.base64.standard.Encoder.encode(
-                    &b64_buf,
+                try emitDirectChunk(
+                    writer,
                     raw_buf[0..raw_len],
+                    first_header,
+                    is_first,
+                    more,
+                    tmux_wrap,
                 );
-                if (tmux_wrap) {
-                    if (is_first) {
-                        try writer.print(
-                            "\x1bPtmux;\x1b\x1b_G{s},t=d,m={d};{s}\x1b\x1b\\" ++
-                                "\x1b\\",
-                            .{ first_header, more, encoded },
-                        );
-                    } else {
-                        try writer.print(
-                            "\x1bPtmux;\x1b\x1b_Gm={d};{s}\x1b\x1b\\\x1b\\",
-                            .{ more, encoded },
-                        );
-                    }
-                } else {
-                    if (is_first) {
-                        try writer.print(
-                            "\x1b_G{s},t=d,m={d};{s}\x1b\\",
-                            .{ first_header, more, encoded },
-                        );
-                    } else {
-                        try writer.print(
-                            "\x1b_Gm={d};{s}\x1b\\",
-                            .{ more, encoded },
-                        );
-                    }
-                }
                 is_first = false;
                 raw_len = 0;
             }
@@ -228,6 +273,14 @@ pub fn writeKittyStandard(
                 d.pitch,
                 dims,
                 header,
+                false,
+            );
+        },
+        .direct_png => |png| {
+            try writeDirectBytesChunks(
+                writer,
+                png,
+                "a=T,f=100,q=2",
                 false,
             );
         },
@@ -280,6 +333,20 @@ pub fn writeKittyUnicodePlaceholder(
                 d.rgba_pixels,
                 d.pitch,
                 dims,
+                header,
+                true,
+            );
+        },
+        .direct_png => |png| {
+            var hdr_buf: [128]u8 = undefined;
+            const header = std.mem.print(
+                &hdr_buf,
+                "a=T,U=1,f=100,i={d},c={d},r={d},q=2",
+                .{ id, fit.cols, fit.rows },
+            ) catch unreachable;
+            try writeDirectBytesChunks(
+                writer,
+                png,
                 header,
                 true,
             );
@@ -444,4 +511,70 @@ test "writeKittyStandard and U=1 support direct_rgba chunking and pitch" {
         "\x1b_Ga=T,f=32,s=24,v=32,q=2,t=d,m=0;",
     ));
     try std.testing.expect(std.mem.find(u8, aw4.written(), "m=1") == null);
+}
+
+test "writeKittyStandard and U=1 support direct_png (f=100) chunking" {
+    const allocator = std.testing.allocator;
+
+    var aw_empty = std.Io.Writer.Allocating.init(allocator);
+    defer aw_empty.deinit();
+    try std.testing.expectError(
+        error.EmptyPayload,
+        writeKittyStandard(
+            &aw_empty.writer,
+            .{ .direct_png = "" },
+            .{ .w = 10, .h = 10 },
+            false,
+        ),
+    );
+
+    // Small single-chunk PNG bytes
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    try writeKittyStandard(
+        &aw.writer,
+        .{ .direct_png = "abc" },
+        .{ .w = 16, .h = 12 },
+        false,
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b_Ga=T,f=100,q=2,t=d,m=0;YWJj\x1b\\",
+        aw.written(),
+    );
+
+    // Multi-chunk PNG bytes (> 3072 raw bytes) with U=1 tmux placeholder
+    const big_png: [4000]u8 = @splat(0x77);
+    var aw2 = std.Io.Writer.Allocating.init(allocator);
+    defer aw2.deinit();
+    try writeKittyUnicodePlaceholder(
+        &aw2.writer,
+        .{ .direct_png = &big_png },
+        .{ .w = 400, .h = 200 },
+        .{ .cols = 8, .rows = 4 },
+        null,
+    );
+    const out2 = aw2.written();
+    try std.testing.expect(
+        std.mem.startsWith(u8, out2, "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=100,i="),
+    );
+    try std.testing.expect(std.mem.find(u8, out2, ",t=d,m=1;") != null);
+    try std.testing.expect(
+        std.mem.find(u8, out2, "\x1bPtmux;\x1b\x1b_Gm=0;") != null,
+    );
+    try std.testing.expect(std.mem.endsWith(u8, out2, "\x1b[39m"));
+
+    // Exact 3072-byte boundary emits a single m=0 chunk.
+    const exact_png: [3072]u8 = @splat(0x33);
+    var aw3 = std.Io.Writer.Allocating.init(allocator);
+    defer aw3.deinit();
+    try writeKittyStandard(
+        &aw3.writer,
+        .{ .direct_png = &exact_png },
+        .{ .w = 16, .h = 16 },
+        false,
+    );
+    try std.testing.expect(
+        std.mem.startsWith(u8, aw3.written(), "\x1b_Ga=T,f=100,q=2,t=d,m=0;"),
+    );
+    try std.testing.expect(std.mem.find(u8, aw3.written(), "m=1") == null);
 }
