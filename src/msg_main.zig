@@ -8,6 +8,7 @@ const termgfx = @import("termgfx");
 const CellDims = termgfx.CellDims;
 const CellPixelSize = termgfx.CellPixelSize;
 const PositiveDimsU32 = geom.PositiveDimsU32;
+const PreviewSize = termgfx.PreviewSize;
 const ProtocolMode = termgfx.ProtocolMode;
 
 const PreviewClientMode = union(enum) {
@@ -165,10 +166,8 @@ fn preparePreviewCommand(
     var clear_first = std.mem.eql(u8, cmd, "preview-clear") or
         std.mem.eql(u8, cmd, "preview_clear") or
         std.mem.eql(u8, cmd, "clear-and-preview");
-    var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
-    var has_flag_size = false;
+    var size: PreviewSize = .default;
     var saw_end_of_options = false;
-    var cell_dims: ?CellDims = null;
     var protocol: ProtocolMode = .auto;
     var output_path: ?[]const u8 = null;
 
@@ -206,11 +205,11 @@ fn preparePreviewCommand(
                 std.log.err("Missing value for --size.", .{});
                 return error.InvalidPreviewArgs;
             };
-            max_dims = app_config.cli.parsePreviewSize(val) orelse {
+            const dims = app_config.cli.parsePreviewSize(val) orelse {
                 std.log.err("Invalid --size value: {s}. Expected WxH.", .{val});
                 return error.InvalidPreviewArgs;
             };
-            has_flag_size = true;
+            size = size.withPixels(dims);
             rest = std.mem.trim(u8, probe, " \t\r\n");
             continue;
         }
@@ -226,7 +225,7 @@ fn preparePreviewCommand(
                 );
                 return error.InvalidPreviewArgs;
             };
-            cell_dims = .{ .cols = dims.w, .rows = dims.h };
+            size = size.withCells(.{ .cols = dims.w, .rows = dims.h });
             rest = std.mem.trim(u8, probe, " \t\r\n");
             continue;
         }
@@ -270,38 +269,33 @@ fn preparePreviewCommand(
     }
 
     var path_start: usize = 0;
-    if (!has_flag_size and !saw_end_of_options and positional.items.len >= 3) {
+    if (!size.hasExplicitPixels() and
+        !saw_end_of_options and
+        positional.items.len >= 3)
+    {
         if (std.fmt.parseInt(i64, positional.items[0], 10)) |w_i| {
             if (std.fmt.parseInt(i64, positional.items[1], 10)) |h_i| {
-                max_dims = PositiveDimsU32.initClamped(
+                const dims = PositiveDimsU32.initClamped(
                     w_i,
                     h_i,
                     4096,
                 ) orelse return error.InvalidPreviewArgs;
+                size = size.withPixels(dims);
                 path_start = 2;
             } else |_| {}
         } else |_| {}
     }
 
-    const has_explicit_size = has_flag_size or path_start == 2;
     const target = protocol.resolve(environ_map);
-    const needs_cell_px = (!has_explicit_size and cell_dims != null) or
-        (output_path == null and
-            (target.protocol == .halfblocks or
-                (target.protocol == .kitty and
-                    target.transport == .tmux_unicode_placeholders)));
-    const cell_px = if (needs_cell_px)
+    const term_target: ?termgfx.ResolvedTarget = if (output_path == null)
+        target
+    else
+        null;
+    const cell_px = if (size.needsCellPixelSize(term_target))
         termgfx.queryCellPixelSize(io)
     else
         null;
-    if (!has_explicit_size) {
-        if (cell_dims) |cells| {
-            max_dims = termgfx.cellsToPixels(
-                cells,
-                cell_px orelse termgfx.default_cell_px,
-            );
-        }
-    }
+    const max_dims = size.resolveMaxPixels(cell_px);
 
     const joined_src = try std.mem.join(
         gpa,
@@ -356,7 +350,7 @@ fn preparePreviewCommand(
     return .{
         .terminal = .{
             .protocol = protocol,
-            .cell_dims = cell_dims,
+            .cell_dims = size.cellDims(),
             .cell_px = cell_px,
             .clear_first = clear_first,
         },

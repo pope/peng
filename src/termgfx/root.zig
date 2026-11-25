@@ -19,6 +19,7 @@ pub const CellDims = detect.CellDims;
 pub const CellPixelSize = detect.CellPixelSize;
 pub const cellsToPixels = detect.cellsToPixels;
 pub const default_cell_px = detect.default_cell_px;
+pub const PreviewSize = detect.PreviewSize;
 pub const Protocol = detect.Protocol;
 pub const ProtocolMode = detect.ProtocolMode;
 pub const queryCellPixelSize = detect.queryCellPixelSize;

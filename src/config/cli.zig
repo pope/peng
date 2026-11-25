@@ -5,8 +5,8 @@ const std = @import("std");
 const termgfx = @import("termgfx");
 const thumbcache = @import("thumbcache");
 
-const CellDims = termgfx.CellDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
+const PreviewSize = termgfx.PreviewSize;
 const ProtocolMode = termgfx.ProtocolMode;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const ThumbTier = thumbcache.ThumbTier;
@@ -819,9 +819,7 @@ pub fn parseIpcCommandLineArgs(
 pub const PreviewArgs = struct {
     path: ?[]u8 = null,
     output_path: ?[]u8 = null,
-    max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
-    has_explicit_size: bool = false,
-    cell_dims: ?CellDims = null,
+    size: PreviewSize = .default,
     clear_first: bool = false,
     protocol: ProtocolMode = .auto,
     thumb_cache: ThumbCacheMode = .all,
@@ -872,9 +870,7 @@ fn parsePreviewArgsIterator(
     var clear_first = false;
     var output_path: ?[]u8 = null;
     errdefer if (output_path) |p| gpa.free(p);
-    var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
-    var cell_dims: ?CellDims = null;
-    var has_flag_size = false;
+    var size: PreviewSize = .default;
     var protocol: ProtocolMode = .auto;
     var thumb_cache: ThumbCacheMode = .all;
     var help = false;
@@ -947,7 +943,7 @@ fn parsePreviewArgsIterator(
                     }
                     return error.InvalidPreviewSize;
                 };
-                cell_dims = .{ .cols = dims.w, .rows = dims.h };
+                size = size.withCells(.{ .cols = dims.w, .rows = dims.h });
             } else if (std.mem.eql(u8, arg, "--size")) {
                 const val = args_it.next() orelse {
                     if (!builtin.is_test) {
@@ -955,7 +951,7 @@ fn parsePreviewArgsIterator(
                     }
                     return error.MissingFlagValue;
                 };
-                max_dims = parsePreviewSize(val) orelse {
+                const dims = parsePreviewSize(val) orelse {
                     if (!builtin.is_test) {
                         std.log.err(
                             "Invalid --size value: {s}. Expected WxH.",
@@ -964,7 +960,7 @@ fn parsePreviewArgsIterator(
                     }
                     return error.InvalidPreviewSize;
                 };
-                has_flag_size = true;
+                size = size.withPixels(dims);
             } else if (std.mem.eql(u8, arg, "--thumb-cache")) {
                 const val = args_it.next() orelse {
                     if (!builtin.is_test) {
@@ -1006,7 +1002,7 @@ fn parsePreviewArgsIterator(
     var path_slice: ?[]const u8 = null;
     if (positional.items.len == 1) {
         path_slice = positional.items[0];
-    } else if (positional.items.len == 3 and !has_flag_size) {
+    } else if (positional.items.len == 3 and !size.hasExplicitPixels()) {
         const w = std.fmt.parseInt(u32, positional.items[0], 10) catch {
             if (!builtin.is_test) {
                 std.log.err("Invalid width: {s}", .{positional.items[0]});
@@ -1025,8 +1021,7 @@ fn parsePreviewArgsIterator(
             }
             return error.InvalidPreviewSize;
         }
-        max_dims = .{ .w = w, .h = h };
-        has_flag_size = true;
+        size = size.withPixels(.{ .w = w, .h = h });
         path_slice = positional.items[2];
     } else if (positional.items.len > 1) {
         if (!builtin.is_test) {
@@ -1043,9 +1038,7 @@ fn parsePreviewArgsIterator(
     return .{
         .path = owned_path,
         .output_path = output_path,
-        .max_dims = max_dims,
-        .has_explicit_size = has_flag_size,
-        .cell_dims = cell_dims,
+        .size = size,
         .clear_first = clear_first,
         .protocol = protocol,
         .thumb_cache = thumb_cache,
@@ -1650,8 +1643,10 @@ test "parsePreviewArgsIterator supports positional W H and --size WxH" {
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.clear_first);
-        try testing.expectEqual(@as(u32, 640), parsed.max_dims.w);
-        try testing.expectEqual(@as(u32, 480), parsed.max_dims.h);
+        try testing.expectEqual(
+            PreviewSize{ .pixels = .{ .w = 640, .h = 480 } },
+            parsed.size,
+        );
         try testing.expectEqualStrings("photo.jpg", parsed.path.?);
     }
 
@@ -1668,8 +1663,10 @@ test "parsePreviewArgsIterator supports positional W H and --size WxH" {
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.clear_first);
-        try testing.expectEqual(@as(u32, 1024), parsed.max_dims.w);
-        try testing.expectEqual(@as(u32, 768), parsed.max_dims.h);
+        try testing.expectEqual(
+            PreviewSize{ .pixels = .{ .w = 1024, .h = 768 } },
+            parsed.size,
+        );
         try testing.expectEqual(ThumbCacheMode.off, parsed.thumb_cache);
         try testing.expectEqualStrings("photo.RAF", parsed.path.?);
     }
@@ -1900,10 +1897,33 @@ test "parsePreviewArgsIterator parses --protocol flag" {
         defer parsed.deinit(testing.allocator);
         try testing.expectEqual(ProtocolMode.iterm2, parsed.protocol);
         try testing.expectEqual(
-            @as(?CellDims, .{ .cols = 60, .rows = 30 }),
-            parsed.cell_dims,
+            PreviewSize{ .cells = .{ .cols = 60, .rows = 30 } },
+            parsed.size,
         );
         try testing.expectEqualStrings("photo.jpg", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--size",
+                "400x300",
+                "--cells",
+                "60x30",
+                "photo.jpg",
+            },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(
+            PreviewSize{
+                .pixels_and_cells = .{
+                    .pixels = .{ .w = 400, .h = 300 },
+                    .cells = .{ .cols = 60, .rows = 30 },
+                },
+            },
+            parsed.size,
+        );
     }
 
     {
@@ -2069,7 +2089,7 @@ test "parseDurationSeconds and --idle-timeout parsing" {
     }
 }
 
-test "parsePreviewArgsIterator tracks has_explicit_size with --cells" {
+test "parsePreviewArgsIterator tracks PreviewSize with --cells" {
     const testing = std.testing;
 
     {
@@ -2078,10 +2098,10 @@ test "parsePreviewArgsIterator tracks has_explicit_size with --cells" {
         };
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
-        try testing.expect(!parsed.has_explicit_size);
+        try testing.expect(!parsed.size.hasExplicitPixels());
         try testing.expectEqual(
-            @as(?CellDims, .{ .cols = 80, .rows = 24 }),
-            parsed.cell_dims,
+            PreviewSize{ .cells = .{ .cols = 80, .rows = 24 } },
+            parsed.size,
         );
     }
 
@@ -2097,9 +2117,16 @@ test "parsePreviewArgsIterator tracks has_explicit_size with --cells" {
         };
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
-        try testing.expect(parsed.has_explicit_size);
-        try testing.expectEqual(@as(u32, 400), parsed.max_dims.w);
-        try testing.expectEqual(@as(u32, 300), parsed.max_dims.h);
+        try testing.expect(parsed.size.hasExplicitPixels());
+        try testing.expectEqual(
+            PreviewSize{
+                .pixels_and_cells = .{
+                    .pixels = .{ .w = 400, .h = 300 },
+                    .cells = .{ .cols = 80, .rows = 24 },
+                },
+            },
+            parsed.size,
+        );
     }
 
     {
@@ -2114,8 +2141,15 @@ test "parsePreviewArgsIterator tracks has_explicit_size with --cells" {
         };
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
-        try testing.expect(parsed.has_explicit_size);
-        try testing.expectEqual(@as(u32, 320), parsed.max_dims.w);
-        try testing.expectEqual(@as(u32, 240), parsed.max_dims.h);
+        try testing.expect(parsed.size.hasExplicitPixels());
+        try testing.expectEqual(
+            PreviewSize{
+                .pixels_and_cells = .{
+                    .pixels = .{ .w = 320, .h = 240 },
+                    .cells = .{ .cols = 80, .rows = 24 },
+                },
+            },
+            parsed.size,
+        );
     }
 }

@@ -110,6 +110,115 @@ pub const ResolvedTarget = struct {
     transport: TransportMode = .direct,
 };
 
+/// Requested preview sizing specification covering every valid combination of
+/// explicit pixel dimensions (`--size`) and terminal cell grid (`--cells`).
+pub const PreviewSize = union(enum) {
+    default,
+    pixels: PositiveDimsU32,
+    cells: CellDims,
+    pixels_and_cells: struct {
+        pixels: PositiveDimsU32,
+        cells: CellDims,
+    },
+
+    /// Default pixel bounding box when neither `--size` nor `--cells` is given.
+    pub const default_pixels: PositiveDimsU32 = .{ .w = 800, .h = 600 };
+
+    /// Combines an explicit pixel bounding box (`--size`) with this spec,
+    /// preserving any previously specified cell grid (`--cells`).
+    pub fn withPixels(self: PreviewSize, dims: PositiveDimsU32) PreviewSize {
+        return switch (self) {
+            .default, .pixels => .{ .pixels = dims },
+            .cells => |c| .{
+                .pixels_and_cells = .{
+                    .pixels = dims,
+                    .cells = c,
+                },
+            },
+            .pixels_and_cells => |pc| .{
+                .pixels_and_cells = .{
+                    .pixels = dims,
+                    .cells = pc.cells,
+                },
+            },
+        };
+    }
+
+    /// Combines a terminal cell grid (`--cells`) with this spec, preserving
+    /// any previously specified explicit pixel dimensions (`--size`).
+    pub fn withCells(self: PreviewSize, c: CellDims) PreviewSize {
+        return switch (self) {
+            .default, .cells => .{ .cells = c },
+            .pixels => |p| .{
+                .pixels_and_cells = .{
+                    .pixels = p,
+                    .cells = c,
+                },
+            },
+            .pixels_and_cells => |pc| .{
+                .pixels_and_cells = .{
+                    .pixels = pc.pixels,
+                    .cells = c,
+                },
+            },
+        };
+    }
+
+    /// Returns `true` if an explicit pixel bounding box (`--size`) was set.
+    pub fn hasExplicitPixels(self: PreviewSize) bool {
+        return switch (self) {
+            .default, .cells => false,
+            .pixels, .pixels_and_cells => true,
+        };
+    }
+
+    /// Returns the explicit terminal cell grid (`--cells`) if present.
+    pub fn cellDims(self: PreviewSize) ?CellDims {
+        return switch (self) {
+            .default, .pixels => null,
+            .cells => |c| c,
+            .pixels_and_cells => |pc| pc.cells,
+        };
+    }
+
+    /// Returns `true` if resolving pixel dimensions or emitting to `target`
+    /// (`null` for `--output` file mode) requires querying `TIOCGWINSZ` cell
+    /// pixel dimensions.
+    pub fn needsCellPixelSize(
+        self: PreviewSize,
+        target: ?ResolvedTarget,
+    ) bool {
+        const needs_for_decode = switch (self) {
+            .cells => true,
+            .default, .pixels, .pixels_and_cells => false,
+        };
+        if (needs_for_decode) return true;
+        const t = target orelse return false;
+        return switch (t.protocol) {
+            .halfblocks => true,
+            .kitty => switch (t.transport) {
+                .tmux_unicode_placeholders => true,
+                .direct, .tmux_passthrough => false,
+            },
+            .sixel, .iterm2 => false,
+        };
+    }
+
+    /// Resolves the maximum decode/render pixel bounding box using `cell_px`
+    /// (falling back to `default_cell_px` when `null`).
+    pub fn resolveMaxPixels(
+        self: PreviewSize,
+        cell_px: ?CellPixelSize,
+    ) PositiveDimsU32 {
+        return switch (self) {
+            .default => default_pixels,
+            .pixels => |p| p,
+            .cells => |c| cellsToPixels(c, cell_px orelse default_cell_px),
+            .pixels_and_cells => |pc| pc.pixels,
+        };
+    }
+};
+
 /// User-facing protocol selection mode (`auto` resolves from environment).
 pub const ProtocolMode = enum {
     auto,
@@ -451,5 +560,82 @@ test "cellsToPixels scales cells by pixel size and clamps to 4096" {
     try std.testing.expectEqual(
         @as(?CellPixelSize, null),
         cellPixelSizeFromWinsize(80, 24, 0, 0),
+    );
+}
+
+test "PreviewSize combines pixels/cells and resolves pixel dims" {
+    const def: PreviewSize = .default;
+    try std.testing.expect(!def.hasExplicitPixels());
+    try std.testing.expectEqual(@as(?CellDims, null), def.cellDims());
+    try std.testing.expectEqual(
+        PreviewSize.default_pixels,
+        def.resolveMaxPixels(null),
+    );
+    try std.testing.expect(!def.needsCellPixelSize(null));
+    try std.testing.expect(!def.needsCellPixelSize(.{ .protocol = .kitty }));
+    try std.testing.expect(def.needsCellPixelSize(.{
+        .protocol = .kitty,
+        .transport = .tmux_unicode_placeholders,
+    }));
+    try std.testing.expect(def.needsCellPixelSize(.{
+        .protocol = .halfblocks,
+    }));
+
+    const c_only = def.withCells(.{ .cols = 60, .rows = 30 });
+    try std.testing.expect(!c_only.hasExplicitPixels());
+    try std.testing.expectEqual(
+        @as(?CellDims, .{ .cols = 60, .rows = 30 }),
+        c_only.cellDims(),
+    );
+    try std.testing.expect(c_only.needsCellPixelSize(null));
+    try std.testing.expectEqual(
+        PositiveDimsU32{ .w = 600, .h = 600 },
+        c_only.resolveMaxPixels(.{ .w = 10, .h = 20 }),
+    );
+
+    // Combining cells then pixels (and pixels then cells) yields identical
+    // pixels_and_cells preserving both explicit bounds.
+    const both_a = c_only.withPixels(.{ .w = 400, .h = 300 });
+    const both_b = def.withPixels(.{ .w = 400, .h = 300 }).withCells(.{
+        .cols = 60,
+        .rows = 30,
+    });
+    try std.testing.expectEqual(both_a, both_b);
+    try std.testing.expect(both_a.hasExplicitPixels());
+    try std.testing.expectEqual(
+        @as(?CellDims, .{ .cols = 60, .rows = 30 }),
+        both_a.cellDims(),
+    );
+    try std.testing.expectEqual(
+        PositiveDimsU32{ .w = 400, .h = 300 },
+        both_a.resolveMaxPixels(.{ .w = 16, .h = 32 }),
+    );
+    try std.testing.expect(!both_a.needsCellPixelSize(.{
+        .protocol = .sixel,
+    }));
+    try std.testing.expect(!both_a.needsCellPixelSize(.{
+        .protocol = .iterm2,
+    }));
+    try std.testing.expect(!both_a.needsCellPixelSize(.{
+        .protocol = .kitty,
+        .transport = .tmux_passthrough,
+    }));
+    // Repeated flags overwrite their own axis while preserving the other.
+    try std.testing.expectEqual(
+        PreviewSize{
+            .pixels_and_cells = .{
+                .pixels = .{ .w = 320, .h = 240 },
+                .cells = .{ .cols = 80, .rows = 24 },
+            },
+        },
+        both_a.withPixels(.{ .w = 320, .h = 240 }).withCells(.{
+            .cols = 80,
+            .rows = 24,
+        }),
+    );
+    // `.cells` falls back to `default_cell_px` (10x20) when `cell_px` is null.
+    try std.testing.expectEqual(
+        PositiveDimsU32{ .w = 600, .h = 600 },
+        c_only.resolveMaxPixels(null),
     );
 }
