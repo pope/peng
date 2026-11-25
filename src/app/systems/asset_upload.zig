@@ -9,6 +9,7 @@ const std = @import("std");
 const workers_mod = @import("../workers/root.zig");
 
 const AppState = app_state.AppState;
+const BeginAsyncUploadResult = gpu.BeginAsyncUploadResult;
 const CacheEntry = cache_pkg.CacheEntry;
 const calcCyclicDistance = cache_pkg.calcCyclicDistance;
 const CpuAsset = cache_pkg.CpuAsset;
@@ -253,6 +254,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
     var upload_target: ?struct {
         key: ImageCacheKey,
         asset: CpuAsset,
+        prefer_sync: bool,
     } = null;
 
     const cur_entry_opt = if (cur_key_opt) |ck|
@@ -262,10 +264,28 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
 
     var can_upload_neighbors = true;
     if (cur_entry_opt) |cur_entry| {
+        const thumb = cur_entry.resident.thumbnail;
+        const cur_has_visible_gpu = switch (cur_entry.resident.asset) {
+            .promoting_gpu, .loaded_gpu => true,
+            .loaded_cpu, .none, .failed => switch (thumb) {
+                .loaded => true,
+                .none,
+                .pending,
+                .staged_cpu,
+                .not_available,
+                .unloaded,
+                => false,
+            },
+        };
+        const is_transition_active = switch (state.viewer.image_transition) {
+            .active => true,
+            .none => false,
+        };
         if (takeStagedCpuAsset(cur_entry, now_ms)) |asset| {
             upload_target = .{
                 .key = cur_key_opt.?,
                 .asset = asset,
+                .prefer_sync = !cur_has_visible_gpu and !is_transition_active,
             };
             can_upload_neighbors = false;
         } else switch (cur_entry.resident.asset) {
@@ -317,6 +337,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
                 upload_target = .{
                     .key = keys[bi],
                     .asset = asset,
+                    .prefer_sync = false,
                 };
             }
         }
@@ -350,62 +371,50 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
             state.unpack_compute_pipeline,
             &state.upload_staging,
         )) |started| {
-            state.upload_stage_done.store(false, .monotonic);
-            state.upload_stage_result = null;
-            if (state.upload_group.concurrent(
-                state.io,
-                stageCopyWorker,
-                .{
-                    state.io,
-                    &state.upload_stage_result,
-                    &state.upload_stage_done,
-                    state.workers.waker,
-                    started.job,
-                },
-            )) |_| {
-                state.pending_gpu_upload = .{
-                    .copying = .{
-                        .key = target.key,
-                        .meta = meta,
-                        .thumb_write = thumb_write,
-                        .prepared = started.prepared,
-                    },
-                };
-            } else |_| {
-                var job = started.job;
-                const conv_ms = job.executeStagingCopy(state.io);
-                var surface_transferred = false;
-                defer {
-                    if (thumb_write) |tw| {
-                        if (!surface_transferred) {
-                            tw.surface.destroy();
-                        }
-                    }
-                    if (state.workers.active_decode_threads.load(.acquire) ==
-                        0)
-                    {
-                        sdl.reclaimProcessHeap();
-                    }
-                }
-                if (gpu.finishAsyncUpload(
-                    state.io,
+            if (target.prefer_sync) {
+                if (finishSyncStagedUpload(
+                    state,
                     gpu_dev,
-                    started.prepared,
-                    conv_ms,
-                )) |res| {
+                    target.key,
+                    meta,
+                    thumb_write,
+                    started,
+                )) {
                     did_upload = true;
-                    completeGpuUpload(
+                }
+            } else {
+                state.upload_stage_done.store(false, .monotonic);
+                state.upload_stage_result = null;
+                if (state.upload_group.concurrent(
+                    state.io,
+                    stageCopyWorker,
+                    .{
+                        state.io,
+                        &state.upload_stage_result,
+                        &state.upload_stage_done,
+                        state.workers.waker,
+                        started.job,
+                    },
+                )) |_| {
+                    state.pending_gpu_upload = .{
+                        .copying = .{
+                            .key = target.key,
+                            .meta = meta,
+                            .thumb_write = thumb_write,
+                            .prepared = started.prepared,
+                        },
+                    };
+                } else |_| {
+                    if (finishSyncStagedUpload(
                         state,
+                        gpu_dev,
                         target.key,
                         meta,
                         thumb_write,
-                        res,
-                        gpu_dev,
-                        ImageCache.DEFAULT_MAX_VRAM_BYTES,
-                        &surface_transferred,
-                    );
-                } else {
-                    handleGpuUploadFailure(state, target.key);
+                        started,
+                    )) {
+                        did_upload = true;
+                    }
                 }
             }
         } else {
@@ -418,6 +427,49 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
     }
 
     return did_upload;
+}
+
+fn finishSyncStagedUpload(
+    state: *AppState,
+    gpu_dev: sdl.gpu.Device,
+    key: ImageCacheKey,
+    meta: PendingUploadMetadata,
+    thumb_write: ?PendingThumbWrite,
+    started: BeginAsyncUploadResult,
+) bool {
+    var job = started.job;
+    const conv_ms = job.executeStagingCopy(state.io);
+    var surface_transferred = false;
+    defer {
+        if (thumb_write) |tw| {
+            if (!surface_transferred) {
+                tw.surface.destroy();
+            }
+        }
+        if (state.workers.active_decode_threads.load(.acquire) == 0) {
+            sdl.reclaimProcessHeap();
+        }
+    }
+    if (gpu.finishAsyncUpload(
+        state.io,
+        gpu_dev,
+        started.prepared,
+        conv_ms,
+    )) |res| {
+        completeGpuUpload(
+            state,
+            key,
+            meta,
+            thumb_write,
+            res,
+            gpu_dev,
+            ImageCache.DEFAULT_MAX_VRAM_BYTES,
+            &surface_transferred,
+        );
+        return true;
+    }
+    handleGpuUploadFailure(state, key);
+    return false;
 }
 
 fn enqueueDecodedThumbWrite(
@@ -1767,22 +1819,12 @@ test "async GPU upload stages on worker thread and completes cleanly" {
         },
     });
 
-    // Pass 1: kicks off worker staging copy without blocking main thread
+    // Pass 1: active slide without a visible GPU texture or active transition
+    // uploads synchronously so GPU Frame 0 never flashes a blank frame.
     sysProcessAssetUploads(.{
         .state = &state,
         .frame_allocator = allocator,
         .now_ms = 1000,
-    });
-    try std.testing.expect(state.pending_gpu_upload.isActive());
-
-    // Wait for worker completion via infallible atomic flag
-    state.upload_group.cancel(io);
-    try std.testing.expect(state.upload_stage_done.load(.acquire));
-
-    sysProcessAssetUploads(.{
-        .state = &state,
-        .frame_allocator = allocator,
-        .now_ms = 1016,
     });
     try std.testing.expect(!state.pending_gpu_upload.isActive());
     switch (state.cache.get(key0).?.resident.asset) {
@@ -1792,7 +1834,8 @@ test "async GPU upload stages on worker thread and completes cleanly" {
         },
     }
 
-    // Verify borrowed_for_thumb_write and cancelPendingGpuUploadForKey
+    // Pass 2: neighbor upload stages asynchronously on worker thread and
+    // completes cleanly.
     const surf1 =
         sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
     const key1 = try state.cache.appendSlot(allocator, id1, .{
@@ -1813,12 +1856,150 @@ test "async GPU upload stages on worker thread and completes cleanly" {
     sysProcessAssetUploads(.{
         .state = &state,
         .frame_allocator = allocator,
+        .now_ms = 1016,
+    });
+    try std.testing.expect(state.pending_gpu_upload.isActive());
+
+    // Wait for worker completion via infallible atomic flag
+    state.upload_group.cancel(io);
+    try std.testing.expect(state.upload_stage_done.load(.acquire));
+
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
         .now_ms = 1032,
+    });
+    try std.testing.expect(!state.pending_gpu_upload.isActive());
+    switch (state.cache.get(key1).?.resident.asset) {
+        .loaded_gpu => {},
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    }
+
+    // Verify active slide with an active transition stages asynchronously and
+    // cancelPendingGpuUploadForKey cancels only the matching slot.
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "async2.jpg" },
+    });
+    state.viewer.navigation.current_index = 2;
+    state.viewer.image_transition = .{
+        .active = .{
+            .prev_index = 0,
+            .prev_rotation = 0.0,
+        },
+    };
+    const id2 = state.viewer.navigation.getIdAt(2).?;
+    const surf2_active =
+        sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    const key2 = try state.cache.appendSlot(allocator, id2, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .cpu = .{
+                        .surface = surf2_active,
+                        .w = 64.0,
+                        .h = 64.0,
+                        .size_bytes = 64 * 64 * 4,
+                    },
+                    .thumb_write = .{ .source_mtime_sec = 1700000000 },
+                },
+            },
+        },
+    });
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1048,
     });
     try std.testing.expect(state.pending_gpu_upload.isActive());
     state.cancelPendingGpuUploadForKey(key0);
     try std.testing.expect(state.pending_gpu_upload.isActive());
-    state.cancelPendingGpuUploadForKey(key1);
+    state.cancelPendingGpuUploadForKey(key2);
+    try std.testing.expect(!state.pending_gpu_upload.isActive());
+
+    // Verify active slide with `.promoting_gpu` (no transition) stages
+    // asynchronously while keeping its active GPU texture visible.
+    state.viewer.navigation.current_index = 0;
+    state.viewer.image_transition = .none;
+    const active_gpu = switch (state.cache.get(key0).?.resident.asset) {
+        .loaded_gpu => |g| g,
+        .none, .loaded_cpu, .promoting_gpu, .failed => {
+            return error.TestExpectedLoadedGpu;
+        },
+    };
+    const surf_promo =
+        sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    state.cache.get(key0).?.resident.asset = .{
+        .promoting_gpu = .{
+            .active = active_gpu,
+            .staged = .{
+                .cpu = .{
+                    .surface = surf_promo,
+                    .w = 64.0,
+                    .h = 64.0,
+                    .size_bytes = 64 * 64 * 4,
+                },
+            },
+        },
+    };
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1064,
+    });
+    try std.testing.expect(state.pending_gpu_upload.isActive());
+    state.cancelPendingGpuUploadForKey(key0);
+    try std.testing.expect(!state.pending_gpu_upload.isActive());
+
+    // Verify active slide with a `.loaded` GPU thumbnail (no transition)
+    // stages asynchronously while keeping the thumbnail visible.
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "async3.jpg" },
+    });
+    state.viewer.navigation.current_index = 3;
+    const id3 = state.viewer.navigation.getIdAt(3).?;
+    const thumb_surf =
+        sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse return;
+    const key3 = try state.cache.appendSlot(allocator, id3, .{
+        .resident = .{
+            .thumbnail = .{
+                .staged_cpu = .{
+                    .surface = thumb_surf,
+                },
+            },
+        },
+    });
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1080,
+    });
+    switch (state.cache.get(key3).?.resident.thumbnail) {
+        .loaded => {},
+        .none, .pending, .staged_cpu, .not_available, .unloaded => {
+            return error.TestExpectedLoadedThumbnail;
+        },
+    }
+    const surf3 =
+        sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    state.cache.get(key3).?.resident.asset = .{
+        .loaded_cpu = .{
+            .cpu = .{
+                .surface = surf3,
+                .w = 64.0,
+                .h = 64.0,
+                .size_bytes = 64 * 64 * 4,
+            },
+        },
+    };
+    sysProcessAssetUploads(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1096,
+    });
+    try std.testing.expect(state.pending_gpu_upload.isActive());
+    state.cancelPendingGpuUploadForKey(key3);
     try std.testing.expect(!state.pending_gpu_upload.isActive());
 
     // Verify conversion_time_ms == null fails cleanly without leaking texture
