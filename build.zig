@@ -25,6 +25,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const vaxis_dep = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vaxis_mod = vaxis_dep.module("vaxis");
+
     const fuzzig_dep = b.dependency("fuzzig", .{
         .target = target,
         .optimize = optimize,
@@ -308,6 +314,22 @@ pub fn build(b: *std.Build) void {
             .{ .name = "vfs", .module = vfs_module },
         },
     );
+    const tui_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/tui/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "palette", .module = palette_module },
+            .{ .name = "state", .module = state_module },
+            .{ .name = "termgfx", .module = termgfx_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "vaxis", .module = vaxis_mod },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
     const app_module = createInternalModule(
         b,
         target,
@@ -584,6 +606,11 @@ pub fn build(b: *std.Build) void {
             .module = termgfx_module,
             .step_name = "test-termgfx",
             .step_desc = "Run termgfx tests",
+        },
+        .{
+            .module = tui_module,
+            .step_name = "test-tui",
+            .step_desc = "Run tui tests",
         },
     };
 
