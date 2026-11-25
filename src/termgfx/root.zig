@@ -19,12 +19,15 @@ pub const CellDims = detect.CellDims;
 pub const CellPixelSize = detect.CellPixelSize;
 pub const cellsToPixels = detect.cellsToPixels;
 pub const default_cell_px = detect.default_cell_px;
+pub const HalfblockColor = halfblocks.ColorState;
+pub const HalfblockRgb = halfblocks.Rgb;
 pub const KittyMedium = kitty.KittyMedium;
 pub const PreviewSize = detect.PreviewSize;
 pub const Protocol = detect.Protocol;
 pub const ProtocolMode = detect.ProtocolMode;
 pub const queryCellPixelSize = detect.queryCellPixelSize;
 pub const ResolvedTarget = detect.ResolvedTarget;
+pub const sampleHalfblockBox = halfblocks.sampleBox;
 pub const TransportMode = detect.TransportMode;
 pub const protocol_modes_string = detect.protocol_modes_string;
 

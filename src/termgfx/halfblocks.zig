@@ -8,21 +8,25 @@ const PositiveDimsU32 = geom.PositiveDimsU32;
 const upper_half_block = "\xe2\x96\x80"; // U+2580 '▀'
 const lower_half_block = "\xe2\x96\x84"; // U+2584 '▄'
 
-const Rgb = struct {
+/// 24-bit sRGB color triplet sampled from an RGBA32 image buffer.
+pub const Rgb = struct {
     r: u8,
     g: u8,
     b: u8,
 
-    fn eql(a: Rgb, b: Rgb) bool {
+    /// Returns `true` when both RGB triplets have identical channels.
+    pub fn eql(a: Rgb, b: Rgb) bool {
         return a.r == b.r and a.g == b.g and a.b == b.b;
     }
 };
 
-const ColorState = union(enum) {
+/// Sampled terminal cell color: either `.default` (transparent) or 24-bit RGB.
+pub const ColorState = union(enum) {
     default,
     rgb: Rgb,
 
-    fn eql(a: ColorState, b: ColorState) bool {
+    /// Returns `true` when both color states match.
+    pub fn eql(a: ColorState, b: ColorState) bool {
         return switch (a) {
             .default => switch (b) {
                 .default => true,
@@ -148,7 +152,11 @@ fn setBg(
     cur_bg.* = desired;
 }
 
-fn sampleBox(
+/// SIMD-accelerated alpha-weighted box sampler mapping half-block cell
+/// `(cx, hy)` in a `(cols x half_rows)` grid onto RGBA32 source `rgba_pixels`
+/// (`dims`, row stride `pitch`). Caller must validate `dims`, `pitch`, and
+/// `rgba_pixels.len` before calling.
+pub fn sampleBox(
     rgba_pixels: []const u8,
     pitch: usize,
     dims: PositiveDimsU32,
@@ -157,14 +165,19 @@ fn sampleBox(
     hy: u32,
     half_rows: u32,
 ) ColorState {
+    if (dims.w == 0 or dims.h == 0 or cols == 0 or half_rows == 0 or
+        cx >= cols or hy >= half_rows)
+    {
+        return .default;
+    }
     const Vec8u16 = @Vector(8, u16);
     const Vec8u32 = @Vector(8, u32);
 
     const x0: u32 = @intCast((@as(u64, cx) * dims.w) / cols);
-    const x1_raw: u32 = @intCast((@as(u64, cx + 1) * dims.w) / cols);
+    const x1_raw: u32 = @intCast(((@as(u64, cx) + 1) * dims.w) / cols);
     const x1: u32 = @max(x0 + 1, @min(x1_raw, dims.w));
     const y0: u32 = @intCast((@as(u64, hy) * dims.h) / half_rows);
-    const y1_raw: u32 = @intCast((@as(u64, hy + 1) * dims.h) / half_rows);
+    const y1_raw: u32 = @intCast(((@as(u64, hy) + 1) * dims.h) / half_rows);
     const y1: u32 = @max(y0 + 1, @min(y1_raw, dims.h));
 
     var sum_r: u64 = 0;
