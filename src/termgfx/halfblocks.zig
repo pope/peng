@@ -54,6 +54,74 @@ fn readPixel(
     };
 }
 
+const U8Decimal = struct {
+    bytes: [3]u8,
+    len: u8,
+};
+
+const u8_decimal_lut: [256]U8Decimal = blk: {
+    var table: [256]U8Decimal = undefined;
+    for (0..256) |v| {
+        if (v >= 100) {
+            table[v] = .{
+                .bytes = .{
+                    @intCast('0' + (v / 100)),
+                    @intCast('0' + (v / 10) % 10),
+                    @intCast('0' + (v % 10)),
+                },
+                .len = 3,
+            };
+        } else if (v >= 10) {
+            table[v] = .{
+                .bytes = .{
+                    @intCast('0' + (v / 10)),
+                    @intCast('0' + (v % 10)),
+                    0,
+                },
+                .len = 2,
+            };
+        } else {
+            table[v] = .{
+                .bytes = .{ @intCast('0' + v), 0, 0 },
+                .len = 1,
+            };
+        }
+    }
+    break :blk table;
+};
+
+fn writeSgrRgb(
+    writer: *std.Io.Writer,
+    prefix: *const [7]u8,
+    c: Rgb,
+) !void {
+    // Max length: "\x1b[38;2;255;255;255m" = 19 bytes; 24 bytes guarantees
+    // every fixed 3-byte LUT store (`buf[pos..][0..3]`) stays in bounds.
+    var buf: [24]u8 = undefined;
+    buf[0..7].* = prefix.*;
+    var pos: usize = 7;
+
+    const r = u8_decimal_lut[c.r];
+    buf[pos..][0..3].* = r.bytes;
+    pos += r.len;
+    buf[pos] = ';';
+    pos += 1;
+
+    const g = u8_decimal_lut[c.g];
+    buf[pos..][0..3].* = g.bytes;
+    pos += g.len;
+    buf[pos] = ';';
+    pos += 1;
+
+    const b = u8_decimal_lut[c.b];
+    buf[pos..][0..3].* = b.bytes;
+    pos += b.len;
+    buf[pos] = 'm';
+    pos += 1;
+
+    try writer.writeAll(buf[0..pos]);
+}
+
 fn setFg(
     writer: *std.Io.Writer,
     cur_fg: *ColorState,
@@ -62,10 +130,7 @@ fn setFg(
     if (cur_fg.eql(desired)) return;
     switch (desired) {
         .default => try writer.writeAll("\x1b[39m"),
-        .rgb => |c| try writer.print(
-            "\x1b[38;2;{d};{d};{d}m",
-            .{ c.r, c.g, c.b },
-        ),
+        .rgb => |c| try writeSgrRgb(writer, "\x1b[38;2;", c),
     }
     cur_fg.* = desired;
 }
@@ -78,10 +143,7 @@ fn setBg(
     if (cur_bg.eql(desired)) return;
     switch (desired) {
         .default => try writer.writeAll("\x1b[49m"),
-        .rgb => |c| try writer.print(
-            "\x1b[48;2;{d};{d};{d}m",
-            .{ c.r, c.g, c.b },
-        ),
+        .rgb => |c| try writeSgrRgb(writer, "\x1b[48;2;", c),
     }
     cur_bg.* = desired;
 }
@@ -95,6 +157,9 @@ fn sampleBox(
     hy: u32,
     half_rows: u32,
 ) ColorState {
+    const Vec8u16 = @Vector(8, u16);
+    const Vec8u32 = @Vector(8, u32);
+
     const x0: u32 = @intCast((@as(u64, cx) * dims.w) / cols);
     const x1_raw: u32 = @intCast((@as(u64, cx + 1) * dims.w) / cols);
     const x1: u32 = @max(x0 + 1, @min(x1_raw, dims.w));
@@ -108,10 +173,45 @@ fn sampleBox(
     var sum_a: u64 = 0;
     const count: u64 = @as(u64, x1 - x0) * @as(u64, y1 - y0);
 
+    // Per-row 32-bit SIMD accumulators cannot overflow:
+    // max row width (4096) * 255 * 255 = 266,342,400 < maxInt(u32).
     var y = y0;
     while (y < y1) : (y += 1) {
         const row_off = @as(usize, y) * pitch;
+        var row_r: Vec8u32 = @splat(0);
+        var row_g: Vec8u32 = @splat(0);
+        var row_b: Vec8u32 = @splat(0);
+        var row_a: Vec8u32 = @splat(0);
+
         var x = x0;
+        while (x + 8 <= x1) : (x += 8) {
+            const base = row_off + @as(usize, x) * 4;
+            var rv: [8]u16 = undefined;
+            var gv: [8]u16 = undefined;
+            var bv: [8]u16 = undefined;
+            var av: [8]u16 = undefined;
+            inline for (0..8) |i| {
+                rv[i] = rgba_pixels[base + i * 4 + 0];
+                gv[i] = rgba_pixels[base + i * 4 + 1];
+                bv[i] = rgba_pixels[base + i * 4 + 2];
+                av[i] = rgba_pixels[base + i * 4 + 3];
+            }
+            const r16: Vec8u16 = rv;
+            const g16: Vec8u16 = gv;
+            const b16: Vec8u16 = bv;
+            const a16: Vec8u16 = av;
+
+            row_r += @as(Vec8u32, r16 * a16);
+            row_g += @as(Vec8u32, g16 * a16);
+            row_b += @as(Vec8u32, b16 * a16);
+            row_a += @as(Vec8u32, a16);
+        }
+
+        sum_r += @reduce(.Add, row_r);
+        sum_g += @reduce(.Add, row_g);
+        sum_b += @reduce(.Add, row_b);
+        sum_a += @reduce(.Add, row_a);
+
         while (x < x1) : (x += 1) {
             const off = row_off + @as(usize, x) * 4;
             const a: u64 = rgba_pixels[off + 3];
@@ -294,6 +394,47 @@ test "writeHalfblocksPreview box-filters non-1:2 cell_px aspect ratio" {
         "\x1b[38;2;200;0;0m\x1b[48;2;0;0;100m" ++
             upper_half_block ++ upper_half_block ++ "\x1b[0m",
         aw.written(),
+    );
+
+    // 19x4 image with cell_px = 19x4 exercises 2x8-pixel SIMD batches + 3-px
+    // scalar tail per row with non-uniform RGB and varying alpha:
+    // Top 2 rows: cols 0..16 = (200, 40, 20, a=200), cols 16..19 = (0, 200,
+    // 220, a=100). Per row: sum_a = 16*200 + 3*100 = 3500,
+    // r = round(16*200*200 / 3500) = 183, g = round((16*40*200 + 3*200*100) /
+    // 3500) = 54, b = round((16*20*200 + 3*220*100) / 3500) = 37.
+    // Bottom 2 rows: solid (30, 180, 90, 255).
+    var wide: [19 * 4 * 4]u8 = undefined;
+    for (0..4) |row| {
+        const is_top = row < 2;
+        for (0..19) |col| {
+            const off = (row * 19 + col) * 4;
+            if (is_top) {
+                const is_tail = col >= 16;
+                wide[off] = if (is_tail) 0 else 200;
+                wide[off + 1] = if (is_tail) 200 else 40;
+                wide[off + 2] = if (is_tail) 220 else 20;
+                wide[off + 3] = if (is_tail) 100 else 200;
+            } else {
+                wide[off] = 30;
+                wide[off + 1] = 180;
+                wide[off + 2] = 90;
+                wide[off + 3] = 255;
+            }
+        }
+    }
+    var aw2 = std.Io.Writer.Allocating.init(allocator);
+    defer aw2.deinit();
+    try writeHalfblocksPreview(
+        &aw2.writer,
+        &wide,
+        19 * 4,
+        .{ .w = 19, .h = 4 },
+        .{ .w = 19, .h = 4 },
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[38;2;183;54;37m\x1b[48;2;30;180;90m" ++
+            upper_half_block ++ "\x1b[0m",
+        aw2.written(),
     );
 }
 
