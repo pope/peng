@@ -37,10 +37,26 @@ linkFarm "zig-packages" [
     };
   }
   {
+    name = "vaxis-0.6.0-BWNV_G8gDgCNWI48cFKWal2NROjTRQXumw3ssMDeD6jt";
+    path = fetchgit {
+      url = "https://github.com/rockorager/libvaxis.git";
+      rev = "25b4bd7371cc3c32049e103ab292a525a1ecb7a7";
+      hash = "sha256-gKTe8Uqfs1PNFnp0rvO1B/9ulTS2hKhZrxdFP0nFT78=";
+    };
+  }
+  {
     name = "zg-0.16.2-oGqU3HqftgI6rwFS90ypwfjgToH8Pz829OKuFURlm773";
     path = fetchzip {
       url = "https://codeberg.org/atman/zg/archive/v0.16.2.tar.gz";
       hash = "sha256-YeLHpMVSyzhe8uvh9uIiEhdSLhQuE8DEQDsHjuDycYY=";
+    };
+  }
+  {
+    name = "uucode-0.2.0-ZZjBPm6FVgBcY-79AHV8ckQj86z0JwOyVyj89VeZrEiv";
+    path = fetchgit {
+      url = "https://github.com/jacobsandlund/uucode";
+      rev = "1fb73433bba5d93366c57f23ff2e9d7939746500";
+      hash = "sha256-fZTYVFN0N10R0Ty+3tpMkTLqEBq4tTpkBK6G1m6VgmY=";
     };
   }
 ]
