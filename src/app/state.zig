@@ -673,7 +673,13 @@ pub const AppState = struct {
         var scale_x: f32 = 1.0;
 
         switch (self.display.backend()) {
-            .headless => {},
+            .headless => {
+                const phys = self.viewer.last_win_dims.toPhysical(.{});
+                if (phys.asPositive()) |d| {
+                    win_w = d.w;
+                    win_h = d.h;
+                }
+            },
             .windowed => |win| {
                 const win_size = win.handle.getSize();
                 const pix_size = win.handle.getSizeInPixels();
@@ -2435,4 +2441,30 @@ test "AppState server idle auto-shutdown waits and exits when expired" {
     try std.testing.expect(state.viewer.running);
     state.updateServerIdleShutdown(2_300_000, false);
     try std.testing.expect(!state.viewer.running);
+}
+
+test "AppState.getViewportPixelDims uses last_win_dims in headless mode" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Default fallback when last_win_dims is unset (0x0).
+    state.viewer.last_win_dims = .{ .w = 0.0, .h = 0.0 };
+    const default_dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1024.0), default_dims.w);
+    try std.testing.expectEqual(@as(f32, 768.0), default_dims.h);
+
+    // Headless frontend (e.g. peng-tui) reports actual viewport dimensions.
+    state.viewer.last_win_dims = .{ .w = 1920.0, .h = 1040.0 };
+    const custom_dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1920.0), custom_dims.w);
+    try std.testing.expectEqual(@as(f32, 1040.0), custom_dims.h);
+
+    // Non-finite or non-positive axes safely fall back to 1024x768.
+    state.viewer.last_win_dims = .{ .w = std.math.nan(f32), .h = 1040.0 };
+    const nan_dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1024.0), nan_dims.w);
+    try std.testing.expectEqual(@as(f32, 768.0), nan_dims.h);
 }
