@@ -39,6 +39,45 @@ pub fn main(init: std.process.Init) !void {
     );
     defer thumb_cfg.deinit(gpa);
 
+    if (parsed.output_path) |out_path| {
+        const preview = renderPreviewSurface(
+            gpa,
+            io,
+            thumb_cfg,
+            target_path,
+            parsed.max_dims,
+            NoCancel{},
+        ) catch |err| {
+            std.log.err(
+                "Failed to render preview for '{s}': {s}",
+                .{ target_path, @errorName(err) },
+            );
+            std.process.exit(1);
+        };
+        defer preview.deinit();
+
+        const image_bytes = preview.surface.encodePreviewImageAlloc(
+            gpa,
+            85,
+        ) catch |err| {
+            std.log.err(
+                "Failed to encode preview for '{s}': {s}",
+                .{ target_path, @errorName(err) },
+            );
+            std.process.exit(1);
+        };
+        defer gpa.free(image_bytes);
+
+        writeOutputFileAtomic(io, out_path, image_bytes) catch |err| {
+            std.log.err(
+                "Failed to write preview to '{s}': {s}",
+                .{ out_path, @errorName(err) },
+            );
+            std.process.exit(1);
+        };
+        return;
+    }
+
     const target = parsed.protocol.resolve(init.environ_map);
     const preview_opts: termgfx.PreviewOptions = .{
         .transport = target.transport,
@@ -192,4 +231,17 @@ pub fn main(init: std.process.Init) !void {
             }
         },
     }
+}
+
+fn writeOutputFileAtomic(
+    io: std.Io,
+    out_path: []const u8,
+    bytes: []const u8,
+) !void {
+    var atomic_file = try std.Io.Dir.cwd().createFileAtomic(io, out_path, .{
+        .replace = true,
+    });
+    defer atomic_file.deinit(io);
+    try atomic_file.file.writeStreamingAll(io, bytes);
+    try atomic_file.replace(io);
 }

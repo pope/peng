@@ -724,6 +724,7 @@ pub fn parseIpcCommandLineArgs(
 /// Parsed command-line arguments for the `peng-preview` standalone utility.
 pub const PreviewArgs = struct {
     path: ?[]u8 = null,
+    output_path: ?[]u8 = null,
     max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
     cell_dims: ?CellDims = null,
     clear_first: bool = false,
@@ -737,6 +738,10 @@ pub const PreviewArgs = struct {
             gpa.free(p);
             self.path = null;
         }
+        if (self.output_path) |p| {
+            gpa.free(p);
+            self.output_path = null;
+        }
     }
 };
 
@@ -745,11 +750,14 @@ pub fn printPreviewHelp(io: std.Io) void {
     printHelpString(
         io,
         "Usage: peng-preview [OPTIONS] [W H] <PATH>\n\n" ++
-            "Render a terminal image preview (Kitty, Sixel, or iTerm2).\n\n" ++
+            "Render a terminal image preview (Kitty, Sixel, or iTerm2) " ++
+            "or write a JPEG/PNG preview file with -o/--output.\n\n" ++
             "Options:\n" ++
             "  -h, --help                Show this help message and exit\n" ++
             "  -c, --clear               " ++
             "Clear prior terminal graphics first (Kitty)\n" ++
+            "  -o, --output <PATH>       " ++
+            "Write encoded JPEG/PNG preview to file instead of stdout\n" ++
             "      --protocol <MODE>     Terminal graphics protocol (" ++
             protocol_modes_string ++ "; default: auto)\n" ++
             "      --size <WxH>          " ++
@@ -767,6 +775,8 @@ fn parsePreviewArgsIterator(
     gpa: std.mem.Allocator,
 ) !PreviewArgs {
     var clear_first = false;
+    var output_path: ?[]u8 = null;
+    errdefer if (output_path) |p| gpa.free(p);
     var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
     var cell_dims: ?CellDims = null;
     var has_flag_size = false;
@@ -790,6 +800,24 @@ fn parsePreviewArgsIterator(
                 std.mem.eql(u8, arg, "--clear"))
             {
                 clear_first = true;
+            } else if (std.mem.eql(u8, arg, "-o") or
+                std.mem.eql(u8, arg, "--output"))
+            {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err("Missing value for --output flag.", .{});
+                    }
+                    return error.MissingFlagValue;
+                };
+                if (val.len == 0) {
+                    if (!builtin.is_test) {
+                        std.log.err("Empty value for --output flag.", .{});
+                    }
+                    return error.InvalidOutputPath;
+                }
+                const duped = try gpa.dupe(u8, val);
+                if (output_path) |old| gpa.free(old);
+                output_path = duped;
             } else if (std.mem.eql(u8, arg, "--no-thumb-cache")) {
                 thumb_cache = .off;
             } else if (std.mem.eql(u8, arg, "--protocol")) {
@@ -875,7 +903,10 @@ fn parsePreviewArgsIterator(
         try positional.append(gpa, arg);
     }
 
-    if (help) return .{ .help = true };
+    if (help) {
+        if (output_path) |p| gpa.free(p);
+        return .{ .help = true };
+    }
 
     var path_slice: ?[]const u8 = null;
     if (positional.items.len == 1) {
@@ -915,6 +946,7 @@ fn parsePreviewArgsIterator(
 
     return .{
         .path = owned_path,
+        .output_path = output_path,
         .max_dims = max_dims,
         .cell_dims = cell_dims,
         .clear_first = clear_first,
@@ -1803,6 +1835,84 @@ test "parsePreviewArgsIterator parses --protocol flag" {
         };
         try testing.expectError(
             error.InvalidProtocol,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+}
+
+test "parsePreviewArgsIterator parses --output flag and frees on errors" {
+    const testing = std.testing;
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "-o", "/tmp/out.jpg", "photo.dng" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqualStrings("/tmp/out.jpg", parsed.output_path.?);
+        try testing.expectEqualStrings("photo.dng", parsed.path.?);
+    }
+
+    // Repeated flags replace prior allocation without leaking.
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "-o",
+                "/tmp/a.jpg",
+                "--output",
+                "/tmp/b.jpg",
+                "photo.jpg",
+            },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqualStrings("/tmp/b.jpg", parsed.output_path.?);
+    }
+
+    // Early --help frees already-parsed output_path without leaking.
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "-o", "/tmp/a.jpg", "--help" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.help);
+        try testing.expectEqual(@as(?[]u8, null), parsed.output_path);
+    }
+
+    // Subsequent parse error frees output_path via errdefer.
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "-o",
+                "/tmp/a.jpg",
+                "--protocol",
+                "invalid",
+                "photo.jpg",
+            },
+        };
+        try testing.expectError(
+            error.InvalidProtocol,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--output"},
+        };
+        try testing.expectError(
+            error.MissingFlagValue,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--output", "", "photo.jpg" },
+        };
+        try testing.expectError(
+            error.InvalidOutputPath,
             parsePreviewArgsIterator(&it, testing.allocator),
         );
     }
