@@ -40,6 +40,24 @@ pub fn main(init: std.process.Init) !void {
     );
     defer thumb_cfg.deinit(gpa);
 
+    const target = parsed.protocol.resolve(init.environ_map);
+    const needs_cell_px = (!parsed.has_explicit_size and
+        parsed.cell_dims != null) or
+        (parsed.output_path == null and
+            target.protocol == .kitty and
+            target.transport == .tmux_unicode_placeholders);
+    const cell_px = if (needs_cell_px)
+        termgfx.queryCellPixelSize(io)
+    else
+        null;
+    const max_dims = if (!parsed.has_explicit_size)
+        if (parsed.cell_dims) |cells|
+            termgfx.cellsToPixels(cells, cell_px orelse termgfx.default_cell_px)
+        else
+            parsed.max_dims
+    else
+        parsed.max_dims;
+
     if (parsed.output_path) |out_path| {
         _ = renderPreviewToOutputFile(
             gpa,
@@ -47,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
             thumb_cfg,
             target_path,
             out_path,
-            parsed.max_dims,
+            max_dims,
             NoCancel{},
         ) catch |err| {
             std.log.err(
@@ -59,10 +77,10 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const target = parsed.protocol.resolve(init.environ_map);
     const preview_opts: termgfx.PreviewOptions = .{
         .transport = target.transport,
         .cell_dims = parsed.cell_dims,
+        .cell_px = cell_px,
     };
     const stdout = std.Io.File.stdout();
 
@@ -73,7 +91,7 @@ pub fn main(init: std.process.Init) !void {
                 io,
                 thumb_cfg,
                 target_path,
-                parsed.max_dims,
+                max_dims,
                 NoCancel{},
             ) catch |err| {
                 std.log.err(
@@ -121,7 +139,7 @@ pub fn main(init: std.process.Init) !void {
                 io,
                 thumb_cfg,
                 target_path,
-                parsed.max_dims,
+                max_dims,
                 NoCancel{},
             ) catch |err| {
                 std.log.err(
@@ -166,7 +184,7 @@ pub fn main(init: std.process.Init) !void {
                 io,
                 thumb_cfg,
                 target_path,
-                parsed.max_dims,
+                max_dims,
                 NoCancel{},
             ) catch |err| {
                 std.log.err(

@@ -14,17 +14,22 @@ const std = @import("std");
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
 pub const CellDims = detect.CellDims;
+pub const CellPixelSize = detect.CellPixelSize;
+pub const cellsToPixels = detect.cellsToPixels;
+pub const default_cell_px = detect.default_cell_px;
 pub const Protocol = detect.Protocol;
 pub const ProtocolMode = detect.ProtocolMode;
+pub const queryCellPixelSize = detect.queryCellPixelSize;
 pub const ResolvedTarget = detect.ResolvedTarget;
 pub const TransportMode = detect.TransportMode;
 pub const protocol_modes_string = detect.protocol_modes_string;
 
 /// Options controlling terminal graphics framing (`TransportMode` and
-/// optional target cell grid for Kitty `U=1` Unicode placeholders).
+/// optional target cell grid / cell pixel size for Kitty `U=1` placeholders).
 pub const PreviewOptions = struct {
     transport: TransportMode = .direct,
     cell_dims: ?CellDims = null,
+    cell_px: ?CellPixelSize = null,
 };
 
 /// Payload for Kitty Graphics Protocol `t=t` emission from an RGBA32 temp
@@ -184,6 +189,7 @@ pub fn writePreview(
                 k.temp_path,
                 k.dims,
                 opts.cell_dims,
+                opts.cell_px,
             ),
             .sixel, .iterm2 => return writeTmuxPassthrough(writer, payload),
         },

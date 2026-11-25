@@ -1,4 +1,8 @@
+const builtin = @import("builtin");
+const geom = @import("geom");
 const std = @import("std");
+
+const PositiveDimsU32 = geom.PositiveDimsU32;
 
 /// Concrete terminal graphics protocol backend.
 pub const Protocol = enum {
@@ -12,6 +16,85 @@ pub const CellDims = struct {
     cols: u32,
     rows: u32,
 };
+
+/// Pixel dimensions of a single terminal character cell (`w` x `h` pixels).
+pub const CellPixelSize = struct {
+    w: u32,
+    h: u32,
+};
+
+/// Conservative fallback cell pixel dimensions used when `TIOCGWINSZ` is
+/// unavailable or reports zero pixel extents (e.g. headless pipes or older
+/// multiplexers).
+pub const default_cell_px: CellPixelSize = .{ .w = 10, .h = 20 };
+
+/// Converts terminal `cells` into a clamped maximum pixel bounding box
+/// (`[1, 4096]`) using `cell_px`.
+pub fn cellsToPixels(
+    cells: CellDims,
+    cell_px: CellPixelSize,
+) PositiveDimsU32 {
+    const cw: u64 = @max(1, cell_px.w);
+    const ch: u64 = @max(1, cell_px.h);
+    const px_w: u64 = @as(u64, @max(1, cells.cols)) * cw;
+    const px_h: u64 = @as(u64, @max(1, cells.rows)) * ch;
+    return .{
+        .w = @intCast(@min(px_w, 4096)),
+        .h = @intCast(@min(px_h, 4096)),
+    };
+}
+
+fn cellPixelSizeFromWinsize(
+    col: u16,
+    row: u16,
+    xpixel: u16,
+    ypixel: u16,
+) ?CellPixelSize {
+    if (col == 0 or row == 0 or xpixel == 0 or ypixel == 0) {
+        return null;
+    }
+    const c: u32 = col;
+    const r: u32 = row;
+    const cw: u32 = @max(1, (@as(u32, xpixel) + c / 2) / c);
+    const ch: u32 = @max(1, (@as(u32, ypixel) + r / 2) / r);
+    return .{ .w = cw, .h = ch };
+}
+
+fn queryWinsizeFd(fd: std.posix.fd_t) ?CellPixelSize {
+    var ws: std.posix.winsize = .{
+        .row = 0,
+        .col = 0,
+        .xpixel = 0,
+        .ypixel = 0,
+    };
+    while (true) {
+        const rc = std.posix.system.ioctl(
+            fd,
+            std.posix.T.IOCGWINSZ,
+            @intFromPtr(&ws),
+        );
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => break,
+            .INTR => continue,
+            else => return null,
+        }
+    }
+    return cellPixelSizeFromWinsize(ws.col, ws.row, ws.xpixel, ws.ypixel);
+}
+
+/// Queries the active terminal's per-cell pixel dimensions via POSIX
+/// `ioctl(TIOCGWINSZ)` on `stdout`, `stderr`, or `/dev/tty`. Returns `null`
+/// on Windows or when no TTY reports non-zero pixel dimensions.
+pub fn queryCellPixelSize(io: std.Io) ?CellPixelSize {
+    if (builtin.os.tag == .windows) return null;
+    if (queryWinsizeFd(std.posix.STDOUT_FILENO)) |px| return px;
+    if (queryWinsizeFd(std.posix.STDERR_FILENO)) |px| return px;
+    const tty = std.Io.Dir.cwd().openFile(io, "/dev/tty", .{}) catch {
+        return null;
+    };
+    defer tty.close(io);
+    return queryWinsizeFd(tty.handle);
+}
 
 /// Escape-sequence framing mode for the active terminal / multiplexer.
 pub const TransportMode = enum {
@@ -322,4 +405,28 @@ test "ProtocolMode.parse handles valid and invalid names" {
         ProtocolMode.parse("iTerm2"),
     );
     try std.testing.expectEqual(null, ProtocolMode.parse("unknown"));
+}
+
+test "cellsToPixels scales cells by pixel size and clamps to 4096" {
+    try std.testing.expectEqual(
+        PositiveDimsU32{ .w = 600, .h = 600 },
+        cellsToPixels(.{ .cols = 60, .rows = 30 }, .{ .w = 10, .h = 20 }),
+    );
+    try std.testing.expectEqual(
+        PositiveDimsU32{ .w = 1280, .h = 960 },
+        cellsToPixels(.{ .cols = 80, .rows = 30 }, .{ .w = 16, .h = 32 }),
+    );
+    try std.testing.expectEqual(
+        PositiveDimsU32{ .w = 4096, .h = 4096 },
+        cellsToPixels(.{ .cols = 500, .rows = 500 }, .{ .w = 20, .h = 40 }),
+    );
+    // Rounds nearest cell pixel dimensions instead of truncating toward zero.
+    try std.testing.expectEqual(
+        CellPixelSize{ .w = 10, .h = 20 },
+        cellPixelSizeFromWinsize(192, 54, 1910, 1070).?,
+    );
+    try std.testing.expectEqual(
+        @as(?CellPixelSize, null),
+        cellPixelSizeFromWinsize(80, 24, 0, 0),
+    );
 }

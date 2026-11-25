@@ -6,6 +6,7 @@ const std = @import("std");
 const termgfx = @import("termgfx");
 
 const CellDims = termgfx.CellDims;
+const CellPixelSize = termgfx.CellPixelSize;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const ProtocolMode = termgfx.ProtocolMode;
 
@@ -15,6 +16,7 @@ const PreviewClientMode = union(enum) {
     terminal: struct {
         protocol: ProtocolMode,
         cell_dims: ?CellDims,
+        cell_px: ?CellPixelSize,
         clear_first: bool,
     },
 };
@@ -281,6 +283,25 @@ fn preparePreviewCommand(
         } else |_| {}
     }
 
+    const has_explicit_size = has_flag_size or path_start == 2;
+    const target = protocol.resolve(environ_map);
+    const needs_cell_px = (!has_explicit_size and cell_dims != null) or
+        (output_path == null and
+            target.protocol == .kitty and
+            target.transport == .tmux_unicode_placeholders);
+    const cell_px = if (needs_cell_px)
+        termgfx.queryCellPixelSize(io)
+    else
+        null;
+    if (!has_explicit_size) {
+        if (cell_dims) |cells| {
+            max_dims = termgfx.cellsToPixels(
+                cells,
+                cell_px orelse termgfx.default_cell_px,
+            );
+        }
+    }
+
     const joined_src = try std.mem.join(
         gpa,
         " ",
@@ -321,7 +342,6 @@ fn preparePreviewCommand(
         return .output_file;
     }
 
-    const target = protocol.resolve(environ_map);
     const fmt_str: []const u8 = switch (target.protocol) {
         .kitty, .sixel => "rgba",
         .iterm2 => "encoded",
@@ -336,6 +356,7 @@ fn preparePreviewCommand(
         .terminal = .{
             .protocol = protocol,
             .cell_dims = cell_dims,
+            .cell_px = cell_px,
             .clear_first = clear_first,
         },
     };
@@ -408,12 +429,14 @@ fn writeTerminalPreview(
     prev: ipc.PreviewPayload,
     protocol: ProtocolMode,
     cell_dims: ?CellDims,
+    cell_px: ?CellPixelSize,
     clear_first: bool,
 ) bool {
     const target = protocol.resolve(environ_map);
     const preview_opts: termgfx.PreviewOptions = .{
         .transport = target.transport,
         .cell_dims = cell_dims,
+        .cell_px = cell_px,
     };
     const stdout = std.Io.File.stdout();
 
@@ -774,6 +797,7 @@ pub fn main(init: std.process.Init) !void {
                         prev,
                         term_cfg.protocol,
                         term_cfg.cell_dims,
+                        term_cfg.cell_px,
                         term_cfg.clear_first,
                     )) {
                         std.process.exit(1);

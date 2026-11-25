@@ -3,6 +3,7 @@ const geom = @import("geom");
 const std = @import("std");
 
 const CellDims = detect.CellDims;
+const CellPixelSize = detect.CellPixelSize;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
 /// UTF-8 encoding of Kitty's Unicode placeholder codepoint `U+10EEEE`.
@@ -26,31 +27,36 @@ const row_diacritics = [_]u21{
     0x0745, 0x0747, 0x0749, 0x074A,
 };
 
-/// Fits pixel dimensions `img_dims` inside `max_cells` assuming standard ~1:2
-/// terminal cell aspect ratio (1 row ~= 2 column widths).
-fn fitCells(img_dims: PositiveDimsU32, max_cells: CellDims) CellDims {
+/// Fits pixel dimensions `img_dims` inside `max_cells` using `cell_px`
+/// (or a standard ~1:2 terminal cell aspect ratio when `cell_px` is `null`).
+fn fitCells(
+    img_dims: PositiveDimsU32,
+    max_cells: CellDims,
+    cell_px: ?CellPixelSize,
+) CellDims {
     if (img_dims.w == 0 or img_dims.h == 0 or
         max_cells.cols == 0 or max_cells.rows == 0)
     {
         return .{ .cols = 1, .rows = 1 };
     }
+    const aspect: f64 = if (cell_px) |px|
+        if (px.w > 0 and px.h > 0)
+            @as(f64, @floatFromInt(px.h)) / @as(f64, @floatFromInt(px.w))
+        else
+            2.0
+    else
+        2.0;
     const w_f: f64 = @floatFromInt(img_dims.w);
     const h_f: f64 = @floatFromInt(img_dims.h);
     const max_c: f64 = @floatFromInt(max_cells.cols);
     const max_r: f64 = @floatFromInt(max_cells.rows);
-    const scale = @min(max_c / w_f, (max_r * 2.0) / h_f);
-    const cols: u32 = @max(
-        1,
-        @min(max_cells.cols, @as(u32, @intFromFloat(@round(w_f * scale)))),
-    );
-    const rows: u32 = @max(
-        1,
-        @min(
-            max_cells.rows,
-            @as(u32, @intFromFloat(@round((h_f * scale) / 2.0))),
-        ),
-    );
-    return .{ .cols = cols, .rows = rows };
+    const scale = @min(max_c / w_f, (max_r * aspect) / h_f);
+    const cols_f = @max(1.0, @min(max_c, @round(w_f * scale)));
+    const rows_f = @max(1.0, @min(max_r, @round((h_f * scale) / aspect)));
+    return .{
+        .cols = @intFromFloat(cols_f),
+        .rows = @intFromFloat(rows_f),
+    };
 }
 
 fn writeUtf8Codepoint(writer: *std.Io.Writer, cp: u21) !void {
@@ -96,6 +102,7 @@ pub fn writeKittyUnicodePlaceholder(
     temp_path: []const u8,
     dims: PositiveDimsU32,
     cell_dims: ?CellDims,
+    cell_px: ?CellPixelSize,
 ) !void {
     var b64_buf: [512]u8 = undefined;
     if (std.base64.standard.Encoder.calcSize(temp_path.len) > b64_buf.len) {
@@ -108,7 +115,7 @@ pub fn writeKittyUnicodePlaceholder(
         .cols = raw_cells.cols,
         .rows = @min(raw_cells.rows, @as(u32, row_diacritics.len)),
     };
-    const fit = fitCells(dims, max_cells);
+    const fit = fitCells(dims, max_cells, cell_px);
 
     const id = imageIdFromPath(temp_path);
     try writer.print(
@@ -138,13 +145,30 @@ pub fn writeKittyUnicodePlaceholder(
 }
 
 test "fitCells preserves aspect ratio for landscape and portrait images" {
-    const land = fitCells(.{ .w = 400, .h = 266 }, .{ .cols = 60, .rows = 30 });
+    const land = fitCells(
+        .{ .w = 400, .h = 266 },
+        .{ .cols = 60, .rows = 30 },
+        null,
+    );
     try std.testing.expectEqual(@as(u32, 60), land.cols);
     try std.testing.expectEqual(@as(u32, 20), land.rows);
 
-    const port = fitCells(.{ .w = 266, .h = 400 }, .{ .cols = 60, .rows = 30 });
+    const port = fitCells(
+        .{ .w = 266, .h = 400 },
+        .{ .cols = 60, .rows = 30 },
+        null,
+    );
     try std.testing.expectEqual(@as(u32, 40), port.cols);
     try std.testing.expectEqual(@as(u32, 30), port.rows);
+
+    // Square 10x10 cells yield 1:1 cell aspect ratio.
+    const sq = fitCells(
+        .{ .w = 400, .h = 200 },
+        .{ .cols = 40, .rows = 40 },
+        .{ .w = 10, .h = 10 },
+    );
+    try std.testing.expectEqual(@as(u32, 40), sq.cols);
+    try std.testing.expectEqual(@as(u32, 20), sq.rows);
 }
 
 test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
@@ -157,6 +181,7 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
         "/dev/shm/a.rgba",
         .{ .w = 400, .h = 200 },
         .{ .cols = 8, .rows = 4 },
+        null,
     );
     const out = aw.written();
     try std.testing.expect(
@@ -174,6 +199,7 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
         "/dev/shm/b.rgba",
         .{ .w = 200, .h = 400 },
         .{ .cols = 1, .rows = 150 },
+        null,
     );
     const out2 = aw2.written();
     try std.testing.expect(

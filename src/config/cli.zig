@@ -820,6 +820,7 @@ pub const PreviewArgs = struct {
     path: ?[]u8 = null,
     output_path: ?[]u8 = null,
     max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
+    has_explicit_size: bool = false,
     cell_dims: ?CellDims = null,
     clear_first: bool = false,
     protocol: ProtocolMode = .auto,
@@ -857,7 +858,7 @@ pub fn printPreviewHelp(io: std.Io) void {
             "      --size <WxH>          " ++
             "Maximum pixel dimensions (default: 800x600)\n" ++
             "      --cells <COLSxROWS>   " ++
-            "Target terminal cell grid (for Kitty U=1 / tmux)\n" ++
+            "Target cell grid (auto-computes --size via TIOCGWINSZ)\n" ++
             "      --thumb-cache <MODE>  XDG thumbnail cache policy (" ++
             thumb_cache_modes_string ++ ")\n" ++
             "      --no-thumb-cache      Disable XDG shared thumbnail cache\n",
@@ -1025,6 +1026,7 @@ fn parsePreviewArgsIterator(
             return error.InvalidPreviewSize;
         }
         max_dims = .{ .w = w, .h = h };
+        has_flag_size = true;
         path_slice = positional.items[2];
     } else if (positional.items.len > 1) {
         if (!builtin.is_test) {
@@ -1042,6 +1044,7 @@ fn parsePreviewArgsIterator(
         .path = owned_path,
         .output_path = output_path,
         .max_dims = max_dims,
+        .has_explicit_size = has_flag_size,
         .cell_dims = cell_dims,
         .clear_first = clear_first,
         .protocol = protocol,
@@ -2063,5 +2066,56 @@ test "parseDurationSeconds and --idle-timeout parsing" {
             "preview -o \"/tmp/my dir/out.jpg\" photo.jpg\n",
             parsed.send.command,
         );
+    }
+}
+
+test "parsePreviewArgsIterator tracks has_explicit_size with --cells" {
+    const testing = std.testing;
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--cells", "80x24", "photo.jpg" },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(!parsed.has_explicit_size);
+        try testing.expectEqual(
+            @as(?CellDims, .{ .cols = 80, .rows = 24 }),
+            parsed.cell_dims,
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--cells",
+                "80x24",
+                "--size",
+                "400x300",
+                "photo.jpg",
+            },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.has_explicit_size);
+        try testing.expectEqual(@as(u32, 400), parsed.max_dims.w);
+        try testing.expectEqual(@as(u32, 300), parsed.max_dims.h);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--cells",
+                "80x24",
+                "320",
+                "240",
+                "photo.jpg",
+            },
+        };
+        var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.has_explicit_size);
+        try testing.expectEqual(@as(u32, 320), parsed.max_dims.w);
+        try testing.expectEqual(@as(u32, 240), parsed.max_dims.h);
     }
 }
