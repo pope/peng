@@ -458,6 +458,31 @@ pub fn build(b: *std.Build) void {
     preview_exe.force_load_objc = is_darwin and static_sdl;
     b.installArtifact(preview_exe);
 
+    const tui_exe = b.addExecutable(.{
+        .name = "peng-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tui_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "app", .module = app_module },
+                .{ .name = "core", .module = core_module },
+                .{ .name = "geom", .module = geom_module },
+                .{ .name = "gpu", .module = gpu_module },
+                .{ .name = "sdl", .module = sdl_module },
+                .{ .name = "state", .module = state_module },
+                .{ .name = "termgfx", .module = termgfx_module },
+                .{ .name = "tui", .module = tui_module },
+                .{ .name = "vaxis", .module = vaxis_mod },
+            },
+        }),
+    });
+    tui_exe.dead_strip_dylibs = is_darwin;
+    tui_exe.force_load_objc = is_darwin and static_sdl;
+    tui_exe.step.dependOn(compile_shaders);
+    b.installArtifact(tui_exe);
+
     const precache_exe = b.addExecutable(.{
         .name = "peng-precache",
         .root_module = b.createModule(.{

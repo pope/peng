@@ -734,6 +734,32 @@ fn writeSurfaceRgbaToTempFile(
     return res;
 }
 
+/// Writes an already-rendered RGBA32 `sdl.Surface` (`dims`) to POSIX shared
+/// memory (`t=s`) when available, falling back to a temporary file (`t=t`) if
+/// `shm_open` is unavailable.
+pub fn writeSurfaceKittyLocal(
+    io: std.Io,
+    surface: sdl.Surface,
+    dims: PositiveDimsU32,
+) !KittyTransferResult {
+    if (writeRgbaToShm(io, surface, dims)) |shm_res| {
+        return shm_res;
+    } else |err| {
+        std.log.debug(
+            "POSIX shm preview unavailable ({s}); falling back to temp file",
+            .{@errorName(err)},
+        );
+    }
+
+    const tmp_res = try writeSurfaceRgbaToTempFile(io, surface, dims);
+    return .{
+        .kind = .temp_file,
+        .name_buf = tmp_res.path_buf,
+        .name_len = tmp_res.path_len,
+        .dims = tmp_res.dims,
+    };
+}
+
 /// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
 /// raw packed RGBA32 bytes to POSIX shared memory (`t=s`) when available,
 /// falling back to a temporary file (`t=t`) if `shm_open` is unavailable.
@@ -755,30 +781,7 @@ pub fn renderPreviewKittyLocal(
     );
     defer preview.deinit();
 
-    if (writeRgbaToShm(io, preview.surface, preview.dims)) |shm_res| {
-        if (cancel.isCanceled()) {
-            shm_res.cleanup(io);
-            return error.Canceled;
-        }
-        return shm_res;
-    } else |err| {
-        std.log.debug(
-            "POSIX shm preview unavailable ({s}); falling back to temp file",
-            .{@errorName(err)},
-        );
-    }
-
-    const tmp_res = try writeSurfaceRgbaToTempFile(
-        io,
-        preview.surface,
-        preview.dims,
-    );
-    const res = KittyTransferResult{
-        .kind = .temp_file,
-        .name_buf = tmp_res.path_buf,
-        .name_len = tmp_res.path_len,
-        .dims = tmp_res.dims,
-    };
+    const res = try writeSurfaceKittyLocal(io, preview.surface, preview.dims);
     if (cancel.isCanceled()) {
         res.cleanup(io);
         return error.Canceled;
