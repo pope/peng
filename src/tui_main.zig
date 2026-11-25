@@ -697,48 +697,62 @@ fn transmitFrame(
     }
 }
 
-fn drawMinimalInfobar(
-    bar: vaxis.Window,
-    app_state: *const AppState,
-    frame_allocator: std.mem.Allocator,
-) void {
-    bar.fill(.{
-        .char = .{ .grapheme = " ", .width = 1 },
-        .style = .{
-            .fg = .{ .rgb = .{ 205, 214, 244 } },
-            .bg = .{ .rgb = .{ 30, 30, 46 } },
-        },
-    });
+fn buildInfobarModel(app_state: *const AppState) tui.infobar.InfobarModel {
     const nav = &app_state.viewer.navigation;
-    const total = nav.getVisibleCount();
-    const cur_pos = nav.getVisiblePosition();
-    const text = if (cur_pos) |pos| blk: {
-        const name = if (nav.getCurrentImageEntry()) |e|
-            e.getBasename()
-        else
-            "";
-        const zoom_pct: u32 = @intFromFloat(
-            @round(app_state.viewer.viewport.zoom_factor.get() * 100.0),
-        );
-        break :blk frame_allocator.print(
-            " [{d}/{d}] {s}  {d}%  (: palette | q quit)",
-            .{ pos, total, name, zoom_pct },
-        ) catch " peng-tui";
-    } else if (nav.isLoadingFiles())
-        " Loading..."
+    const vp = app_state.viewer.viewport;
+    const entry_opt = nav.getCurrentImageEntry();
+    const cache_opt = app_state.getCurrentEntry();
+    const auth = if (cache_opt) |c|
+        c.getAuthoritativeDims()
     else
-        " No images (q quit)";
+        PhysicalDims{ .w = 0.0, .h = 0.0 };
 
-    _ = bar.printSegment(
-        .{
-            .text = text,
-            .style = .{
-                .fg = .{ .rgb = .{ 205, 214, 244 } },
-                .bg = .{ .rgb = .{ 30, 30, 46 } },
+    const is_pair = if (entry_opt) |e| switch (e) {
+        .pair => true,
+        .filesystem, .archive_entry => false,
+    } else false;
+
+    const ss_state: struct { active: bool, paused: bool } =
+        switch (nav.slideshow) {
+            .inactive => .{ .active = false, .paused = false },
+            .active => |data| .{
+                .active = true,
+                .paused = switch (data.clock) {
+                    .paused => true,
+                    .unarmed, .running => false,
+                },
             },
+        };
+
+    return .{
+        .visible_pos = nav.getVisiblePosition(),
+        .visible_count = nav.getVisibleCount(),
+        .is_loading = nav.isLoadingFiles(),
+        .filename = if (entry_opt) |e| e.getBasename() else "",
+        .is_raw_jpeg_pair = is_pair,
+        .classification = nav.getCurrentClassification(),
+        .view_mode = nav.getViewMode(),
+        .image_w = if (std.math.isFinite(auth.w) and auth.w > 0.0)
+            std.math.lossyCast(u32, @round(auth.w))
+        else
+            0,
+        .image_h = if (std.math.isFinite(auth.h) and auth.h > 0.0)
+            std.math.lossyCast(u32, @round(auth.h))
+        else
+            0,
+        .zoom_factor = vp.zoom_factor.get(),
+        .fit_mode = vp.fit_mode,
+        .is_manual_zoom = switch (vp.mode) {
+            .manual => true,
+            .fit, .fill => false,
         },
-        .{ .col_offset = 0, .row_offset = 0, .wrap = .none },
-    );
+        .scale_filter = vp.scale_filter,
+        .rotation_deg = vp.rotation_angle,
+        .has_edits = vp.edits.hasEdits(),
+        .compare_original = vp.compare_original,
+        .slideshow_active = ss_state.active,
+        .slideshow_paused = ss_state.paused,
+    };
 }
 
 fn timerWakeTask(
@@ -1048,7 +1062,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (active_layout.infobarWindow(root_win)) |bar| {
-            drawMinimalInfobar(bar, &app_state, frame_alloc);
+            tui.infobar.render(bar, buildInfobarModel(&app_state), frame_alloc);
         }
 
         try vx.render(tty.writer());
