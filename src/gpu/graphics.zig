@@ -554,6 +554,95 @@ pub fn LazyPipeline(comptime Handle: type) type {
     };
 }
 
+/// Cached offscreen color target texture for headless rendering, reallocated
+/// only when dimensions or format change.
+pub const OffscreenTarget = union(enum) {
+    unallocated,
+    allocated: struct {
+        texture: sdl.gpu.Texture,
+        dims: PositiveDimsU32,
+        format: sdl.gpu.TextureFormat,
+    },
+
+    /// Returns a cached texture matching `dims` and `format`, reallocating if
+    /// absent or mismatched.
+    pub fn ensure(
+        self: *OffscreenTarget,
+        dev: sdl.gpu.Device,
+        dims: PositiveDimsU32,
+        format: sdl.gpu.TextureFormat,
+    ) !sdl.gpu.Texture {
+        switch (self.*) {
+            .allocated => |a| {
+                if (a.dims.w == dims.w and
+                    a.dims.h == dims.h and
+                    a.format == format)
+                {
+                    return a.texture;
+                }
+                dev.releaseTexture(a.texture);
+                self.* = .unallocated;
+            },
+            .unallocated => {},
+        }
+        const tex = dev.createTexture(&sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = format,
+            .usage = sdl.gpu.TextureUsage.color_target,
+            .width = dims.w,
+            .height = dims.h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        }) orelse {
+            std.log.err(
+                "Failed to create offscreen target texture: {s}",
+                .{sdl.getError()},
+            );
+            return error.OffscreenTargetTextureCreationFailed;
+        };
+        self.* = .{
+            .allocated = .{
+                .texture = tex,
+                .dims = dims,
+                .format = format,
+            },
+        };
+        return tex;
+    }
+
+    /// Releases the cached offscreen texture if allocated, returning `true` if
+    /// a texture was freed.
+    pub fn release(self: *OffscreenTarget, dev: sdl.gpu.Device) bool {
+        switch (self.*) {
+            .allocated => |a| {
+                dev.releaseTexture(a.texture);
+                self.* = .unallocated;
+                return true;
+            },
+            .unallocated => return false,
+        }
+    }
+};
+
+/// Mapped CPU-readable view of a downloaded GPU texture borrowing the caller's
+/// `sdl.gpu.TransferBuffer`. Call `deinit` to unmap before issuing another
+/// `downloadTexture` on the same buffer or releasing it.
+pub const MappedReadback = struct {
+    device: sdl.gpu.Device,
+    transfer_buf: sdl.gpu.TransferBuffer,
+    pixels: []u8,
+    pitch: u32,
+    dims: PositiveDimsU32,
+    format: sdl.gpu.TextureFormat,
+
+    /// Unmaps the underlying GPU download transfer buffer.
+    pub fn deinit(self: MappedReadback) void {
+        self.device.unmapTransferBuffer(self.transfer_buf);
+    }
+};
+
 /// Cohesive GPU context and render resources initialized for GPU-accelerated
 /// rendering.
 pub const RenderResources = struct {
@@ -572,6 +661,10 @@ pub const RenderResources = struct {
 
     // Offscreen blur subsystem (lazily initialized on first blur demand)
     blur: BlurResources = .uninitialized,
+
+    // Reusable headless offscreen render target and GPU->CPU readback buffer
+    offscreen_target: OffscreenTarget = .unallocated,
+    download_buffer: sdl.gpu.RetainedTransferBuffer = .unallocated,
 
     // Persistent double-buffered vertex and transfer staging buffers
     vertex_buffers: [2]sdl.gpu.RetainedBuffer = .{
@@ -825,8 +918,9 @@ pub const RenderResources = struct {
     }
 
     /// Releases transient window-scoped GPU allocations (cached glyph textures,
-    /// offscreen blur textures, and double-buffered vertex/transfer buffers)
-    /// while preserving compiled pipelines, sampler, white texture, and fonts.
+    /// offscreen blur textures, headless offscreen target, download readback
+    /// buffer, and double-buffered vertex/transfer buffers) while preserving
+    /// compiled pipelines, sampler, white texture, and fonts.
     /// Returns `true` if any GPU resources were released.
     pub fn releaseTransientResources(
         self: *RenderResources,
@@ -840,6 +934,17 @@ pub const RenderResources = struct {
         }
         if (self.blur.releaseTextures(self.device)) {
             released = true;
+        }
+        if (self.offscreen_target.release(self.device)) {
+            released = true;
+        }
+        switch (self.download_buffer) {
+            .unallocated => {},
+            .allocated => |a| {
+                self.device.releaseTransferBuffer(a.handle);
+                self.download_buffer = .unallocated;
+                released = true;
+            },
         }
         for (&self.vertex_buffers) |*slot| {
             switch (slot.*) {
@@ -1407,36 +1512,72 @@ fn getTextureFormatElementSize(format: sdl.gpu.TextureFormat) u32 {
     };
 }
 
-/// Downloads pixel data from a GPU texture via transfer buffer and saves it as
-/// a PNG image file.
-pub fn saveTextureToPng(
+fn ensureDownloadTransferBuffer(
+    dev: sdl.gpu.Device,
+    slot: *sdl.gpu.RetainedTransferBuffer,
+    required_size: u32,
+) !sdl.gpu.TransferBuffer {
+    switch (slot.*) {
+        .allocated => |a| {
+            if (a.capacity >= required_size) return a.handle;
+            dev.releaseTransferBuffer(a.handle);
+            slot.* = .unallocated;
+        },
+        .unallocated => {},
+    }
+    const tb = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+        .usage = .download,
+        .size = required_size,
+        .props = 0,
+    }) orelse {
+        std.log.err(
+            "Failed to create download transfer buffer: {s}",
+            .{sdl.getError()},
+        );
+        return error.TransferBufferCreationFailed;
+    };
+    slot.* = .{
+        .allocated = .{
+            .handle = tb,
+            .capacity = required_size,
+        },
+    };
+    return tb;
+}
+
+/// Records a GPU-to-CPU copy of `texture` into `download_buf` (growing it if
+/// needed), submits `cmd`, waits on the fence, and returns a `MappedReadback`
+/// view of the downloaded pixels. Consumes `cmd` (submits or cancels on error).
+pub fn downloadTexture(
     dev: sdl.gpu.Device,
     cmd: sdl.gpu.CommandBuffer,
+    download_buf: *sdl.gpu.RetainedTransferBuffer,
     texture: sdl.gpu.Texture,
     dims: PositiveDimsU32,
     texture_format: sdl.gpu.TextureFormat,
-    filename: [:0]const u8,
-) !void {
-    const bpp = getTextureFormatElementSize(texture_format);
-    const pitch = dims.w * bpp;
-    const size = pitch * dims.h;
+) !MappedReadback {
+    var cmd_consumed = false;
+    errdefer if (!cmd_consumed) {
+        _ = cmd.cancel();
+    };
 
-    const transfer_buf =
-        dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .download,
-            .size = size,
-            .props = 0,
-        }) orelse {
-            std.log.err(
-                "Failed to create download transfer buffer: {s}",
-                .{sdl.getError()},
-            );
-            return error.TransferBufferCreationFailed;
-        };
-    defer dev.releaseTransferBuffer(transfer_buf);
+    const bpp = getTextureFormatElementSize(texture_format);
+    const pitch = std.math.mul(u32, dims.w, bpp) catch
+        return error.ReadbackSizeOverflow;
+    const size = std.math.mul(u32, pitch, dims.h) catch
+        return error.ReadbackSizeOverflow;
+
+    const transfer_buf = try ensureDownloadTransferBuffer(
+        dev,
+        download_buf,
+        size,
+    );
 
     const copy_pass = cmd.beginCopyPass() orelse {
-        _ = cmd.cancel();
+        std.log.err(
+            "SDL GPU beginCopyPass failed for texture readback: {s}",
+            .{sdl.getError()},
+        );
         return error.CopyPassCreationFailed;
     };
     copy_pass.downloadFromTexture(&sdl.gpu.TextureRegion{
@@ -1457,35 +1598,65 @@ pub fn saveTextureToPng(
     });
     copy_pass.end();
 
-    const fence_opt = cmd.submitAndAcquireFence();
-    if (fence_opt) |fence| {
-        _ = dev.waitForFence(fence);
-        dev.releaseFence(fence);
-    } else {
+    cmd_consumed = true;
+    const fence = cmd.submitAndAcquireFence() orelse {
         std.log.err(
-            "Failed to acquire GPU fence for screenshot save: {s}",
+            "Failed to acquire GPU fence for texture readback: {s}",
             .{sdl.getError()},
         );
         return error.FenceAcquisitionFailed;
+    };
+    defer dev.releaseFence(fence);
+    if (!dev.waitForFence(fence)) {
+        std.log.err(
+            "SDL GPU waitForFence failed for texture readback: {s}",
+            .{sdl.getError()},
+        );
+        return error.FenceWaitFailed;
     }
 
-    const data_ptr = dev.mapTransferBuffer(transfer_buf, false) orelse
+    const data_ptr = dev.mapTransferBuffer(transfer_buf, false) orelse {
+        std.log.err(
+            "SDL GPU mapTransferBuffer failed for texture readback: {s}",
+            .{sdl.getError()},
+        );
         return error.MapBufferFailed;
-    defer dev.unmapTransferBuffer(transfer_buf);
+    };
 
-    var pixel_fmt = sdl.PixelFormat.rgba32;
-    if (texture_format == .bgra8_unorm or
-        texture_format == .bgra8_unorm_srgb)
-    {
-        pixel_fmt = sdl.PixelFormat.bgra32;
-    }
+    return .{
+        .device = dev,
+        .transfer_buf = transfer_buf,
+        .pixels = data_ptr[0..size],
+        .pitch = pitch,
+        .dims = dims,
+        .format = texture_format,
+    };
+}
+
+/// Encodes a mapped GPU texture `readback` and saves it as a PNG file.
+pub fn saveReadbackToPng(
+    readback: MappedReadback,
+    filename: [:0]const u8,
+) !void {
+    const pixel_fmt = switch (readback.format) {
+        .rgba8_unorm, .rgba8_unorm_srgb => sdl.PixelFormat.rgba32,
+        .bgra8_unorm, .bgra8_unorm_srgb => sdl.PixelFormat.bgra32,
+        else => return error.UnsupportedReadbackFormat,
+    };
+
+    const w_i32 = std.math.cast(i32, readback.dims.w) orelse
+        return error.ReadbackSizeOverflow;
+    const h_i32 = std.math.cast(i32, readback.dims.h) orelse
+        return error.ReadbackSizeOverflow;
+    const pitch_i32 = std.math.cast(i32, readback.pitch) orelse
+        return error.ReadbackSizeOverflow;
 
     const surface = sdl.Surface.createFrom(
-        @intCast(dims.w),
-        @intCast(dims.h),
+        w_i32,
+        h_i32,
         pixel_fmt,
-        data_ptr,
-        @intCast(pitch),
+        readback.pixels.ptr,
+        pitch_i32,
     ) orelse {
         std.log.err("SDL_CreateSurfaceFrom failed: {s}", .{sdl.getError()});
         return error.SurfaceCreationFailed;
@@ -1653,4 +1824,102 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
         @as(usize, 0),
         second_snap.last_ui_batch_count,
     );
+}
+
+test "OffscreenTarget reuses handle and downloadTexture reads clear color" {
+    initSdlCore(true) catch return;
+    defer quitSdlCore();
+
+    const dev = createGpuDevice(false) catch return;
+    defer dev.destroy();
+
+    var target: OffscreenTarget = .unallocated;
+    defer _ = target.release(dev);
+
+    const dims = PositiveDimsU32{ .w = 4, .h = 2 };
+    const tex1 = try target.ensure(dev, dims, .rgba8_unorm);
+    const tex2 = try target.ensure(dev, dims, .rgba8_unorm);
+    try std.testing.expect(tex1.eql(tex2));
+
+    var download_buf: sdl.gpu.RetainedTransferBuffer = .unallocated;
+    defer switch (download_buf) {
+        .unallocated => {},
+        .allocated => |a| dev.releaseTransferBuffer(a.handle),
+    };
+
+    const cmd = dev.acquireCommandBuffer() orelse
+        return error.CommandBufferAcquisitionFailed;
+    const attachment = sdl.gpu.ColorTargetAttachment{
+        .texture = tex1,
+        .clear_color = .{ .r = 1.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+        .load_op = .clear,
+        .store_op = .store,
+        .cycle = false,
+    };
+    const pass = cmd.beginRenderPass(&attachment) orelse {
+        _ = cmd.cancel();
+        return error.RenderPassFailed;
+    };
+    pass.end();
+
+    {
+        const readback = try downloadTexture(
+            dev,
+            cmd,
+            &download_buf,
+            tex1,
+            dims,
+            .rgba8_unorm,
+        );
+        defer readback.deinit();
+
+        try std.testing.expectEqual(@as(u32, 16), readback.pitch);
+        try std.testing.expectEqual(@as(usize, 32), readback.pixels.len);
+        try std.testing.expectEqualSlices(
+            u8,
+            &.{ 255, 0, 0, 255 },
+            readback.pixels[0..4],
+        );
+    }
+
+    // Resize reallocates offscreen target and grows download transfer buffer.
+    const big_dims = PositiveDimsU32{ .w = 8, .h = 4 };
+    const tex3 = try target.ensure(dev, big_dims, .rgba8_unorm);
+    const cmd2 = dev.acquireCommandBuffer() orelse
+        return error.CommandBufferAcquisitionFailed;
+    const attachment2 = sdl.gpu.ColorTargetAttachment{
+        .texture = tex3,
+        .clear_color = .{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 },
+        .load_op = .clear,
+        .store_op = .store,
+        .cycle = false,
+    };
+    const pass2 = cmd2.beginRenderPass(&attachment2) orelse {
+        _ = cmd2.cancel();
+        return error.RenderPassFailed;
+    };
+    pass2.end();
+
+    {
+        const readback2 = try downloadTexture(
+            dev,
+            cmd2,
+            &download_buf,
+            tex3,
+            big_dims,
+            .rgba8_unorm,
+        );
+        defer readback2.deinit();
+
+        try std.testing.expectEqual(@as(u32, 32), readback2.pitch);
+        try std.testing.expectEqual(@as(usize, 128), readback2.pixels.len);
+        try std.testing.expectEqualSlices(
+            u8,
+            &.{ 0, 255, 0, 255 },
+            readback2.pixels[0..4],
+        );
+    }
+
+    try std.testing.expect(target.release(dev));
+    try std.testing.expect(!target.release(dev));
 }

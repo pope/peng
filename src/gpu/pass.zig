@@ -16,6 +16,7 @@ const text_cache = @import("text_cache.zig");
 const BatchItem = render_image.BatchItem;
 const BlurResources = graphics.BlurResources;
 const BlurUniforms = graphics.BlurUniforms;
+const downloadTexture = graphics.downloadTexture;
 const DpiScale = geom.DpiScale;
 const FontSizePage = text_cache.FontSizePage;
 const GlyphCacheKey = text_cache.GlyphCacheKey;
@@ -26,7 +27,7 @@ const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const Rect = geom.Rect;
 const RenderResources = graphics.RenderResources;
-const saveTextureToPng = graphics.saveTextureToPng;
+const saveReadbackToPng = graphics.saveReadbackToPng;
 const UiQuadInstance = geometry.UiQuadInstance;
 const UiSdfVertUniforms = geometry.UiSdfVertUniforms;
 const Vertex = geometry.Vertex;
@@ -1060,33 +1061,16 @@ pub fn executeFrame(
     const safe_scale = DpiScale.init(target.scale.x, target.scale.y);
     switch (target.target) {
         .headless => |phys_dims| {
-            if (phys_dims.toPositiveU32()) |pos| {
-                target_w = pos.w;
-                target_h = pos.h;
-            } else {
-                target_w = 1;
-                target_h = 1;
-            }
+            const pos = phys_dims.toPositiveU32() orelse
+                PositiveDimsU32{ .w = 1, .h = 1 };
+            target_w = pos.w;
+            target_h = pos.h;
             target_format = .rgba8_unorm;
-
-            const target_tex_info = sdl.gpu.TextureCreateInfo{
-                .type = .type_2d,
-                .format = .rgba8_unorm,
-                .usage = sdl.gpu.TextureUsage.color_target,
-                .width = target_w,
-                .height = target_h,
-                .layer_count_or_depth = 1,
-                .num_levels = 1,
-                .sample_count = .count_1,
-                .props = 0,
-            };
-            target_tex = dev.createTexture(&target_tex_info) orelse {
-                std.log.err(
-                    "Failed to create offscreen target texture: {s}",
-                    .{sdl.getError()},
-                );
-                return error.OffscreenTargetTextureCreationFailed;
-            };
+            target_tex = try gpu_res.offscreen_target.ensure(
+                dev,
+                pos,
+                target_format,
+            );
         },
         .window => |win| {
             var swap_w: u32 = 0;
@@ -1106,12 +1090,6 @@ pub fn executeFrame(
             }
         },
     }
-
-    defer if (is_headless) {
-        if (target_tex) |tex| {
-            dev.releaseTexture(tex);
-        }
-    };
 
     if (target_tex) |tex| {
         if (target_w == 0 or target_h == 0) {
@@ -1143,7 +1121,10 @@ pub fn executeFrame(
             );
             return error.GPUCopyPassFailed;
         };
-        errdefer copy_pass.end();
+        var copy_pass_ended = false;
+        errdefer if (!copy_pass_ended) {
+            copy_pass.end();
+        };
 
         gpu_res.text_cache.beginFrameGlyphUploads();
 
@@ -1175,6 +1156,7 @@ pub fn executeFrame(
             &temp_buffers,
             target_dims,
         );
+        copy_pass_ended = true;
 
         gpu_res.metrics.last_ui_vertex_count = vertex_count;
         gpu_res.metrics.last_ui_batch_count = batch_count;
@@ -1182,14 +1164,16 @@ pub fn executeFrame(
 
         if (target.capture_filename) |filename| {
             cmd_buf_submitted = true;
-            try saveTextureToPng(
+            const readback = try downloadTexture(
                 dev,
                 cmd_buf,
+                &gpu_res.download_buffer,
                 tex,
                 target_dims,
                 target_format,
-                filename,
             );
+            defer readback.deinit();
+            try saveReadbackToPng(readback, filename);
         } else if (is_headless) {
             cmd_buf_submitted = true;
             const fence_opt = cmd_buf.submitAndAcquireFence();
