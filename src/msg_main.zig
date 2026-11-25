@@ -287,8 +287,9 @@ fn preparePreviewCommand(
     const target = protocol.resolve(environ_map);
     const needs_cell_px = (!has_explicit_size and cell_dims != null) or
         (output_path == null and
-            target.protocol == .kitty and
-            target.transport == .tmux_unicode_placeholders);
+            (target.protocol == .halfblocks or
+                (target.protocol == .kitty and
+                    target.transport == .tmux_unicode_placeholders)));
     const cell_px = if (needs_cell_px)
         termgfx.queryCellPixelSize(io)
     else
@@ -343,7 +344,7 @@ fn preparePreviewCommand(
     }
 
     const fmt_str: []const u8 = switch (target.protocol) {
-        .kitty, .sixel => "rgba",
+        .kitty, .sixel, .halfblocks => "rgba",
         .iterm2 => "encoded",
     };
     const rewritten = try gpa.print(
@@ -477,8 +478,14 @@ fn writeTerminalPreview(
                 return false;
             };
             defer gpa.free(bytes);
-            const pitch: usize = @as(usize, prev.dims.w) * 4;
-            const expected = pitch * @as(usize, prev.dims.h);
+            const pitch = std.math.mul(usize, prev.dims.w, 4) catch {
+                std.log.err("Preview RGBA dimensions overflow", .{});
+                return false;
+            };
+            const expected = std.math.mul(usize, pitch, prev.dims.h) catch {
+                std.log.err("Preview RGBA dimensions overflow", .{});
+                return false;
+            };
             if (bytes.len < expected) {
                 std.log.err("Truncated preview RGBA temp file", .{});
                 return false;
@@ -534,6 +541,56 @@ fn writeTerminalPreview(
                 const write_err: anyerror = stdout_writer.err orelse err;
                 if (write_err != error.BrokenPipe) {
                     std.log.err("Failed to write iTerm2 preview: {s}", .{
+                        @errorName(write_err),
+                    });
+                }
+                return false;
+            }
+            return true;
+        },
+        .halfblocks => {
+            defer deleteTempFileQuiet(io, prev.path);
+            const bytes = readTempFileAlloc(gpa, io, prev.path) catch |err| {
+                std.log.err(
+                    "Failed to read preview RGBA temp file '{s}': {s}",
+                    .{ prev.path, @errorName(err) },
+                );
+                return false;
+            };
+            defer gpa.free(bytes);
+            const pitch = std.math.mul(usize, prev.dims.w, 4) catch {
+                std.log.err("Preview RGBA dimensions overflow", .{});
+                return false;
+            };
+            const expected = std.math.mul(usize, pitch, prev.dims.h) catch {
+                std.log.err("Preview RGBA dimensions overflow", .{});
+                return false;
+            };
+            if (bytes.len < expected) {
+                std.log.err("Truncated preview RGBA temp file", .{});
+                return false;
+            }
+            var hb_opts = preview_opts;
+            if (hb_opts.cell_px == null) {
+                hb_opts.cell_px = termgfx.default_cell_px;
+            }
+            var stdout_buf: [16 * 1024]u8 = undefined;
+            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+            const write_res: ?anyerror = blk: {
+                termgfx.writePreview(&stdout_writer.interface, .{
+                    .halfblocks = .{
+                        .rgba_pixels = bytes[0..expected],
+                        .pitch = pitch,
+                        .dims = prev.dims,
+                    },
+                }, hb_opts) catch |err| break :blk err;
+                stdout_writer.interface.flush() catch |err| break :blk err;
+                break :blk null;
+            };
+            if (write_res) |err| {
+                const write_err: anyerror = stdout_writer.err orelse err;
+                if (write_err != error.BrokenPipe) {
+                    std.log.err("Failed to write halfblocks preview: {s}", .{
                         @errorName(write_err),
                     });
                 }

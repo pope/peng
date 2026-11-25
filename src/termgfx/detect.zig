@@ -9,6 +9,7 @@ pub const Protocol = enum {
     kitty,
     sixel,
     iterm2,
+    halfblocks,
 };
 
 /// Terminal cell dimensions (columns x rows), e.g. from `--cells COLSxROWS`.
@@ -115,6 +116,7 @@ pub const ProtocolMode = enum {
     kitty,
     sixel,
     iterm2,
+    halfblocks,
 
     /// Parses a case-insensitive CLI protocol mode string.
     pub fn parse(raw: []const u8) ?ProtocolMode {
@@ -122,6 +124,11 @@ pub const ProtocolMode = enum {
         if (std.ascii.eqlIgnoreCase(raw, "kitty")) return .kitty;
         if (std.ascii.eqlIgnoreCase(raw, "sixel")) return .sixel;
         if (std.ascii.eqlIgnoreCase(raw, "iterm2")) return .iterm2;
+        if (std.ascii.eqlIgnoreCase(raw, "halfblocks") or
+            std.ascii.eqlIgnoreCase(raw, "halfblock"))
+        {
+            return .halfblocks;
+        }
         return null;
     }
 
@@ -137,6 +144,7 @@ pub const ProtocolMode = enum {
             .kitty => .kitty,
             .sixel => .sixel,
             .iterm2 => .iterm2,
+            .halfblocks => .halfblocks,
         };
         return .{
             .protocol = protocol,
@@ -146,7 +154,7 @@ pub const ProtocolMode = enum {
 };
 
 /// Comma-separated list of valid `--protocol` values for CLI help/errors.
-pub const protocol_modes_string = "auto, kitty, sixel, iterm2";
+pub const protocol_modes_string = "auto, kitty, sixel, iterm2, halfblocks";
 
 /// Snapshot of terminal-identifying environment variables used for pure,
 /// zero-I/O protocol detection.
@@ -168,13 +176,14 @@ fn isNonEmpty(val: ?[]const u8) bool {
 /// Resolves the `TransportMode` for `protocol` in `env`:
 /// - Outside `tmux`: `.direct`.
 /// - Inside `tmux`: `.tmux_unicode_placeholders` for Kitty (`U=1`),
-///   `.tmux_passthrough` for iTerm2, and `.direct` for native `tmux` Sixel.
+///   `.tmux_passthrough` for iTerm2, and `.direct` for native `tmux` Sixel and
+///   Unicode half-blocks.
 fn resolveTransport(env: TerminalEnv, protocol: Protocol) TransportMode {
     if (!isNonEmpty(env.tmux)) return .direct;
     return switch (protocol) {
         .kitty => .tmux_unicode_placeholders,
         .iterm2 => .tmux_passthrough,
-        .sixel => .direct,
+        .sixel, .halfblocks => .direct,
     };
 }
 
@@ -388,6 +397,12 @@ test "resolveTransport selects direct, passthrough, or U=1 placeholders" {
             .tmux = "/tmp/tmux-1000/default,123,0",
         }, .sixel),
     );
+    try std.testing.expectEqual(
+        TransportMode.direct,
+        resolveTransport(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+        }, .halfblocks),
+    );
 }
 
 test "ProtocolMode.parse handles valid and invalid names" {
@@ -403,6 +418,14 @@ test "ProtocolMode.parse handles valid and invalid names" {
     try std.testing.expectEqual(
         ProtocolMode.iterm2,
         ProtocolMode.parse("iTerm2"),
+    );
+    try std.testing.expectEqual(
+        ProtocolMode.halfblocks,
+        ProtocolMode.parse("halfblocks"),
+    );
+    try std.testing.expectEqual(
+        ProtocolMode.halfblocks,
+        ProtocolMode.parse("HalfBlock"),
     );
     try std.testing.expectEqual(null, ProtocolMode.parse("unknown"));
 }

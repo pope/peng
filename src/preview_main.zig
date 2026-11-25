@@ -11,8 +11,9 @@ const renderPreviewToOutputFile = core.preview.renderPreviewToOutputFile;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 
 /// Standalone CLI entry point for rendering a terminal image preview
-/// (Kitty Graphics Protocol `t=t`, VT340 Sixel, or iTerm2 Inline Images)
-/// without a GUI window, Vulkan device, or server.
+/// (Kitty Graphics Protocol `t=t`, VT340 Sixel, iTerm2 Inline Images, or
+/// ANSI truecolor Unicode half-blocks) without a GUI window, Vulkan device, or
+/// server.
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -44,8 +45,9 @@ pub fn main(init: std.process.Init) !void {
     const needs_cell_px = (!parsed.has_explicit_size and
         parsed.cell_dims != null) or
         (parsed.output_path == null and
-            target.protocol == .kitty and
-            target.transport == .tmux_unicode_placeholders);
+            (target.protocol == .halfblocks or
+                (target.protocol == .kitty and
+                    target.transport == .tmux_unicode_placeholders)));
     const cell_px = if (needs_cell_px)
         termgfx.queryCellPixelSize(io)
     else
@@ -223,6 +225,54 @@ pub fn main(init: std.process.Init) !void {
                 const write_err: anyerror = stdout_writer.err orelse err;
                 if (write_err != error.BrokenPipe) {
                     std.log.err("Failed to write iTerm2 preview: {s}", .{
+                        @errorName(write_err),
+                    });
+                }
+                std.process.exit(1);
+            }
+        },
+        .halfblocks => {
+            const preview = renderPreviewSurface(
+                gpa,
+                io,
+                thumb_cfg,
+                target_path,
+                max_dims,
+                NoCancel{},
+            ) catch |err| {
+                std.log.err(
+                    "Failed to render preview for '{s}': {s}",
+                    .{ target_path, @errorName(err) },
+                );
+                std.process.exit(1);
+            };
+            defer preview.deinit();
+
+            const pitch: usize = @intCast(preview.surface.pitch());
+            const h_usize: usize = @intCast(preview.dims.h);
+            const pixels = preview.surface.pixels()[0 .. pitch * h_usize];
+
+            var hb_opts = preview_opts;
+            if (hb_opts.cell_px == null) {
+                hb_opts.cell_px = termgfx.default_cell_px;
+            }
+            var stdout_buf: [16 * 1024]u8 = undefined;
+            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+            const write_res: ?anyerror = blk: {
+                termgfx.writePreview(&stdout_writer.interface, .{
+                    .halfblocks = .{
+                        .rgba_pixels = pixels,
+                        .pitch = pitch,
+                        .dims = preview.dims,
+                    },
+                }, hb_opts) catch |err| break :blk err;
+                stdout_writer.interface.flush() catch |err| break :blk err;
+                break :blk null;
+            };
+            if (write_res) |err| {
+                const write_err: anyerror = stdout_writer.err orelse err;
+                if (write_err != error.BrokenPipe) {
+                    std.log.err("Failed to write halfblocks preview: {s}", .{
                         @errorName(write_err),
                     });
                 }

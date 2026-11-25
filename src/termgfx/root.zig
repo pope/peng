@@ -2,10 +2,12 @@
 //!
 //! Pure, zero-SDL encoders and environment-based protocol detection for
 //! rendering image previews directly in terminal emulators (Kitty Graphics
-//! Protocol `t=t`, VT340 Sixel, and iTerm2 Inline Images OSC 1337).
+//! Protocol `t=t`, VT340 Sixel, iTerm2 Inline Images OSC 1337, and ANSI
+//! truecolor Unicode half-blocks).
 
 const detect = @import("detect.zig");
 const geom = @import("geom");
+const halfblocks = @import("halfblocks.zig");
 const iterm2 = @import("iterm2.zig");
 const kitty = @import("kitty.zig");
 const sixel = @import("sixel.zig");
@@ -55,11 +57,20 @@ pub const Iterm2Payload = struct {
     dims: PositiveDimsU32,
 };
 
+/// Payload for ANSI 24-bit truecolor Unicode half-blocks emission directly
+/// from in-memory RGBA32 pixels.
+pub const HalfblocksPixelsPayload = struct {
+    rgba_pixels: []const u8,
+    pitch: usize,
+    dims: PositiveDimsU32,
+};
+
 /// Protocol-tagged payload for terminal graphics preview emission.
 pub const PreviewPayload = union(Protocol) {
     kitty: KittyFilePayload,
     sixel: SixelPixelsPayload,
     iterm2: Iterm2Payload,
+    halfblocks: HalfblocksPixelsPayload,
 };
 
 /// Zero-allocation `std.Io.Writer` wrapper that escapes `\x1b` as `\x1b\x1b`
@@ -118,6 +129,7 @@ const TmuxPassthroughWriter = struct {
 fn writePayloadRaw(
     writer: *std.Io.Writer,
     payload: PreviewPayload,
+    cell_px: ?CellPixelSize,
 ) !void {
     return switch (payload) {
         .kitty => |k| kitty.writeKittyStandard(
@@ -137,6 +149,13 @@ fn writePayloadRaw(
             writer,
             it.image_bytes,
             it.dims,
+        ),
+        .halfblocks => |hb| halfblocks.writeHalfblocksPreview(
+            writer,
+            hb.rgba_pixels,
+            hb.pitch,
+            hb.dims,
+            cell_px,
         ),
     };
 }
@@ -167,6 +186,21 @@ fn validatePayload(payload: PreviewPayload) !void {
                 return error.BufferTooSmall;
             }
         },
+        .halfblocks => |hb| {
+            if (hb.dims.w == 0 or hb.dims.h == 0) {
+                return error.InvalidDimensions;
+            }
+            if (hb.dims.w > 4096 or hb.dims.h > 4096) {
+                return error.DimensionsTooLarge;
+            }
+            const row_bytes = @as(u64, hb.dims.w) * 4;
+            if (hb.pitch < row_bytes) return error.InvalidPitch;
+            if (@as(u64, hb.dims.h - 1) *| @as(u64, hb.pitch) +| row_bytes >
+                hb.rgba_pixels.len)
+            {
+                return error.BufferTooSmall;
+            }
+        },
     }
 }
 
@@ -182,7 +216,7 @@ pub fn writePreview(
     opts: PreviewOptions,
 ) !void {
     switch (opts.transport) {
-        .direct => return writePayloadRaw(writer, payload),
+        .direct => return writePayloadRaw(writer, payload, opts.cell_px),
         .tmux_unicode_placeholders => switch (payload) {
             .kitty => |k| return kitty.writeKittyUnicodePlaceholder(
                 writer,
@@ -191,21 +225,42 @@ pub fn writePreview(
                 opts.cell_dims,
                 opts.cell_px,
             ),
-            .sixel, .iterm2 => return writeTmuxPassthrough(writer, payload),
+            .sixel, .iterm2 => return writeTmuxPassthrough(
+                writer,
+                payload,
+                opts.cell_px,
+            ),
+            .halfblocks => return writePayloadRaw(
+                writer,
+                payload,
+                opts.cell_px,
+            ),
         },
-        .tmux_passthrough => return writeTmuxPassthrough(writer, payload),
+        .tmux_passthrough => switch (payload) {
+            .kitty, .sixel, .iterm2 => return writeTmuxPassthrough(
+                writer,
+                payload,
+                opts.cell_px,
+            ),
+            .halfblocks => return writePayloadRaw(
+                writer,
+                payload,
+                opts.cell_px,
+            ),
+        },
     }
 }
 
 fn writeTmuxPassthrough(
     writer: *std.Io.Writer,
     payload: PreviewPayload,
+    cell_px: ?CellPixelSize,
 ) !void {
     try validatePayload(payload);
     try writer.writeAll("\x1bPtmux;");
     var tmux_buf: [4 * 1024]u8 = undefined;
     var tmux_w = TmuxPassthroughWriter.init(writer, &tmux_buf);
-    try writePayloadRaw(&tmux_w.interface, payload);
+    try writePayloadRaw(&tmux_w.interface, payload, cell_px);
     try tmux_w.interface.flush();
     try writer.writeAll("\x1b\\");
 }
@@ -293,10 +348,25 @@ test "writePreview formats Kitty t=t, Sixel, iTerm2, and tmux passthrough" {
             "width=16px;height=12px;preserveAspectRatio=1:YWJj\x07\x1b\\",
         w5.buffered(),
     );
+
+    // Halfblocks render natively without tmux DCS passthrough.
+    var w6 = std.Io.Writer.fixed(&buf);
+    try writePreview(&w6, .{
+        .halfblocks = .{
+            .rgba_pixels = &px,
+            .pitch = 4,
+            .dims = .{ .w = 1, .h = 1 },
+        },
+    }, .{ .transport = .tmux_passthrough });
+    try std.testing.expectEqualStrings(
+        "\x1b[38;2;255;0;0m\xe2\x96\x80\x1b[0m",
+        w6.buffered(),
+    );
 }
 
 test {
     _ = detect;
+    _ = halfblocks;
     _ = iterm2;
     _ = kitty;
     _ = sixel;
