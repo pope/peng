@@ -108,11 +108,65 @@ pub fn wakeSocketListener(io: std.Io, sock_path: []const u8) void {
     }
 }
 
-/// Context managing the background Unix domain socket IPC server listener and client connections.
+/// Exclusive advisory file lock guarding ownership of a Unix socket path
+/// (`<socket_path>.lock` for servers, `<socket_path>.spawn.lock` for
+/// auto-spawning clients). Automatically released by the OS on process exit.
+pub const SocketLock = struct {
+    file: std.Io.File,
+
+    /// Attempts to acquire a non-blocking exclusive lock on `lock_path`,
+    /// creating parent directories if needed. Returns `null` if another
+    /// process currently holds the lock.
+    pub fn tryAcquire(io: std.Io, lock_path: []const u8) !?SocketLock {
+        if (std.Io.Dir.path.dirname(lock_path)) |dir_path| {
+            if (dir_path.len > 0) {
+                std.Io.Dir.createDirPath(
+                    std.Io.Dir.cwd(),
+                    io,
+                    dir_path,
+                ) catch |err| {
+                    std.log.debug(
+                        "Lock createDirPath '{s}' failed or exists: {any}",
+                        .{ dir_path, err },
+                    );
+                };
+            }
+        }
+        const file = try std.Io.Dir.cwd().createFile(io, lock_path, .{
+            .read = true,
+            .truncate = false,
+        });
+        errdefer file.close(io);
+        const locked = try file.tryLock(io, .exclusive);
+        if (!locked) {
+            file.close(io);
+            return null;
+        }
+        return .{ .file = file };
+    }
+
+    /// Releases the lock and closes the underlying file descriptor.
+    pub fn release(self: SocketLock, io: std.Io) void {
+        self.file.close(io);
+    }
+};
+
+/// Formats `<socket_path><suffix>` into `buf` for socket lock files.
+pub fn formatLockPath(
+    buf: []u8,
+    socket_path: []const u8,
+    suffix: []const u8,
+) ![]const u8 {
+    return std.mem.print(buf, "{s}{s}", .{ socket_path, suffix });
+}
+
+/// Context managing the background Unix domain socket IPC server listener and
+/// client connections.
 pub const IpcServer = struct {
     allocator: std.mem.Allocator,
     socket_path: []u8,
     thread: ?std.Thread = null,
+    lock: ?SocketLock = null,
 
     /// Allocates and initializes an `IpcServer` instance with either an
     /// explicit custom socket path or `/tmp/peng-{pid}.sock`.
@@ -142,8 +196,27 @@ pub const IpcServer = struct {
         return self;
     }
 
+    /// Attempts to acquire the exclusive `<socket_path>.lock` ownership lock.
+    /// Returns `true` if acquired (or already held), `false` if another live
+    /// server already owns `self.socket_path`.
+    pub fn tryAcquireLock(self: *IpcServer, io: std.Io) !bool {
+        if (self.lock != null) return true;
+        var lock_buf: [160]u8 = undefined;
+        const lock_path = try formatLockPath(
+            &lock_buf,
+            self.socket_path,
+            ".lock",
+        );
+        const lock_opt = try SocketLock.tryAcquire(io, lock_path);
+        if (lock_opt) |lock| {
+            self.lock = lock;
+            return true;
+        }
+        return false;
+    }
+
     /// Connects a dummy socket to wake the listener thread, joins the listener
-    /// thread, and destroys the server.
+    /// thread, releases any held socket lock, and destroys the server.
     pub fn deinit(self: *IpcServer, io: std.Io) void {
         if (self.thread) |t| {
             if (builtin.os.tag != .windows) {
@@ -151,6 +224,10 @@ pub const IpcServer = struct {
             }
             t.join();
             self.thread = null;
+        }
+        if (self.lock) |lock| {
+            lock.release(io);
+            self.lock = null;
         }
         self.allocator.free(self.socket_path);
         self.allocator.destroy(self);
@@ -219,10 +296,20 @@ pub const StackingAction = enum {
     toggle,
 };
 
-/// Parameters for a terminal Kitty graphics preview request (`preview`).
+/// Output payload format requested from the server preview worker.
+pub const PreviewFormat = enum {
+    /// Raw packed RGBA32 temporary file (used by Kitty `t=t` and Sixel).
+    rgba,
+    /// Encoded JPEG/PNG temporary file (used by iTerm2 inline images).
+    encoded,
+};
+
+/// Parameters for a terminal or file preview request (`preview`).
 pub const PreviewRequest = struct {
     max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
     clear_first: bool = false,
+    format: PreviewFormat = .rgba,
+    output_path: ?[]const u8 = null,
     path: []const u8,
 };
 
@@ -769,60 +856,7 @@ pub const IpcCommand = union(enum) {
             std.mem.eql(u8, cmd, "preview_clear") or
             std.mem.eql(u8, cmd, "clear-and-preview"))
         {
-            var clear_first = std.mem.eql(u8, cmd, "preview-clear") or
-                std.mem.eql(u8, cmd, "preview_clear") or
-                std.mem.eql(u8, cmd, "clear-and-preview");
-
-            var sub_it = it;
-            if (sub_it.next()) |first_tok| {
-                const is_flag = std.mem.eql(u8, first_tok, "--clear") or
-                    std.mem.eql(u8, first_tok, "-c");
-                const is_word = std.mem.eql(u8, first_tok, "clear");
-                const after_clear = std.mem.trim(u8, sub_it.rest(), " \t\r\n");
-                if (is_flag or (is_word and after_clear.len > 0)) {
-                    clear_first = true;
-                    it = sub_it;
-                }
-            }
-
-            const full_rest = std.mem.trim(u8, it.rest(), " \t\r\n");
-            if (full_rest.len == 0) return error.MissingArgument;
-
-            var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
-            var filepath: []const u8 = full_rest;
-
-            if (it.next()) |tok1| {
-                if (it.next()) |tok2| {
-                    if (std.fmt.parseInt(i64, tok1, 10)) |w_i| {
-                        if (std.fmt.parseInt(i64, tok2, 10)) |h_i| {
-                            const after_dims = std.mem.trim(
-                                u8,
-                                it.rest(),
-                                " \t\r\n",
-                            );
-                            if (after_dims.len == 0) {
-                                return error.MissingArgument;
-                            }
-                            max_dims = PositiveDimsU32.initClamped(
-                                w_i,
-                                h_i,
-                                4096,
-                            ) orelse return error.InvalidArgument;
-                            filepath = after_dims;
-                        } else |_| {}
-                    } else |_| {}
-                }
-            }
-            if (filepath.len > std.Io.Dir.max_path_bytes) {
-                return error.PathTooLong;
-            }
-            return .{
-                .preview = .{
-                    .max_dims = max_dims,
-                    .clear_first = clear_first,
-                    .path = filepath,
-                },
-            };
+            return parsePreviewCommand(cmd, it.rest());
         } else if (std.mem.eql(u8, cmd, "screenshot")) {
             const filepath = std.mem.trim(u8, it.rest(), " \t\r\n");
             if (filepath.len == 0) return error.MissingArgument;
@@ -842,6 +876,162 @@ pub const IpcCommand = union(enum) {
         } else {
             return error.UnknownCommand;
         }
+    }
+
+    fn nextPreviewToken(rest: *[]const u8) ?[]const u8 {
+        const trimmed = std.mem.trimStart(u8, rest.*, " \t\r\n");
+        if (trimmed.len == 0) {
+            rest.* = trimmed;
+            return null;
+        }
+        if (trimmed[0] == '"') {
+            if (std.mem.findScalarPos(u8, trimmed, 1, '"')) |end_q| {
+                rest.* = trimmed[end_q + 1 ..];
+                return trimmed[1..end_q];
+            }
+        }
+        var end: usize = 0;
+        while (end < trimmed.len and
+            trimmed[end] != ' ' and
+            trimmed[end] != '\t' and
+            trimmed[end] != '\r' and
+            trimmed[end] != '\n')
+        {
+            end += 1;
+        }
+        rest.* = trimmed[end..];
+        return trimmed[0..end];
+    }
+
+    fn parsePreviewSizeToken(val: []const u8) ?PositiveDimsU32 {
+        const sep = std.mem.findScalar(u8, val, 'x') orelse
+            std.mem.findScalar(u8, val, 'X') orelse
+            return null;
+        const w = std.fmt.parseInt(i64, val[0..sep], 10) catch return null;
+        const h = std.fmt.parseInt(i64, val[sep + 1 ..], 10) catch return null;
+        return PositiveDimsU32.initClamped(w, h, 4096);
+    }
+
+    fn parsePreviewCommand(cmd: []const u8, raw_rest: []const u8) !IpcCommand {
+        var clear_first = std.mem.eql(u8, cmd, "preview-clear") or
+            std.mem.eql(u8, cmd, "preview_clear") or
+            std.mem.eql(u8, cmd, "clear-and-preview");
+        var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
+        var has_flag_size = false;
+        var saw_end_of_options = false;
+        var format: PreviewFormat = .rgba;
+        var output_path: ?[]const u8 = null;
+
+        var rest = std.mem.trim(u8, raw_rest, " \t\r\n");
+        while (rest.len > 0) {
+            var probe = rest;
+            const tok = nextPreviewToken(&probe) orelse break;
+            if (std.mem.eql(u8, tok, "--")) {
+                saw_end_of_options = true;
+                rest = std.mem.trim(u8, probe, " \t\r\n");
+                break;
+            }
+            if (std.mem.eql(u8, tok, "--clear") or
+                std.mem.eql(u8, tok, "-c"))
+            {
+                clear_first = true;
+                rest = std.mem.trim(u8, probe, " \t\r\n");
+                continue;
+            }
+            if (std.mem.eql(u8, tok, "clear")) {
+                const after = std.mem.trim(u8, probe, " \t\r\n");
+                if (after.len > 0) {
+                    clear_first = true;
+                    rest = after;
+                    continue;
+                }
+                break;
+            }
+            if (std.mem.eql(u8, tok, "--size")) {
+                const val = nextPreviewToken(&probe) orelse
+                    return error.MissingArgument;
+                max_dims = parsePreviewSizeToken(val) orelse
+                    return error.InvalidArgument;
+                has_flag_size = true;
+                rest = std.mem.trim(u8, probe, " \t\r\n");
+                continue;
+            }
+            if (std.mem.eql(u8, tok, "--format")) {
+                const val = nextPreviewToken(&probe) orelse
+                    return error.MissingArgument;
+                if (std.mem.eql(u8, val, "rgba")) {
+                    format = .rgba;
+                } else if (std.mem.eql(u8, val, "encoded")) {
+                    format = .encoded;
+                } else {
+                    return error.InvalidArgument;
+                }
+                rest = std.mem.trim(u8, probe, " \t\r\n");
+                continue;
+            }
+            if (std.mem.eql(u8, tok, "--output") or
+                std.mem.eql(u8, tok, "-o"))
+            {
+                const val = nextPreviewToken(&probe) orelse
+                    return error.MissingArgument;
+                if (val.len == 0 or
+                    std.mem.findAny(u8, val, "\r\n\"") != null)
+                {
+                    return error.InvalidArgument;
+                }
+                if (val.len > std.Io.Dir.max_path_bytes) {
+                    return error.PathTooLong;
+                }
+                output_path = val;
+                rest = std.mem.trim(u8, probe, " \t\r\n");
+                continue;
+            }
+            break;
+        }
+
+        if (rest.len == 0) return error.MissingArgument;
+
+        var filepath: []const u8 = rest;
+        if (!has_flag_size and !saw_end_of_options) {
+            var dim_probe = rest;
+            if (nextPreviewToken(&dim_probe)) |tok1| {
+                if (nextPreviewToken(&dim_probe)) |tok2| {
+                    if (std.fmt.parseInt(i64, tok1, 10)) |w_i| {
+                        if (std.fmt.parseInt(i64, tok2, 10)) |h_i| {
+                            const after_dims = std.mem.trim(
+                                u8,
+                                dim_probe,
+                                " \t\r\n",
+                            );
+                            if (after_dims.len == 0) {
+                                return error.MissingArgument;
+                            }
+                            max_dims = PositiveDimsU32.initClamped(
+                                w_i,
+                                h_i,
+                                4096,
+                            ) orelse return error.InvalidArgument;
+                            filepath = after_dims;
+                        } else |_| {}
+                    } else |_| {}
+                }
+            }
+        }
+        if (std.mem.findAny(u8, filepath, "\r\n") != null) {
+            return error.InvalidArgument;
+        }
+        if (filepath.len > std.Io.Dir.max_path_bytes) {
+            return error.PathTooLong;
+        }
+        return .{
+            .preview = .{
+                .max_dims = max_dims,
+                .clear_first = clear_first,
+                .format = format,
+                .output_path = output_path,
+                .path = filepath,
+            },
+        };
     }
 
     /// Returns `true` if this IPC command may be executed while the resident
@@ -1797,5 +1987,75 @@ test "ipc - Parser accepts individual parameter adjustment commands" {
     try std.testing.expectError(
         error.InvalidArgument,
         IpcCommand.parse("brightness 0.25 extra"),
+    );
+}
+
+test "ipc - SocketLock enforces mutual exclusion and releases cleanly" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var lock_buf: [160]u8 = undefined;
+    const lock_path = try std.mem.print(
+        &lock_buf,
+        ".zig-cache/tmp/{s}/test.sock.lock",
+        .{tmp.sub_path},
+    );
+
+    const first = (try SocketLock.tryAcquire(io, lock_path)) orelse
+        return error.TestUnexpectedResult;
+    const second = try SocketLock.tryAcquire(io, lock_path);
+    try std.testing.expect(second == null);
+
+    first.release(io);
+
+    const third = (try SocketLock.tryAcquire(io, lock_path)) orelse
+        return error.TestUnexpectedResult;
+    third.release(io);
+}
+
+test "ipc - Parser supports preview --size, --format, and --output" {
+    const cmd_out = try IpcCommand.parse(
+        "preview --output \"/tmp/my cache/out.jpg\" --size 640x480 " ++
+            "/tmp/my photos/shot.dng",
+    );
+    try std.testing.expectEqual(@as(u32, 640), cmd_out.preview.max_dims.w);
+    try std.testing.expectEqual(@as(u32, 480), cmd_out.preview.max_dims.h);
+    try std.testing.expectEqualStrings(
+        "/tmp/my cache/out.jpg",
+        cmd_out.preview.output_path.?,
+    );
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/shot.dng",
+        cmd_out.preview.path,
+    );
+
+    const cmd_enc = try IpcCommand.parse(
+        "preview -c --format encoded --size 320x240 /tmp/a.jpg",
+    );
+    try std.testing.expect(cmd_enc.preview.clear_first);
+    try std.testing.expectEqual(PreviewFormat.encoded, cmd_enc.preview.format);
+    try std.testing.expectEqual(@as(u32, 320), cmd_enc.preview.max_dims.w);
+    try std.testing.expectEqual(@as(u32, 240), cmd_enc.preview.max_dims.h);
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        cmd_enc.preview.output_path,
+    );
+    try std.testing.expectEqualStrings("/tmp/a.jpg", cmd_enc.preview.path);
+
+    try std.testing.expectError(
+        error.InvalidArgument,
+        IpcCommand.parse("preview --format bogus /tmp/a.jpg"),
+    );
+
+    // --size and -- prevent leading numbers in filenames from clobbering dims
+    const cmd_num = try IpcCommand.parse(
+        "preview --size 640x480 -- 100 200 photo.jpg",
+    );
+    try std.testing.expectEqual(@as(u32, 640), cmd_num.preview.max_dims.w);
+    try std.testing.expectEqual(@as(u32, 480), cmd_num.preview.max_dims.h);
+    try std.testing.expectEqualStrings(
+        "100 200 photo.jpg",
+        cmd_num.preview.path,
     );
 }

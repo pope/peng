@@ -38,6 +38,7 @@ pub const OptionId = enum {
     ipc,
     socket,
     server,
+    idle_timeout,
     spawn,
     headless,
     test_mode,

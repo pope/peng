@@ -14,6 +14,7 @@ pub const IpcServerArgs = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     socket_path: []const u8,
+    lock_owned: bool = false,
 };
 
 /// Entry point executed on a background thread to listen for incoming IPC
@@ -23,8 +24,9 @@ pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
     const gpa = args.allocator;
     const io = args.io;
     const socket_path = args.socket_path;
+    const lock_owned = args.lock_owned;
     defer gpa.destroy(args);
-    runIpcServer(workers, gpa, io, socket_path) catch |err| {
+    runIpcServer(workers, gpa, io, socket_path, lock_owned) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };
 }
@@ -34,7 +36,26 @@ fn runIpcServer(
     gpa: std.mem.Allocator,
     io: std.Io,
     socket_path: []const u8,
+    lock_owned: bool,
 ) !void {
+    var local_lock: ?ipc.SocketLock = null;
+    defer if (local_lock) |lock| lock.release(io);
+    if (!lock_owned) {
+        var lock_buf: [160]u8 = undefined;
+        const lock_path = try ipc.formatLockPath(
+            &lock_buf,
+            socket_path,
+            ".lock",
+        );
+        local_lock = try ipc.SocketLock.tryAcquire(io, lock_path);
+        if (local_lock == null) {
+            std.log.info(
+                "IPC socket '{s}' already owned by another peng process",
+                .{socket_path},
+            );
+            return;
+        }
+    }
     if (std.Io.Dir.path.dirname(socket_path)) |dir_path| {
         if (dir_path.len > 0) {
             std.Io.Dir.createDirPath(

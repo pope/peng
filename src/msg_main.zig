@@ -1,8 +1,23 @@
 const app_config = @import("config");
 const builtin = @import("builtin");
+const geom = @import("geom");
 const ipc = @import("ipc");
 const std = @import("std");
 const termgfx = @import("termgfx");
+
+const CellDims = termgfx.CellDims;
+const PositiveDimsU32 = geom.PositiveDimsU32;
+const ProtocolMode = termgfx.ProtocolMode;
+
+const PreviewClientMode = union(enum) {
+    none,
+    output_file,
+    terminal: struct {
+        protocol: ProtocolMode,
+        cell_dims: ?CellDims,
+        clear_first: bool,
+    },
+};
 
 fn resolvePengBinary(
     gpa: std.mem.Allocator,
@@ -44,32 +59,39 @@ fn spawnServerProcess(
     environ_map: *const std.process.Environ.Map,
     argv0: ?[]const u8,
     socket_path: []const u8,
+    idle_timeout_sec: ?u64,
     test_mode: bool,
 ) !void {
     const peng_bin = try resolvePengBinary(gpa, io, environ_map, argv0);
     defer gpa.free(peng_bin);
 
-    const argv_test = [_][]const u8{
-        peng_bin,
-        "--server",
-        "--headless",
-        "--test-mode",
-        "--socket",
-        socket_path,
-    };
-    const argv_normal = [_][]const u8{
-        peng_bin,
-        "--server",
-        "--socket",
-        socket_path,
-    };
-    const argv: []const []const u8 = if (test_mode)
-        &argv_test
-    else
-        &argv_normal;
+    var argv_buf: [10][]const u8 = undefined;
+    var argc: usize = 0;
+    argv_buf[argc] = peng_bin;
+    argc += 1;
+    argv_buf[argc] = "--server";
+    argc += 1;
+    if (test_mode) {
+        argv_buf[argc] = "--headless";
+        argc += 1;
+        argv_buf[argc] = "--test-mode";
+        argc += 1;
+    }
+    var timeout_buf: [32]u8 = undefined;
+    if (idle_timeout_sec) |sec| {
+        const sec_str = try std.mem.print(&timeout_buf, "{d}", .{sec});
+        argv_buf[argc] = "--idle-timeout";
+        argc += 1;
+        argv_buf[argc] = sec_str;
+        argc += 1;
+    }
+    argv_buf[argc] = "--socket";
+    argc += 1;
+    argv_buf[argc] = socket_path;
+    argc += 1;
 
     _ = try std.process.spawn(io, .{
-        .argv = argv,
+        .argv = argv_buf[0..argc],
         .environ_map = environ_map,
         .stdin = .ignore,
         .stdout = .ignore,
@@ -77,109 +99,442 @@ fn spawnServerProcess(
     });
 }
 
-fn normalizeCommandPaths(
+fn nextSpaceToken(rest: *[]const u8) ?[]const u8 {
+    const trimmed = std.mem.trimStart(u8, rest.*, " \t\r\n");
+    if (trimmed.len == 0) {
+        rest.* = trimmed;
+        return null;
+    }
+    if (trimmed[0] == '"') {
+        if (std.mem.findScalarPos(u8, trimmed, 1, '"')) |end_q| {
+            rest.* = trimmed[end_q + 1 ..];
+            return trimmed[1..end_q];
+        }
+    }
+    var end: usize = 0;
+    while (end < trimmed.len and
+        trimmed[end] != ' ' and
+        trimmed[end] != '\t' and
+        trimmed[end] != '\r' and
+        trimmed[end] != '\n')
+    {
+        end += 1;
+    }
+    rest.* = trimmed[end..];
+    return trimmed[0..end];
+}
+
+fn resolveOutputPathAlloc(
     gpa: std.mem.Allocator,
     io: std.Io,
+    raw_path: []const u8,
+) ![]u8 {
+    if (std.Io.Dir.path.isAbsolute(raw_path)) {
+        return gpa.dupe(u8, raw_path);
+    }
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const parent = std.Io.Dir.path.dirname(raw_path) orelse ".";
+    const base = std.Io.Dir.path.basename(raw_path);
+    const dir_len = std.Io.Dir.realPathFile(
+        std.Io.Dir.cwd(),
+        io,
+        parent,
+        &dir_buf,
+    ) catch return gpa.dupe(u8, raw_path);
+    return std.Io.Dir.path.join(gpa, &.{ dir_buf[0..dir_len], base });
+}
+
+fn isPreviewVerb(cmd: []const u8) bool {
+    return std.mem.eql(u8, cmd, "preview") or
+        std.mem.eql(u8, cmd, "preview-kitty") or
+        std.mem.eql(u8, cmd, "preview-clear") or
+        std.mem.eql(u8, cmd, "preview_clear") or
+        std.mem.eql(u8, cmd, "clear-and-preview");
+}
+
+fn preparePreviewCommand(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    cmd: []const u8,
+    raw_rest: []const u8,
     command_ptr: *[]u8,
-) bool {
-    const parsed_cmd = ipc.IpcCommand.parse(command_ptr.*) catch return false;
+) !PreviewClientMode {
+    var clear_first = std.mem.eql(u8, cmd, "preview-clear") or
+        std.mem.eql(u8, cmd, "preview_clear") or
+        std.mem.eql(u8, cmd, "clear-and-preview");
+    var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
+    var has_flag_size = false;
+    var saw_end_of_options = false;
+    var cell_dims: ?CellDims = null;
+    var protocol: ProtocolMode = .auto;
+    var output_path: ?[]const u8 = null;
+
+    var positional: std.ArrayList([]const u8) = .empty;
+    defer positional.deinit(gpa);
+
+    var rest = std.mem.trim(u8, raw_rest, " \t\r\n");
+    while (rest.len > 0) {
+        if (saw_end_of_options) {
+            try positional.append(gpa, rest);
+            break;
+        }
+        var probe = rest;
+        const tok = nextSpaceToken(&probe) orelse break;
+        if (std.mem.eql(u8, tok, "--")) {
+            saw_end_of_options = true;
+            rest = std.mem.trim(u8, probe, " \t\r\n");
+            continue;
+        }
+        if (std.mem.eql(u8, tok, "--clear") or std.mem.eql(u8, tok, "-c")) {
+            clear_first = true;
+            rest = std.mem.trim(u8, probe, " \t\r\n");
+            continue;
+        }
+        if (positional.items.len == 0 and std.mem.eql(u8, tok, "clear")) {
+            const after = std.mem.trim(u8, probe, " \t\r\n");
+            if (after.len > 0) {
+                clear_first = true;
+                rest = after;
+                continue;
+            }
+        }
+        if (std.mem.eql(u8, tok, "--size")) {
+            const val = nextSpaceToken(&probe) orelse {
+                std.log.err("Missing value for --size.", .{});
+                return error.InvalidPreviewArgs;
+            };
+            max_dims = app_config.cli.parsePreviewSize(val) orelse {
+                std.log.err("Invalid --size value: {s}. Expected WxH.", .{val});
+                return error.InvalidPreviewArgs;
+            };
+            has_flag_size = true;
+            rest = std.mem.trim(u8, probe, " \t\r\n");
+            continue;
+        }
+        if (std.mem.eql(u8, tok, "--cells")) {
+            const val = nextSpaceToken(&probe) orelse {
+                std.log.err("Missing value for --cells.", .{});
+                return error.InvalidPreviewArgs;
+            };
+            const dims = app_config.cli.parsePreviewSize(val) orelse {
+                std.log.err(
+                    "Invalid --cells value: {s}. Expected COLSxROWS.",
+                    .{val},
+                );
+                return error.InvalidPreviewArgs;
+            };
+            cell_dims = .{ .cols = dims.w, .rows = dims.h };
+            rest = std.mem.trim(u8, probe, " \t\r\n");
+            continue;
+        }
+        if (std.mem.eql(u8, tok, "--protocol")) {
+            const val = nextSpaceToken(&probe) orelse {
+                std.log.err("Missing value for --protocol.", .{});
+                return error.InvalidPreviewArgs;
+            };
+            protocol = ProtocolMode.parse(val) orelse {
+                std.log.err(
+                    "Unknown protocol: {s}. Valid: {s}.",
+                    .{ val, termgfx.protocol_modes_string },
+                );
+                return error.InvalidPreviewArgs;
+            };
+            rest = std.mem.trim(u8, probe, " \t\r\n");
+            continue;
+        }
+        if (std.mem.eql(u8, tok, "--output") or std.mem.eql(u8, tok, "-o")) {
+            const val = nextSpaceToken(&probe) orelse {
+                std.log.err("Missing value for --output.", .{});
+                return error.InvalidPreviewArgs;
+            };
+            if (val.len == 0 or
+                std.mem.findAny(u8, val, "\r\n\"") != null)
+            {
+                std.log.err("Invalid value for --output.", .{});
+                return error.InvalidPreviewArgs;
+            }
+            output_path = val;
+            rest = std.mem.trim(u8, probe, " \t\r\n");
+            continue;
+        }
+        try positional.append(gpa, tok);
+        rest = std.mem.trim(u8, probe, " \t\r\n");
+    }
+
+    if (positional.items.len == 0) {
+        std.log.err("Missing image path for preview command.", .{});
+        return error.InvalidPreviewArgs;
+    }
+
+    var path_start: usize = 0;
+    if (!has_flag_size and !saw_end_of_options and positional.items.len >= 3) {
+        if (std.fmt.parseInt(i64, positional.items[0], 10)) |w_i| {
+            if (std.fmt.parseInt(i64, positional.items[1], 10)) |h_i| {
+                max_dims = PositiveDimsU32.initClamped(
+                    w_i,
+                    h_i,
+                    4096,
+                ) orelse return error.InvalidPreviewArgs;
+                path_start = 2;
+            } else |_| {}
+        } else |_| {}
+    }
+
+    const joined_src = try std.mem.join(
+        gpa,
+        " ",
+        positional.items[path_start..],
+    );
+    defer gpa.free(joined_src);
+    if (std.mem.findAny(u8, joined_src, "\r\n") != null) {
+        std.log.err("Invalid newline in preview image path.", .{});
+        return error.InvalidPreviewArgs;
+    }
+
     var real_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    switch (parsed_cmd) {
-        .open => |p_opt| {
-            const p = p_opt orelse return false;
-            if (std.Io.Dir.path.isAbsolute(p)) return false;
-            const real_len = std.Io.Dir.realPathFile(
-                std.Io.Dir.cwd(),
-                io,
-                p,
-                &real_buf,
-            ) catch return false;
-            const rewritten = gpa.print(
-                "open {s}\n",
-                .{real_buf[0..real_len]},
-            ) catch return false;
-            gpa.free(command_ptr.*);
-            command_ptr.* = rewritten;
-            return false;
+    const abs_src: []const u8 = if (std.Io.Dir.path.isAbsolute(joined_src))
+        joined_src
+    else if (std.Io.Dir.realPathFile(
+        std.Io.Dir.cwd(),
+        io,
+        joined_src,
+        &real_buf,
+    )) |n|
+        real_buf[0..n]
+    else |_|
+        joined_src;
+
+    if (output_path) |raw_out| {
+        const abs_out = try resolveOutputPathAlloc(gpa, io, raw_out);
+        defer gpa.free(abs_out);
+        if (std.mem.findAny(u8, abs_out, "\r\n\"") != null) {
+            std.log.err("Invalid character in --output path.", .{});
+            return error.InvalidPreviewArgs;
+        }
+        const rewritten = try gpa.print(
+            "preview --output \"{s}\" --size {d}x{d} -- {s}\n",
+            .{ abs_out, max_dims.w, max_dims.h, abs_src },
+        );
+        gpa.free(command_ptr.*);
+        command_ptr.* = rewritten;
+        return .output_file;
+    }
+
+    const target = protocol.resolve(environ_map);
+    const fmt_str: []const u8 = switch (target.protocol) {
+        .kitty, .sixel => "rgba",
+        .iterm2 => "encoded",
+    };
+    const rewritten = try gpa.print(
+        "preview --format {s} --size {d}x{d} -- {s}\n",
+        .{ fmt_str, max_dims.w, max_dims.h, abs_src },
+    );
+    gpa.free(command_ptr.*);
+    command_ptr.* = rewritten;
+    return .{
+        .terminal = .{
+            .protocol = protocol,
+            .cell_dims = cell_dims,
+            .clear_first = clear_first,
         },
-        .preview => |req| {
-            const clear_first = req.clear_first;
-            if (std.Io.Dir.path.isAbsolute(req.path)) return clear_first;
-            const real_len = std.Io.Dir.realPathFile(
-                std.Io.Dir.cwd(),
-                io,
-                req.path,
-                &real_buf,
-            ) catch return clear_first;
-            const clear_flag = if (clear_first) "--clear " else "";
-            const rewritten = gpa.print(
-                "preview {s}{d} {d} {s}\n",
-                .{
-                    clear_flag,
-                    req.max_dims.w,
-                    req.max_dims.h,
-                    real_buf[0..real_len],
-                },
-            ) catch return clear_first;
-            gpa.free(command_ptr.*);
-            command_ptr.* = rewritten;
-            return clear_first;
+    };
+}
+
+fn prepareCommand(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    command_ptr: *[]u8,
+) !PreviewClientMode {
+    var rest = std.mem.trim(u8, command_ptr.*, " \t\r\n");
+    const cmd = nextSpaceToken(&rest) orelse return .none;
+    if (isPreviewVerb(cmd)) {
+        return preparePreviewCommand(
+            gpa,
+            io,
+            environ_map,
+            cmd,
+            rest,
+            command_ptr,
+        );
+    }
+    if (std.mem.eql(u8, cmd, "open")) {
+        const p = std.mem.trim(u8, rest, " \t\r\n");
+        if (p.len == 0 or std.Io.Dir.path.isAbsolute(p)) return .none;
+        var real_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const real_len = std.Io.Dir.realPathFile(
+            std.Io.Dir.cwd(),
+            io,
+            p,
+            &real_buf,
+        ) catch return .none;
+        const rewritten = gpa.print(
+            "open {s}\n",
+            .{real_buf[0..real_len]},
+        ) catch return .none;
+        gpa.free(command_ptr.*);
+        command_ptr.* = rewritten;
+    }
+    return .none;
+}
+
+fn deleteTempFileQuiet(io: std.Io, path: []const u8) void {
+    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, path) catch |del_e| {
+        std.log.warn(
+            "Failed to clean up preview temp file '{s}': {}",
+            .{ path, del_e },
+        );
+    };
+}
+
+fn readTempFileAlloc(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        gpa,
+        .limited(64 * 1024 * 1024),
+    );
+}
+
+fn writeTerminalPreview(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    prev: ipc.PreviewPayload,
+    protocol: ProtocolMode,
+    cell_dims: ?CellDims,
+    clear_first: bool,
+) bool {
+    const target = protocol.resolve(environ_map);
+    const preview_opts: termgfx.PreviewOptions = .{
+        .transport = target.transport,
+        .cell_dims = cell_dims,
+    };
+    const stdout = std.Io.File.stdout();
+
+    switch (target.protocol) {
+        .kitty => {
+            var stdout_buf: [1024]u8 = undefined;
+            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+            const write_res: ?anyerror = blk: {
+                termgfx.writePreview(&stdout_writer.interface, .{
+                    .kitty = .{
+                        .temp_path = prev.path,
+                        .dims = prev.dims,
+                        .clear_first = clear_first,
+                    },
+                }, preview_opts) catch |err| break :blk err;
+                stdout_writer.interface.flush() catch |err| break :blk err;
+                break :blk null;
+            };
+            if (write_res) |err| {
+                const write_err: anyerror = stdout_writer.err orelse err;
+                if (write_err != error.BrokenPipe) {
+                    std.log.err("Failed to write Kitty preview: {s}", .{
+                        @errorName(write_err),
+                    });
+                }
+                deleteTempFileQuiet(io, prev.path);
+                return false;
+            }
+            return true;
         },
-        .zoom,
-        .pan,
-        .adjust,
-        .tone,
-        .color,
-        .presence,
-        .set_param,
-        .compare,
-        .edit,
-        .filter,
-        .scale,
-        .manga,
-        .title,
-        .snackbar,
-        .windowless,
-        .crossfade,
-        .stack_raw_jpeg,
-        .toggle_stream,
-        .palette,
-        .thumb,
-        .wait_load,
-        .reset_view,
-        .reset_adjustments,
-        .next,
-        .prev,
-        .pick,
-        .reject,
-        .unflag,
-        .selections,
-        .clear_selections,
-        .view,
-        .precache,
-        .close,
-        .quit,
-        .screenshot,
-        => return false,
+        .sixel => {
+            defer deleteTempFileQuiet(io, prev.path);
+            const bytes = readTempFileAlloc(gpa, io, prev.path) catch |err| {
+                std.log.err(
+                    "Failed to read preview RGBA temp file '{s}': {s}",
+                    .{ prev.path, @errorName(err) },
+                );
+                return false;
+            };
+            defer gpa.free(bytes);
+            const pitch: usize = @as(usize, prev.dims.w) * 4;
+            const expected = pitch * @as(usize, prev.dims.h);
+            if (bytes.len < expected) {
+                std.log.err("Truncated preview RGBA temp file", .{});
+                return false;
+            }
+            var stdout_buf: [16 * 1024]u8 = undefined;
+            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+            const write_res: ?anyerror = blk: {
+                termgfx.writePreview(&stdout_writer.interface, .{
+                    .sixel = .{
+                        .allocator = gpa,
+                        .rgba_pixels = bytes[0..expected],
+                        .pitch = pitch,
+                        .dims = prev.dims,
+                    },
+                }, preview_opts) catch |err| break :blk err;
+                stdout_writer.interface.flush() catch |err| break :blk err;
+                break :blk null;
+            };
+            if (write_res) |err| {
+                const write_err: anyerror = stdout_writer.err orelse err;
+                if (write_err != error.BrokenPipe) {
+                    std.log.err("Failed to write Sixel preview: {s}", .{
+                        @errorName(write_err),
+                    });
+                }
+                return false;
+            }
+            return true;
+        },
+        .iterm2 => {
+            defer deleteTempFileQuiet(io, prev.path);
+            const bytes = readTempFileAlloc(gpa, io, prev.path) catch |err| {
+                std.log.err(
+                    "Failed to read preview image temp file '{s}': {s}",
+                    .{ prev.path, @errorName(err) },
+                );
+                return false;
+            };
+            defer gpa.free(bytes);
+            var stdout_buf: [16 * 1024]u8 = undefined;
+            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+            const write_res: ?anyerror = blk: {
+                termgfx.writePreview(&stdout_writer.interface, .{
+                    .iterm2 = .{
+                        .image_bytes = bytes,
+                        .dims = prev.dims,
+                    },
+                }, preview_opts) catch |err| break :blk err;
+                stdout_writer.interface.flush() catch |err| break :blk err;
+                break :blk null;
+            };
+            if (write_res) |err| {
+                const write_err: anyerror = stdout_writer.err orelse err;
+                if (write_err != error.BrokenPipe) {
+                    std.log.err("Failed to write iTerm2 preview: {s}", .{
+                        @errorName(write_err),
+                    });
+                }
+                return false;
+            }
+            return true;
+        },
     }
 }
 
-/// CLI entry point for sending IPC commands to a running Peng instance via Unix domain socket.
+/// Entry point for the `peng-msg` CLI utility that dispatches IPC commands to
+/// a running `peng` instance over a UNIX domain socket.
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    var args_it = try std.process.Args.Iterator.initAllocator(
+    var argv0_it = try std.process.Args.Iterator.initAllocator(
         init.minimal.args,
         gpa,
     );
-    defer args_it.deinit();
+    defer argv0_it.deinit();
+    const argv0 = argv0_it.next();
 
-    const argv0 = args_it.next();
-    var parsed = app_config.cli.parseIpcArgsIterator(
-        &args_it,
-        gpa,
-    ) catch |err| {
+    var parsed = app_config.cli.parseIpcCommandLineArgs(init, gpa) catch |err| {
         if (err == error.MissingCommand) {
             app_config.cli.printIpcHelp(io);
         }
@@ -195,32 +550,47 @@ pub fn main(init: std.process.Init) !void {
         .send => |*s| s,
     };
 
-    const clear_preview = normalizeCommandPaths(gpa, io, &send_args.command);
+    var owned_default_socket: ?[]u8 = null;
+    defer if (owned_default_socket) |p| gpa.free(p);
 
-    const socket_path = if (send_args.socket_path) |sp|
-        sp
+    const socket_path: []const u8 = if (send_args.socket_path) |p|
+        p
     else blk: {
-        const resolved = ipc.resolveDefaultSocketPath(
+        owned_default_socket = ipc.resolveDefaultSocketPath(
             gpa,
             init.environ_map,
         ) catch |err| {
             std.log.err(
                 "Failed to resolve default IPC socket path ({any}): " ++
-                    "set $XDG_RUNTIME_DIR, $UID, or pass --socket <PATH>",
+                    "set $XDG_RUNTIME_DIR, $UID, or pass -S/--socket <PATH>",
                 .{err},
             );
             std.process.exit(1);
         };
-        send_args.socket_path = resolved;
-        break :blk resolved;
+        break :blk owned_default_socket.?;
     };
 
-    const address = std.Io.net.UnixAddress.init(socket_path) catch |err| {
-        std.log.err("Invalid socket path: {any}", .{err});
+    const preview_mode = prepareCommand(
+        gpa,
+        io,
+        init.environ_map,
+        &send_args.command,
+    ) catch {
         std.process.exit(1);
     };
 
-    const max_connect_attempts: usize = if (send_args.spawn) 75 else 25;
+    const address = std.Io.net.UnixAddress.init(socket_path) catch |err| {
+        std.log.err(
+            "Invalid Unix socket path '{s}': {any}",
+            .{ socket_path, err },
+        );
+        std.process.exit(1);
+    };
+
+    var spawn_lock: ?ipc.SocketLock = null;
+    defer if (spawn_lock) |l| l.release(io);
+
+    const max_connect_attempts: usize = if (send_args.spawn) 300 else 100;
     var spawned_server = false;
     var attempt: usize = 0;
     const stream = while (attempt < max_connect_attempts) : (attempt += 1) {
@@ -235,22 +605,67 @@ pub fn main(init: std.process.Init) !void {
                     (err == error.FileNotFound or
                         err == error.ConnectionRefused))
                 {
-                    spawned_server = true;
-                    spawnServerProcess(
-                        gpa,
-                        io,
-                        init.environ_map,
-                        argv0,
+                    var lock_buf: [160]u8 = undefined;
+                    var should_spawn = false;
+                    if (ipc.formatLockPath(
+                        &lock_buf,
                         socket_path,
-                        send_args.test_mode,
-                    ) catch |spawn_err| {
-                        std.log.err(
-                            "Failed to spawn peng server for socket {s}: {any}",
-                            .{ socket_path, spawn_err },
+                        ".spawn.lock",
+                    )) |lp| {
+                        if (ipc.SocketLock.tryAcquire(io, lp)) |lock_opt| {
+                            if (lock_opt) |lock| {
+                                spawn_lock = lock;
+                                should_spawn = true;
+                            }
+                        } else |lock_err| {
+                            std.log.warn(
+                                "Failed to acquire spawn lock '{s}': {any}; " ++
+                                    "spawning without lock",
+                                .{ lp, lock_err },
+                            );
+                            should_spawn = true;
+                        }
+                    } else |fmt_err| {
+                        std.log.debug(
+                            "Spawn lock path format failed: {any}",
+                            .{fmt_err},
                         );
-                        std.process.exit(1);
-                    };
-                } else if (err == error.ConnectionRefused and !spawned_server) {
+                        should_spawn = true;
+                    }
+                    if (should_spawn) {
+                        if (address.connect(io)) |s| {
+                            break s;
+                        } else |re_err| switch (re_err) {
+                            error.FileNotFound,
+                            error.ConnectionRefused,
+                            error.WouldBlock,
+                            => {},
+                            else => std.log.warn(
+                                "Reconnect check for {s} failed: {any}",
+                                .{ socket_path, re_err },
+                            ),
+                        }
+                        spawned_server = true;
+                        spawnServerProcess(
+                            gpa,
+                            io,
+                            init.environ_map,
+                            argv0,
+                            socket_path,
+                            send_args.idle_timeout_sec,
+                            send_args.test_mode,
+                        ) catch |spawn_err| {
+                            std.log.err(
+                                "Failed to spawn peng server for socket " ++
+                                    "{s}: {any}",
+                                .{ socket_path, spawn_err },
+                            );
+                            std.process.exit(1);
+                        };
+                    }
+                } else if (err == error.ConnectionRefused and
+                    !send_args.spawn)
+                {
                     std.log.err(
                         "Failed to connect to socket {s}: {any}",
                         .{ socket_path, err },
@@ -261,7 +676,7 @@ pub fn main(init: std.process.Init) !void {
                 if (attempt + 1 < max_connect_attempts) {
                     std.Io.sleep(
                         io,
-                        std.Io.Duration.fromMilliseconds(40),
+                        std.Io.Duration.fromMilliseconds(10),
                         .awake,
                     ) catch |sleep_err| {
                         std.log.debug(
@@ -292,6 +707,10 @@ pub fn main(init: std.process.Init) !void {
         );
         std.process.exit(1);
     };
+    if (spawn_lock) |l| {
+        l.release(io);
+        spawn_lock = null;
+    }
     defer stream.close(io);
 
     var write_buf: [1 * 1024]u8 = undefined;
@@ -338,62 +757,45 @@ pub fn main(init: std.process.Init) !void {
         };
         defer parsed_resp.deinit();
 
+        switch (preview_mode) {
+            .output_file => {
+                if (!parsed_resp.value.ok) {
+                    std.log.err("Preview failed: {s}", .{trimmed});
+                    std.process.exit(1);
+                }
+                return;
+            },
+            .terminal => |term_cfg| {
+                if (parsed_resp.value.getPreview()) |prev| {
+                    if (!writeTerminalPreview(
+                        gpa,
+                        io,
+                        init.environ_map,
+                        prev,
+                        term_cfg.protocol,
+                        term_cfg.cell_dims,
+                        term_cfg.clear_first,
+                    )) {
+                        std.process.exit(1);
+                    }
+                    return;
+                }
+            },
+            .none => {},
+        }
+
         const stdout = std.Io.File.stdout();
         var stdout_buf: [4 * 1024]u8 = undefined;
         var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-        const preview_opt = parsed_resp.value.getPreview();
-        if (preview_opt) |prev| {
-            const target = termgfx.ProtocolMode.kitty.resolve(
-                init.environ_map,
+        stdout_writer.interface.print("{s}\n", .{trimmed}) catch |err| {
+            std.log.err(
+                "Failed to write response to stdout: {any}",
+                .{err},
             );
-            termgfx.writePreview(&stdout_writer.interface, .{
-                .kitty = .{
-                    .temp_path = prev.path,
-                    .dims = prev.dims,
-                    .clear_first = clear_preview,
-                },
-            }, .{
-                .transport = target.transport,
-            }) catch |err| {
-                std.log.err(
-                    "Failed to write Kitty preview to stdout: {any}",
-                    .{err},
-                );
-                std.Io.Dir.deleteFile(
-                    std.Io.Dir.cwd(),
-                    io,
-                    prev.path,
-                ) catch |del_e| {
-                    std.log.warn(
-                        "Failed to clean up preview temp file '{s}': {}",
-                        .{ prev.path, del_e },
-                    );
-                };
-                std.process.exit(1);
-            };
-        } else {
-            stdout_writer.interface.print("{s}\n", .{trimmed}) catch |err| {
-                std.log.err(
-                    "Failed to write response to stdout: {any}",
-                    .{err},
-                );
-                std.process.exit(1);
-            };
-        }
+            std.process.exit(1);
+        };
         stdout_writer.interface.flush() catch |err| {
             std.log.err("Failed to flush stdout: {any}", .{err});
-            if (preview_opt) |prev| {
-                std.Io.Dir.deleteFile(
-                    std.Io.Dir.cwd(),
-                    io,
-                    prev.path,
-                ) catch |del_e| {
-                    std.log.warn(
-                        "Failed to clean up preview temp file '{s}': {}",
-                        .{ prev.path, del_e },
-                    );
-                };
-            }
             std.process.exit(1);
         };
         if (!parsed_resp.value.ok) {

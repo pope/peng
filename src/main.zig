@@ -444,6 +444,64 @@ const AppGraphicsAndState = struct {
             parsed.ipc_mode = .{ .custom_socket = resolved_sock };
         }
 
+        // Acquire the single-instance socket ownership lock before initializing
+        // SDL/Vulkan so racing duplicate `--server` launches exit immediately
+        // without touching a live socket. Skip locking for per-PID `--ipc`
+        // sockets to avoid leaving stale `/tmp/peng-<pid>.sock.lock` files.
+        var pre_ipc_server: ?*ipc.IpcServer = null;
+        errdefer if (pre_ipc_server) |srv| srv.deinit(proc_init.io);
+        if (parsed.ipc_mode.isEnabled()) {
+            const srv = try ipc.IpcServer.init(
+                gpa,
+                parsed.ipc_mode.customPath(),
+            );
+            errdefer srv.deinit(proc_init.io);
+            if (parsed.ipc_mode != .pid_socket) {
+                var locked = try srv.tryAcquireLock(proc_init.io);
+                if (!locked and parsed.server_mode) {
+                    // If a previous server just unlinked the socket and is
+                    // still finishing teardown before releasing `.lock`, wait
+                    // briefly instead of exiting and stranding a respawner.
+                    var n: usize = 0;
+                    while (!locked and n < 20) : (n += 1) {
+                        if (std.Io.Dir.statFile(
+                            std.Io.Dir.cwd(),
+                            proc_init.io,
+                            srv.socket_path,
+                            .{},
+                        )) |_| {
+                            break;
+                        } else |_| {}
+                        std.Io.sleep(
+                            proc_init.io,
+                            std.Io.Duration.fromMilliseconds(15),
+                            .awake,
+                        ) catch break;
+                        locked = try srv.tryAcquireLock(proc_init.io);
+                    }
+                }
+                if (!locked) {
+                    if (parsed.server_mode) {
+                        std.log.info(
+                            "Another peng server already owns socket '{s}'; " ++
+                                "exiting.",
+                            .{srv.socket_path},
+                        );
+                        srv.deinit(proc_init.io);
+                        parsed.deinit(gpa);
+                        return false;
+                    }
+                    std.log.err(
+                        "IPC socket '{s}' is already owned by another peng " ++
+                            "process.",
+                        .{srv.socket_path},
+                    );
+                    return error.AddressInUse;
+                }
+            }
+            pre_ipc_server = srv;
+        }
+
         // 2. Initialize SDL Core Subsystems (video, events, TTF)
         // Must be initialized before background workers touch SDL surface/event APIs.
         try gpu.graphics.initSdlCore(parsed.headless);
@@ -492,6 +550,10 @@ const AppGraphicsAndState = struct {
             .unpack_compute_pipeline = null,
             .cache = .{},
             .workers = .init(),
+            .server_idle_timeout_ms = if (parsed.server_mode)
+                parsed.idle_timeout_sec *| 1000
+            else
+                0,
             .allocator = gpa,
             .io = proc_init.io,
         };
@@ -569,6 +631,8 @@ const AppGraphicsAndState = struct {
                 builtin.mode == .debug,
             );
             self.profiler.log(proc_init.io, "async_gpu_spawned");
+            self.ipc_server = pre_ipc_server;
+            pre_ipc_server = null;
             return true;
         }
 
@@ -614,6 +678,8 @@ const AppGraphicsAndState = struct {
             .measurer = self.backend.gpu_ready.resources.fontMeasurer(),
         };
         self.profiler.log(proc_init.io, "sync_gpu_ready");
+        self.ipc_server = pre_ipc_server;
+        pre_ipc_server = null;
 
         return true;
     }
@@ -661,13 +727,8 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         .software_boot => {},
     }
 
-    // Initialize IPC server and spawn IPC worker task
-    if (ctx.parsed.ipc_mode.isEnabled()) {
-        const srv = try ipc.IpcServer.init(
-            ctx.gpa,
-            ctx.parsed.ipc_mode.customPath(),
-        );
-        ctx.ipc_server = srv;
+    // Spawn IPC listener thread on the pre-locked server socket
+    if (ctx.ipc_server) |srv| {
         errdefer {
             ctx.state.workers.exiting.store(true, .release);
             srv.deinit(ctx.io);
@@ -678,6 +739,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             ctx.gpa,
             ctx.io,
             srv.socket_path,
+            true,
         );
     }
 

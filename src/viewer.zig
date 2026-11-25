@@ -106,6 +106,10 @@ pub fn updateFrame(
         frame_allocator,
         parsed_test_mode or parsed_headless,
     );
+    app_state.updateServerIdleShutdown(
+        input.now_ms,
+        bg_events_processed or post_wait_events,
+    );
 
     // Phase 3: Render Phase
     if (app_state.gpu_device == null or resources_opt == null) {

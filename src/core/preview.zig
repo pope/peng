@@ -396,10 +396,157 @@ pub fn renderPreviewSurface(
     };
 }
 
-/// Decodes `path` (supporting standard raster images, Camera RAW embedded
-/// previews, `.cbz` archives, and Freedesktop cached thumbnails), scales and
-/// rotates it to fit within `max_dims`, and writes raw RGBA32 pixels to a
-/// Kitty Graphics Protocol `t=t` temporary file.
+const TempPreviewFile = struct {
+    file: std.Io.File,
+    res: PreviewRenderResult,
+};
+
+fn createTempPreviewFile(
+    io: std.Io,
+    ext: []const u8,
+    dims: PositiveDimsU32,
+) !TempPreviewFile {
+    const seq = preview_file_seq.fetchAdd(1, .monotonic);
+    const tick: u64 =
+        @intCast(@max(0, std.Io.Clock.awake.now(io).nanoseconds));
+    const file_perms: std.Io.File.Permissions =
+        if (std.Io.File.Permissions.has_executable_bit)
+            .fromMode(0o600)
+        else
+            .default_file;
+
+    var res: PreviewRenderResult = .{
+        .path_len = 0,
+        .dims = dims,
+    };
+
+    const candidate_dirs = [_][]const u8{ "/dev/shm", "/tmp" };
+    dir_loop: for (candidate_dirs) |dir_prefix| {
+        for (0..4) |attempt| {
+            const candidate_path = std.mem.print(
+                &res.path_buf,
+                "{s}/tty-graphics-protocol-peng-{x}-{d}.{s}",
+                .{ dir_prefix, tick, seq + attempt, ext },
+            ) catch continue :dir_loop;
+            if (std.Io.Dir.createFile(
+                std.Io.Dir.cwd(),
+                io,
+                candidate_path,
+                .{ .permissions = file_perms, .exclusive = true },
+            )) |f| {
+                res.path_len = candidate_path.len;
+                return .{ .file = f, .res = res };
+            } else |err| switch (err) {
+                error.PathAlreadyExists => continue,
+                else => {
+                    std.log.debug(
+                        "Preview temp file create failed in '{s}': {}",
+                        .{ dir_prefix, err },
+                    );
+                    continue :dir_loop;
+                },
+            }
+        }
+    }
+    return error.TempFileCreateFailed;
+}
+
+/// Atomically writes `bytes` to `out_path` via temp-file creation and rename.
+pub fn writeOutputFileAtomic(
+    io: std.Io,
+    out_path: []const u8,
+    bytes: []const u8,
+) !void {
+    var atomic_file = try std.Io.Dir.cwd().createFileAtomic(io, out_path, .{
+        .replace = true,
+    });
+    defer atomic_file.deinit(io);
+    try atomic_file.file.writeStreamingAll(io, bytes);
+    try atomic_file.replace(io);
+}
+
+/// Decodes, orients, and scales `path` to fit within `max_dims`, encodes it as
+/// JPEG (opaque) or PNG (alpha), and writes it to a temporary file in
+/// `/dev/shm` or `/tmp`. Caller owns the returned file path.
+pub fn renderPreviewEncodedFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    thumb_cfg: ThumbCacheConfig,
+    path: []const u8,
+    max_dims: PositiveDimsU32,
+    cancel: anytype,
+) !PreviewRenderResult {
+    const preview = try renderPreviewSurface(
+        allocator,
+        io,
+        thumb_cfg,
+        path,
+        max_dims,
+        cancel,
+    );
+    defer preview.deinit();
+
+    const image_bytes = try preview.surface.encodePreviewImageAlloc(
+        allocator,
+        85,
+    );
+    defer allocator.free(image_bytes);
+    if (cancel.isCanceled()) return error.Canceled;
+
+    const tmp = try createTempPreviewFile(io, "img", preview.dims);
+    var out_file = tmp.file;
+    const res = tmp.res;
+    errdefer {
+        std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, res.path()) catch |del_e| {
+            std.log.warn(
+                "Failed to clean up preview temp file '{s}': {}",
+                .{ res.path(), del_e },
+            );
+        };
+    }
+    defer out_file.close(io);
+
+    try out_file.writeStreamingAll(io, image_bytes);
+    if (cancel.isCanceled()) return error.Canceled;
+    return res;
+}
+
+/// Decodes, orients, and scales `path` to fit within `max_dims`, encodes it as
+/// JPEG (opaque) or PNG (alpha), and atomically writes the result to
+/// `out_path`.
+pub fn renderPreviewToOutputFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    thumb_cfg: ThumbCacheConfig,
+    path: []const u8,
+    out_path: []const u8,
+    max_dims: PositiveDimsU32,
+    cancel: anytype,
+) !PositiveDimsU32 {
+    const preview = try renderPreviewSurface(
+        allocator,
+        io,
+        thumb_cfg,
+        path,
+        max_dims,
+        cancel,
+    );
+    defer preview.deinit();
+
+    const image_bytes = try preview.surface.encodePreviewImageAlloc(
+        allocator,
+        85,
+    );
+    defer allocator.free(image_bytes);
+    if (cancel.isCanceled()) return error.Canceled;
+
+    try writeOutputFileAtomic(io, out_path, image_bytes);
+    return preview.dims;
+}
+
+/// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
+/// raw packed RGBA32 bytes to a temporary file in `/dev/shm` or `/tmp` for
+/// Kitty Graphics Protocol `t=t` transfer.
 pub fn renderPreviewRgbaFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -419,51 +566,9 @@ pub fn renderPreviewRgbaFile(
     defer preview.deinit();
     const final_surf = preview.surface;
 
-    const seq = preview_file_seq.fetchAdd(1, .monotonic);
-    const tick: u64 =
-        @intCast(@max(0, std.Io.Clock.awake.now(io).nanoseconds));
-    const file_perms: std.Io.File.Permissions =
-        if (std.Io.File.Permissions.has_executable_bit)
-            .fromMode(0o600)
-        else
-            .default_file;
-
-    var res: PreviewRenderResult = .{
-        .path_len = 0,
-        .dims = preview.dims,
-    };
-
-    const candidate_dirs = [_][]const u8{ "/dev/shm", "/tmp" };
-    var out_file_opt: ?std.Io.File = null;
-    dir_loop: for (candidate_dirs) |dir_prefix| {
-        for (0..4) |attempt| {
-            const candidate_path = std.mem.print(
-                &res.path_buf,
-                "{s}/tty-graphics-protocol-peng-{x}-{d}.rgba",
-                .{ dir_prefix, tick, seq + attempt },
-            ) catch continue :dir_loop;
-            if (std.Io.Dir.createFile(
-                std.Io.Dir.cwd(),
-                io,
-                candidate_path,
-                .{ .permissions = file_perms, .exclusive = true },
-            )) |f| {
-                res.path_len = candidate_path.len;
-                out_file_opt = f;
-                break :dir_loop;
-            } else |err| switch (err) {
-                error.PathAlreadyExists => continue,
-                else => {
-                    std.log.debug(
-                        "Preview temp file create failed in '{s}': {}",
-                        .{ dir_prefix, err },
-                    );
-                    continue :dir_loop;
-                },
-            }
-        }
-    }
-    var out_file = out_file_opt orelse return error.TempFileCreateFailed;
+    const tmp = try createTempPreviewFile(io, "rgba", preview.dims);
+    var out_file = tmp.file;
+    const res = tmp.res;
     errdefer {
         std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, res.path()) catch |del_e| {
             std.log.warn(

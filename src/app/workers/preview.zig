@@ -14,8 +14,20 @@ const std = @import("std");
 
 const CancellationToken = context.CancellationToken;
 const PositiveDimsU32 = geom.PositiveDimsU32;
+const PreviewFormat = ipc.PreviewFormat;
+const renderPreviewEncodedFile = core.preview.renderPreviewEncodedFile;
 const renderPreviewRgbaFile = core.preview.renderPreviewRgbaFile;
+const renderPreviewToOutputFile = core.preview.renderPreviewToOutputFile;
 const WorkerManager = manager.WorkerManager;
+
+const ExitingOnlyCancel = struct {
+    exiting: *const std.atomic.Value(bool),
+
+    /// Returns `true` only when the process is shutting down.
+    pub inline fn isCanceled(self: ExitingOnlyCancel) bool {
+        return self.exiting.load(.acquire);
+    }
+};
 
 /// Contextual arguments passed to background terminal preview worker tasks.
 pub const PreviewWorkerArgs = struct {
@@ -25,6 +37,8 @@ pub const PreviewWorkerArgs = struct {
     client_stream: std.Io.net.Stream,
     path: []const u8,
     max_dims: PositiveDimsU32,
+    format: PreviewFormat = .rgba,
+    output_path: ?[]const u8 = null,
     generation: usize = 0,
 
     /// Builds a cooperative cancellation token for this preview task.
@@ -38,19 +52,23 @@ pub const PreviewWorkerArgs = struct {
         };
     }
 
-    /// Frees the owned path slice and argument struct.
+    /// Frees the owned path slices and argument struct.
     pub fn deinit(self: *PreviewWorkerArgs) void {
         const alloc = self.allocator;
         alloc.free(self.path);
+        if (self.output_path) |out_p| alloc.free(out_p);
         alloc.destroy(self);
     }
 };
 
 /// Spawns a background `previewWorker` task on `workers.group` to decode,
-/// downscale, and write a raw RGBA32 temporary file for Kitty `t=t` display.
+/// downscale, and write a preview file (RGBA32, encoded JPEG/PNG temp file,
+/// or atomic `--output` target file).
 pub fn spawnPreview(args: *PreviewWorkerArgs) void {
-    args.generation =
-        args.workers.preview_generation.fetchAdd(1, .acq_rel) +% 1;
+    if (args.output_path == null) {
+        args.generation =
+            args.workers.preview_generation.fetchAdd(1, .acq_rel) +% 1;
+    }
     _ = args.workers.active_decode_threads.fetchAdd(1, .monotonic);
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
     args.workers.group.async(args.io, previewWorker, .{args});
@@ -74,15 +92,48 @@ fn previewWorker(args: *PreviewWorkerArgs) void {
     }
     defer args.deinit();
 
+    if (args.output_path) |out_path| {
+        const cancel: ExitingOnlyCancel = .{ .exiting = &workers.exiting };
+        _ = renderPreviewToOutputFile(
+            alloc,
+            io,
+            workers.thumb_cache_config,
+            args.path,
+            out_path,
+            args.max_dims,
+            cancel,
+        ) catch |err| {
+            ipc.respondErrorName(io, stream, @errorName(err));
+            return;
+        };
+        ipc.respondOk(io, stream) catch |err| {
+            std.log.warn(
+                "IPC preview output response write failed: {}",
+                .{err},
+            );
+        };
+        return;
+    }
+
     const cancel = args.cancelToken();
-    const res = renderPreviewRgbaFile(
-        alloc,
-        io,
-        workers.thumb_cache_config,
-        args.path,
-        args.max_dims,
-        cancel,
-    ) catch |err| {
+    const res = switch (args.format) {
+        .rgba => renderPreviewRgbaFile(
+            alloc,
+            io,
+            workers.thumb_cache_config,
+            args.path,
+            args.max_dims,
+            cancel,
+        ),
+        .encoded => renderPreviewEncodedFile(
+            alloc,
+            io,
+            workers.thumb_cache_config,
+            args.path,
+            args.max_dims,
+            cancel,
+        ),
+    } catch |err| {
         ipc.respondErrorName(io, stream, @errorName(err));
         return;
     };

@@ -124,6 +124,10 @@ pub const AppState = struct {
     upload_group: std.Io.Group = .init,
     frame_metrics: FrameMetrics = .{},
 
+    /// Resident server idle auto-shutdown configuration (0 = disabled).
+    server_idle_timeout_ms: u64 = 0,
+    server_idle_since_ms: ?u64 = null,
+
     /// Queues
     event_batch: std.ArrayList(BackgroundEvent) = .empty,
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
@@ -455,6 +459,58 @@ pub const AppState = struct {
             has_unpopulated_cache;
     }
 
+    /// Returns `true` when running in resident `--server` mode with an active
+    /// idle timeout, the window is hidden, and no workers, thumbnail writers,
+    /// or IPC requests are in flight.
+    pub fn isServerIdle(self: *const AppState) bool {
+        return self.viewer.server_mode and
+            self.server_idle_timeout_ms > 0 and
+            self.display.isHidden() and
+            !self.workers.isBusy() and
+            self.workers.active_thumb_writers.load(.acquire) == 0 and
+            self.pending_ipc_commands.items.len == 0 and
+            !self.workers.event_queue.hasPending() and
+            self.pending_wait_load_streams.items.len == 0 and
+            self.pending_selection_streams.items.len == 0;
+    }
+
+    /// Returns milliseconds remaining before idle auto-shutdown triggers, or
+    /// `null` if auto-shutdown is disabled or the server is currently active.
+    pub fn serverIdleRemainingMs(self: *const AppState, now_ms: u64) ?u64 {
+        if (!self.isServerIdle()) return null;
+        const since = self.server_idle_since_ms orelse
+            return self.server_idle_timeout_ms;
+        const elapsed = now_ms -| since;
+        return self.server_idle_timeout_ms -| elapsed;
+    }
+
+    /// Arms or disarms `server_idle_since_ms` as the server transitions
+    /// between active and hidden-idle states, stopping the main loop once
+    /// continuous hidden inactivity reaches `server_idle_timeout_ms`.
+    pub fn updateServerIdleShutdown(
+        self: *AppState,
+        now_ms: u64,
+        had_activity: bool,
+    ) void {
+        if (!self.viewer.server_mode or self.server_idle_timeout_ms == 0) {
+            self.server_idle_since_ms = null;
+            return;
+        }
+        if (!self.isServerIdle()) {
+            self.server_idle_since_ms = null;
+            return;
+        }
+        if (had_activity or self.server_idle_since_ms == null) {
+            self.server_idle_since_ms = now_ms;
+            return;
+        }
+        const since = self.server_idle_since_ms.?;
+        if (now_ms -| since >= self.server_idle_timeout_ms) {
+            std.log.info("Server idle timeout reached; shutting down.", .{});
+            self.viewer.running = false;
+        }
+    }
+
     /// Computes the event-loop wait strategy for `pollFrameInput`.
     /// Active visual motion on a visible GPU window returns `.poll` so
     /// swapchain VSync paces high-refresh displays natively; background worker
@@ -475,7 +531,19 @@ pub const AppState = struct {
             return .poll;
         }
         switch (self.display) {
-            .hidden => return .wait_indefinite,
+            .hidden => {
+                if (self.serverIdleRemainingMs(now_ticks)) |rem_ms| {
+                    if (rem_ms == 0 or self.server_idle_since_ms == null) {
+                        return .poll;
+                    }
+                    const clamped: i32 = @intCast(@min(
+                        rem_ms,
+                        @as(u64, std.math.maxInt(i32)),
+                    ));
+                    return .{ .wait_timeout_ms = clamped };
+                }
+                return .wait_indefinite;
+            },
             .visible => {},
         }
         if (self.display.isSuspended()) {
@@ -2305,4 +2373,66 @@ test "AppState.computeFrameWaitStrategy paces motion and sleeps slideshow" {
         state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
     );
     state.workers.active_threads.store(0, .release);
+}
+
+test "AppState server idle auto-shutdown waits and exits when expired" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.server_mode = true;
+    state.display = .{ .hidden = .headless };
+    state.server_idle_timeout_ms = 300_000;
+
+    // 0. Unarmed hidden idle server polls once immediately so
+    //    updateServerIdleShutdown arms server_idle_since_ms before sleeping.
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.poll,
+        state.computeFrameWaitStrategy(0.0, 0.0, false, false, 1_000),
+    );
+    state.server_idle_since_ms = 1_000;
+
+    // 1. Hidden idle server computes exact remaining wait timeout
+    try std.testing.expectEqual(
+        input.EventWaitStrategy{ .wait_timeout_ms = 299_000 },
+        state.computeFrameWaitStrategy(0.0, 0.0, false, false, 2_000),
+    );
+
+    // 2. Activity refreshes server_idle_since_ms and keeps running
+    state.updateServerIdleShutdown(250_000, true);
+    try std.testing.expect(state.viewer.running);
+    try std.testing.expectEqual(
+        @as(?u64, 250_000),
+        state.server_idle_since_ms,
+    );
+
+    // 3. Visible window disarms idle timer; hiding after a long open session
+    //    arms a fresh full grace period rather than shutting down immediately.
+    state.display = .{ .visible = .headless };
+    state.updateServerIdleShutdown(900_000, false);
+    try std.testing.expect(state.viewer.running);
+    try std.testing.expectEqual(@as(?u64, null), state.server_idle_since_ms);
+
+    state.display = .{ .hidden = .headless };
+    state.updateServerIdleShutdown(1_500_000, false);
+    try std.testing.expect(state.viewer.running);
+    try std.testing.expectEqual(
+        @as(?u64, 1_500_000),
+        state.server_idle_since_ms,
+    );
+
+    // 4. Active thumbnail writer keeps server non-idle
+    state.workers.active_thumb_writers.store(1, .release);
+    try std.testing.expect(!state.isServerIdle());
+    state.updateServerIdleShutdown(1_900_000, false);
+    try std.testing.expect(state.viewer.running);
+    try std.testing.expectEqual(@as(?u64, null), state.server_idle_since_ms);
+    state.workers.active_thumb_writers.store(0, .release);
+
+    // 5. Hidden past timeout stops running cleanly
+    state.updateServerIdleShutdown(2_000_000, false);
+    try std.testing.expect(state.viewer.running);
+    state.updateServerIdleShutdown(2_300_000, false);
+    try std.testing.expect(!state.viewer.running);
 }

@@ -70,6 +70,14 @@ pub const process_flags = [_]intents.CliOption{
         .description = "Run as a resident background server",
     },
     .{
+        .id = .idle_timeout,
+        .target = .both,
+        .long = "--idle-timeout",
+        .arg_name = "<DUR>",
+        .description = "Auto-shutdown idle --server after duration " ++
+            "(e.g. 5m, 300; default: 0=off)",
+    },
+    .{
         .id = .spawn,
         .target = .ipc,
         .short = "-s",
@@ -300,7 +308,12 @@ pub const IpcMode = union(enum) {
     }
 };
 
-/// Parsed command-line configuration options controlling launch behavior and rendering modes.
+/// Default idle auto-shutdown timeout (in seconds) for `peng --server`
+/// (`0` = disabled / run indefinitely unless `--idle-timeout` is passed).
+pub const default_server_idle_timeout_sec: u64 = 0;
+
+/// Parsed command-line configuration options controlling launch behavior and
+/// rendering modes.
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8 = null,
     default_scale: ZoomPreset = .full,
@@ -308,6 +321,7 @@ pub const ParsedArgs = struct {
     profile_startup: bool = false,
     headless: bool = false,
     server_mode: bool = false,
+    idle_timeout_sec: u64 = default_server_idle_timeout_sec,
     ipc_mode: IpcMode = .disabled,
     enable_blur: bool = true,
     show_title: bool = false,
@@ -337,6 +351,7 @@ pub const ParsedIpcArgs = union(enum) {
         socket_path: ?[]u8 = null,
         command: []u8,
         spawn: bool = false,
+        idle_timeout_sec: ?u64 = null,
         test_mode: bool = false,
 
         /// Frees allocated memory for the socket path and command string.
@@ -377,7 +392,8 @@ fn parseZoomPreset(val: []const u8) ?ZoomPreset {
     return ZoomPreset.parse(val);
 }
 
-fn parsePreviewSize(val: []const u8) ?PositiveDimsU32 {
+/// Parses a `<W>x<H>` or `<W>X<H>` positive dimension string.
+pub fn parsePreviewSize(val: []const u8) ?PositiveDimsU32 {
     const sep = std.mem.findScalar(u8, val, 'x') orelse
         std.mem.findScalar(u8, val, 'X') orelse
         return null;
@@ -385,6 +401,26 @@ fn parsePreviewSize(val: []const u8) ?PositiveDimsU32 {
     const h = std.fmt.parseInt(u32, val[sep + 1 ..], 10) catch return null;
     if (w == 0 or h == 0) return null;
     return .{ .w = w, .h = h };
+}
+
+/// Parses an idle timeout duration in seconds (`300`, `300s`, `5m`, `1h`, or
+/// `0` to disable). Returns `null` on invalid syntax or overflow.
+pub fn parseDurationSeconds(val: []const u8) ?u64 {
+    if (val.len == 0) return null;
+    const last = val[val.len - 1];
+    const mult: u64 = switch (last) {
+        's', 'S' => 1,
+        'm', 'M' => 60,
+        'h', 'H' => 3600,
+        else => 0,
+    };
+    const num_str = if (mult > 0) val[0 .. val.len - 1] else val;
+    if (num_str.len == 0) return null;
+    const base = std.fmt.parseInt(u64, num_str, 10) catch return null;
+    const factor: u64 = if (mult > 0) mult else 1;
+    const res = @mulWithOverflow(base, factor);
+    if (res[1] != 0) return null;
+    return res[0];
 }
 
 /// Parses flags and arguments from any iterator providing `next() ?[]const u8`.
@@ -397,6 +433,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var profile_startup = false;
     var headless = false;
     var server_mode = false;
+    var idle_timeout_sec: u64 = default_server_idle_timeout_sec;
     var ipc_mode: IpcMode = .disabled;
     errdefer ipc_mode.deinit(gpa);
     var enable_blur = true;
@@ -429,6 +466,27 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                             },
                             .default_socket, .custom_socket => {},
                         }
+                    },
+                    .idle_timeout => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --idle-timeout flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        idle_timeout_sec = parseDurationSeconds(val) orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Invalid --idle-timeout value: {s}. " ++
+                                        "Expected seconds or e.g. 5m, 30s, 0.",
+                                    .{val},
+                                );
+                            }
+                            return error.InvalidIdleTimeout;
+                        };
                     },
                     .ipc => switch (ipc_mode) {
                         .disabled => ipc_mode = .pid_socket,
@@ -557,6 +615,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .profile_startup = profile_startup,
         .headless = headless,
         .server_mode = server_mode,
+        .idle_timeout_sec = idle_timeout_sec,
         .ipc_mode = ipc_mode,
         .enable_blur = enable_blur,
         .show_title = show_title,
@@ -599,10 +658,12 @@ pub fn parseIpcArgsIterator(
     defer command_buf.deinit(gpa);
 
     var spawn = false;
+    var idle_timeout_sec: ?u64 = null;
     var test_mode = false;
     var help = false;
     var end_of_options = false;
     var in_command = false;
+    var quote_next_arg = false;
 
     while (args_it.next()) |arg| {
         if (!in_command and !end_of_options and std.mem.eql(u8, arg, "--")) {
@@ -614,6 +675,27 @@ pub fn parseIpcArgsIterator(
                 switch (opt.id) {
                     .help => help = true,
                     .spawn => spawn = true,
+                    .idle_timeout => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --idle-timeout flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        idle_timeout_sec = parseDurationSeconds(val) orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Invalid --idle-timeout value: {s}. " ++
+                                        "Expected seconds or e.g. 5m, 30s, 0.",
+                                    .{val},
+                                );
+                            }
+                            return error.InvalidIdleTimeout;
+                        };
+                    },
                     .test_mode => test_mode = true,
                     .socket => {
                         const val = args_it.next() orelse {
@@ -680,7 +762,18 @@ pub fn parseIpcArgsIterator(
         if (command_buf.items.len > 0) {
             try command_buf.append(gpa, ' ');
         }
-        try command_buf.appendSlice(gpa, arg);
+        const needs_quote = quote_next_arg and
+            (arg.len == 0 or std.mem.findAny(u8, arg, " \t") != null) and
+            !(arg.len >= 2 and arg[0] == '"' and arg[arg.len - 1] == '"');
+        if (needs_quote) {
+            try command_buf.append(gpa, '"');
+            try command_buf.appendSlice(gpa, arg);
+            try command_buf.append(gpa, '"');
+        } else {
+            try command_buf.appendSlice(gpa, arg);
+        }
+        quote_next_arg = std.mem.eql(u8, arg, "-o") or
+            std.mem.eql(u8, arg, "--output");
     }
 
     if (help) {
@@ -698,6 +791,7 @@ pub fn parseIpcArgsIterator(
             .socket_path = socket_path,
             .command = try command_buf.toOwnedSlice(gpa),
             .spawn = spawn,
+            .idle_timeout_sec = idle_timeout_sec,
             .test_mode = test_mode,
         },
     };
@@ -1914,6 +2008,60 @@ test "parsePreviewArgsIterator parses --output flag and frees on errors" {
         try testing.expectError(
             error.InvalidOutputPath,
             parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+}
+
+test "parseDurationSeconds and --idle-timeout parsing" {
+    const testing = std.testing;
+
+    try testing.expectEqual(@as(?u64, 0), parseDurationSeconds("0"));
+    try testing.expectEqual(@as(?u64, 300), parseDurationSeconds("300"));
+    try testing.expectEqual(@as(?u64, 45), parseDurationSeconds("45s"));
+    try testing.expectEqual(@as(?u64, 300), parseDurationSeconds("5m"));
+    try testing.expectEqual(@as(?u64, 3600), parseDurationSeconds("1h"));
+    try testing.expectEqual(@as(?u64, null), parseDurationSeconds(""));
+    try testing.expectEqual(@as(?u64, null), parseDurationSeconds("5x"));
+    try testing.expectEqual(@as(?u64, null), parseDurationSeconds("m"));
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--server"},
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.server_mode);
+        try testing.expectEqual(@as(u64, 0), parsed.idle_timeout_sec);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--server", "--idle-timeout", "10m" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.server_mode);
+        try testing.expectEqual(@as(u64, 600), parsed.idle_timeout_sec);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "-s",
+                "--idle-timeout",
+                "0",
+                "preview",
+                "-o",
+                "/tmp/my dir/out.jpg",
+                "photo.jpg",
+            },
+        };
+        var parsed = try parseIpcArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(@as(?u64, 0), parsed.send.idle_timeout_sec);
+        try testing.expectEqualStrings(
+            "preview -o \"/tmp/my dir/out.jpg\" photo.jpg\n",
+            parsed.send.command,
         );
     }
 }

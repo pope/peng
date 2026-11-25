@@ -221,10 +221,19 @@ fn handlePreviewCommand(
         ipc.respondErrorName(state.io, stream, "OutOfMemory");
         return;
     };
+    const dup_out: ?[]u8 = if (req.output_path) |out_p|
+        state.allocator.dupe(u8, out_p) catch {
+            state.allocator.free(dup_path);
+            ipc.respondErrorName(state.io, stream, "OutOfMemory");
+            return;
+        }
+    else
+        null;
     const args = state.allocator.create(
         workers_mod.PreviewWorkerArgs,
     ) catch {
         state.allocator.free(dup_path);
+        if (dup_out) |p| state.allocator.free(p);
         ipc.respondErrorName(state.io, stream, "OutOfMemory");
         return;
     };
@@ -235,6 +244,8 @@ fn handlePreviewCommand(
         .client_stream = stream,
         .path = dup_path,
         .max_dims = req.max_dims,
+        .format = req.format,
+        .output_path = dup_out,
     };
     workers_mod.spawnPreview(args);
 }

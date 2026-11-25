@@ -408,6 +408,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "config", .module = config_module },
+                .{ .name = "geom", .module = geom_module },
                 .{ .name = "ipc", .module = ipc_module },
                 .{ .name = "termgfx", .module = termgfx_module },
             },

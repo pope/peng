@@ -56,6 +56,7 @@ pub fn spawnIpcServer(
     allocator: std.mem.Allocator,
     io: std.Io,
     socket_path: []const u8,
+    lock_owned: bool,
 ) !std.Thread {
     const args = try allocator.create(ipc_server.IpcServerArgs);
     errdefer allocator.destroy(args);
@@ -64,6 +65,7 @@ pub fn spawnIpcServer(
         .allocator = allocator,
         .io = io,
         .socket_path = socket_path,
+        .lock_owned = lock_owned,
     };
     return std.Thread.spawn(
         .{},
@@ -147,7 +149,13 @@ test "spawnIpcServer does not mark WorkerManager as busy" {
     defer workers.deinit(allocator, io);
     workers.exiting.store(true, .release);
 
-    const thread = try spawnIpcServer(&workers, allocator, io, sock_path);
+    const thread = try spawnIpcServer(
+        &workers,
+        allocator,
+        io,
+        sock_path,
+        false,
+    );
     defer thread.join();
 
     try std.testing.expect(!workers.isBusy());

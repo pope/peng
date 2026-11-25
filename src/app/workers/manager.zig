@@ -213,6 +213,7 @@ pub const WorkerManager = struct {
         defer {
             sdl.reclaimProcessHeap();
             _ = self.active_thumb_writers.fetchSub(1, .release);
+            context.wakeUpMainThread();
         }
 
         var scratch_arena: std.heap.ArenaAllocator = .init(allocator);
