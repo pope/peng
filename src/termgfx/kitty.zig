@@ -67,11 +67,14 @@ fn writeUtf8Codepoint(writer: *std.Io.Writer, cp: u21) !void {
 
 /// Kitty Graphics Protocol pixel data transport medium:
 /// - `.temp_file`: local temporary RGBA32 file (`t=t`, unlinked by terminal).
+/// - `.shared_memory`: local POSIX shared memory object (`t=s`, unlinked by
+///   terminal).
 /// - `.direct_rgba`: inline 4096-byte base64 RGBA32 chunks (`f=32,t=d`).
 /// - `.direct_png`: inline 4096-byte base64 PNG chunks (`f=100,t=d`, best for
 ///   SSH).
 pub const KittyMedium = union(enum) {
     temp_file: []const u8,
+    shared_memory: []const u8,
     direct_rgba: struct {
         rgba_pixels: []const u8,
         pitch: usize,
@@ -79,12 +82,27 @@ pub const KittyMedium = union(enum) {
     direct_png: []const u8,
 };
 
-/// Validates `medium` and `dims` before emitting any Kitty escape sequence.
-pub fn validateMedium(medium: KittyMedium, dims: PositiveDimsU32) !void {
+/// Validates `medium`, `dims`, and optional explicit `image_id` before
+/// emitting any Kitty escape sequence.
+pub fn validateMedium(
+    medium: KittyMedium,
+    dims: PositiveDimsU32,
+    image_id: ?u24,
+) !void {
     if (dims.w == 0 or dims.h == 0) return error.InvalidDimensions;
+    if (image_id) |id| {
+        if (id == 0) return error.InvalidImageId;
+    }
     switch (medium) {
         .temp_file => |path| {
+            if (path.len == 0) return error.EmptyPayload;
             if (std.base64.standard.Encoder.calcSize(path.len) > 512) {
+                return error.PathTooLong;
+            }
+        },
+        .shared_memory => |name| {
+            if (name.len == 0) return error.EmptyPayload;
+            if (std.base64.standard.Encoder.calcSize(name.len) > 512) {
                 return error.PathTooLong;
             }
         },
@@ -113,6 +131,7 @@ fn imageIdFromMedium(medium: KittyMedium, dims: PositiveDimsU32) u24 {
     hasher.update(std.mem.asBytes(&dims.h));
     switch (medium) {
         .temp_file => |path| hasher.update(path),
+        .shared_memory => |name| hasher.update(name),
         .direct_rgba => |d| {
             const row_bytes: usize = @as(usize, dims.w) * 4;
             const sample_len = @min(row_bytes, 256);
@@ -236,18 +255,27 @@ fn writeDirectRgbaChunks(
     }
 }
 
-/// Writes a standard Kitty Graphics Protocol escape sequence (`t=t` or
-/// chunked `t=d`) to `writer` using native pixel dimensions.
+fn formatIdParam(buf: []u8, image_id: ?u24) []const u8 {
+    const id = image_id orelse return "";
+    return std.mem.print(buf, ",i={d}", .{id}) catch unreachable;
+}
+
+/// Writes a standard Kitty Graphics Protocol escape sequence (`t=t`, `t=s`, or
+/// chunked `t=d`) to `writer` using native pixel dimensions. When `image_id`
+/// is non-null, includes `i=<id>` for flicker-free in-place frame replacement.
 pub fn writeKittyStandard(
     writer: *std.Io.Writer,
     medium: KittyMedium,
     dims: PositiveDimsU32,
     clear_first: bool,
+    image_id: ?u24,
 ) !void {
-    try validateMedium(medium, dims);
+    try validateMedium(medium, dims, image_id);
     if (clear_first) {
         try writer.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\");
     }
+    var id_buf: [16]u8 = undefined;
+    const id_param = formatIdParam(&id_buf, image_id);
     switch (medium) {
         .temp_file => |temp_path| {
             var b64_buf: [512]u8 = undefined;
@@ -256,16 +284,27 @@ pub fn writeKittyStandard(
                 temp_path,
             );
             try writer.print(
-                "\x1b_Ga=T,f=32,s={d},v={d},t=t,q=2;{s}\x1b\\",
-                .{ dims.w, dims.h, encoded },
+                "\x1b_Ga=T,f=32,s={d},v={d}{s},t=t,q=2;{s}\x1b\\",
+                .{ dims.w, dims.h, id_param, encoded },
+            );
+        },
+        .shared_memory => |shm_name| {
+            var b64_buf: [512]u8 = undefined;
+            const encoded = std.base64.standard.Encoder.encode(
+                &b64_buf,
+                shm_name,
+            );
+            try writer.print(
+                "\x1b_Ga=T,f=32,s={d},v={d}{s},t=s,q=2;{s}\x1b\\",
+                .{ dims.w, dims.h, id_param, encoded },
             );
         },
         .direct_rgba => |d| {
-            var hdr_buf: [96]u8 = undefined;
+            var hdr_buf: [112]u8 = undefined;
             const header = std.mem.print(
                 &hdr_buf,
-                "a=T,f=32,s={d},v={d},q=2",
-                .{ dims.w, dims.h },
+                "a=T,f=32,s={d},v={d}{s},q=2",
+                .{ dims.w, dims.h, id_param },
             ) catch unreachable;
             try writeDirectRgbaChunks(
                 writer,
@@ -277,10 +316,16 @@ pub fn writeKittyStandard(
             );
         },
         .direct_png => |png| {
+            var hdr_buf: [64]u8 = undefined;
+            const header = std.mem.print(
+                &hdr_buf,
+                "a=T,f=100{s},q=2",
+                .{id_param},
+            ) catch unreachable;
             try writeDirectBytesChunks(
                 writer,
                 png,
-                "a=T,f=100,q=2",
+                header,
                 false,
             );
         },
@@ -297,8 +342,9 @@ pub fn writeKittyUnicodePlaceholder(
     dims: PositiveDimsU32,
     cell_dims: ?CellDims,
     cell_px: ?CellPixelSize,
+    image_id: ?u24,
 ) !void {
-    try validateMedium(medium, dims);
+    try validateMedium(medium, dims, image_id);
 
     const raw_cells = cell_dims orelse CellDims{ .cols = 80, .rows = 24 };
     const max_cells: CellDims = .{
@@ -307,7 +353,7 @@ pub fn writeKittyUnicodePlaceholder(
     };
     const fit = fitCells(dims, max_cells, cell_px);
 
-    const id = imageIdFromMedium(medium, dims);
+    const id = image_id orelse imageIdFromMedium(medium, dims);
     switch (medium) {
         .temp_file => |temp_path| {
             var b64_buf: [512]u8 = undefined;
@@ -318,6 +364,18 @@ pub fn writeKittyUnicodePlaceholder(
             try writer.print(
                 "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=32,s={d},v={d}," ++
                     "i={d},c={d},r={d},t=t,q=2;{s}\x1b\x1b\\\x1b\\",
+                .{ dims.w, dims.h, id, fit.cols, fit.rows, encoded },
+            );
+        },
+        .shared_memory => |shm_name| {
+            var b64_buf: [512]u8 = undefined;
+            const encoded = std.base64.standard.Encoder.encode(
+                &b64_buf,
+                shm_name,
+            );
+            try writer.print(
+                "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=32,s={d},v={d}," ++
+                    "i={d},c={d},r={d},t=s,q=2;{s}\x1b\x1b\\\x1b\\",
                 .{ dims.w, dims.h, id, fit.cols, fit.rows, encoded },
             );
         },
@@ -411,6 +469,7 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
         .{ .w = 400, .h = 200 },
         .{ .cols = 8, .rows = 4 },
         null,
+        null,
     );
     const out = aw.written();
     try std.testing.expect(
@@ -428,6 +487,7 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
         .{ .temp_file = "/dev/shm/b.rgba" },
         .{ .w = 200, .h = 400 },
         .{ .cols = 1, .rows = 150 },
+        null,
         null,
     );
     const out2 = aw2.written();
@@ -452,6 +512,7 @@ test "writeKittyStandard and U=1 support direct_rgba chunking and pitch" {
         .{ .direct_rgba = .{ .rgba_pixels = &padded, .pitch = 8 } },
         .{ .w = 1, .h = 2 },
         false,
+        null,
     );
     // base64({1,2,3,255,4,5,6,255}) = "AQID/wQFBv8="
     try std.testing.expectEqualStrings(
@@ -468,6 +529,7 @@ test "writeKittyStandard and U=1 support direct_rgba chunking and pitch" {
         .{ .direct_rgba = .{ .rgba_pixels = &big, .pitch = 32 * 4 } },
         .{ .w = 32, .h = 32 },
         false,
+        null,
     );
     const out2 = aw2.written();
     try std.testing.expect(
@@ -483,6 +545,7 @@ test "writeKittyStandard and U=1 support direct_rgba chunking and pitch" {
         .{ .direct_rgba = .{ .rgba_pixels = &big, .pitch = 32 * 4 } },
         .{ .w = 32, .h = 32 },
         .{ .cols = 4, .rows = 2 },
+        null,
         null,
     );
     const out3 = aw3.written();
@@ -504,6 +567,7 @@ test "writeKittyStandard and U=1 support direct_rgba chunking and pitch" {
         .{ .direct_rgba = .{ .rgba_pixels = &exact, .pitch = 24 * 4 } },
         .{ .w = 24, .h = 32 },
         false,
+        null,
     );
     try std.testing.expect(std.mem.startsWith(
         u8,
@@ -525,6 +589,7 @@ test "writeKittyStandard and U=1 support direct_png (f=100) chunking" {
             .{ .direct_png = "" },
             .{ .w = 10, .h = 10 },
             false,
+            null,
         ),
     );
 
@@ -536,6 +601,7 @@ test "writeKittyStandard and U=1 support direct_png (f=100) chunking" {
         .{ .direct_png = "abc" },
         .{ .w = 16, .h = 12 },
         false,
+        null,
     );
     try std.testing.expectEqualStrings(
         "\x1b_Ga=T,f=100,q=2,t=d,m=0;YWJj\x1b\\",
@@ -551,6 +617,7 @@ test "writeKittyStandard and U=1 support direct_png (f=100) chunking" {
         .{ .direct_png = &big_png },
         .{ .w = 400, .h = 200 },
         .{ .cols = 8, .rows = 4 },
+        null,
         null,
     );
     const out2 = aw2.written();
@@ -572,9 +639,76 @@ test "writeKittyStandard and U=1 support direct_png (f=100) chunking" {
         .{ .direct_png = &exact_png },
         .{ .w = 16, .h = 16 },
         false,
+        null,
     );
     try std.testing.expect(
         std.mem.startsWith(u8, aw3.written(), "\x1b_Ga=T,f=100,q=2,t=d,m=0;"),
     );
     try std.testing.expect(std.mem.find(u8, aw3.written(), "m=1") == null);
+}
+
+test "writeKittyStandard and U=1 support shared_memory (t=s) and image_id" {
+    const allocator = std.testing.allocator;
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    try writeKittyStandard(
+        &aw.writer,
+        .{ .shared_memory = "/peng-1" },
+        .{ .w = 320, .h = 240 },
+        false,
+        42,
+    );
+    // base64("/peng-1") = "L3BlbmctMQ=="
+    try std.testing.expectEqualStrings(
+        "\x1b_Ga=T,f=32,s=320,v=240,i=42,t=s,q=2;L3BlbmctMQ==\x1b\\",
+        aw.written(),
+    );
+
+    var aw2 = std.Io.Writer.Allocating.init(allocator);
+    defer aw2.deinit();
+    try writeKittyUnicodePlaceholder(
+        &aw2.writer,
+        .{ .shared_memory = "/peng-1" },
+        .{ .w = 400, .h = 200 },
+        .{ .cols = 8, .rows = 4 },
+        null,
+        7,
+    );
+    const out2 = aw2.written();
+    try std.testing.expect(
+        std.mem.startsWith(
+            u8,
+            out2,
+            "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=32,s=400,v=200,i=7,c=8,r=2,t=s,",
+        ),
+    );
+    try std.testing.expect(std.mem.find(u8, out2, "\x1b[38;2;0;0;7m") != null);
+
+    var aw_bad = std.Io.Writer.Allocating.init(allocator);
+    defer aw_bad.deinit();
+    try std.testing.expectError(
+        error.InvalidImageId,
+        writeKittyStandard(
+            &aw_bad.writer,
+            .{ .shared_memory = "/peng-1" },
+            .{ .w = 10, .h = 10 },
+            false,
+            0,
+        ),
+    );
+
+    // Explicit image_id on direct_png emits i=<id>.
+    var aw3 = std.Io.Writer.Allocating.init(allocator);
+    defer aw3.deinit();
+    try writeKittyStandard(
+        &aw3.writer,
+        .{ .direct_png = "abc" },
+        .{ .w = 16, .h = 12 },
+        false,
+        99,
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b_Ga=T,f=100,i=99,q=2,t=d,m=0;YWJj\x1b\\",
+        aw3.written(),
+    );
 }

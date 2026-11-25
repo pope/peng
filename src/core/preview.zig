@@ -4,6 +4,7 @@
 //! archives, and Freedesktop cached thumbnails, scales and orients them to
 //! RGBA32, and writes temporary files for the Kitty Graphics Protocol (`t=t`).
 
+const builtin = @import("builtin");
 const geom = @import("geom");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -544,6 +545,247 @@ pub fn renderPreviewToOutputFile(
     return preview.dims;
 }
 
+/// Local Kitty Graphics Protocol transfer backend selected for a rendered
+/// RGBA32 preview.
+pub const KittyTransferKind = enum {
+    shared_memory,
+    temp_file,
+};
+
+/// Result of writing a local RGBA32 preview to POSIX shared memory (`t=s`) or
+/// a temporary file (`t=t`) for Kitty Graphics Protocol transmission.
+pub const KittyTransferResult = struct {
+    kind: KittyTransferKind,
+    name_buf: [128]u8 = undefined,
+    name_len: usize = 0,
+    dims: PositiveDimsU32,
+
+    /// Returns the shared-memory object name or temporary file path slice.
+    pub fn name(self: *const KittyTransferResult) []const u8 {
+        return self.name_buf[0..self.name_len];
+    }
+
+    /// Removes the underlying shared-memory object or temporary file (called
+    /// when terminal emission fails so nothing leaks).
+    pub fn cleanup(self: *const KittyTransferResult, io: std.Io) void {
+        switch (self.kind) {
+            .shared_memory => unlinkShmName(self.name()),
+            .temp_file => {
+                std.Io.Dir.deleteFile(
+                    std.Io.Dir.cwd(),
+                    io,
+                    self.name(),
+                ) catch |del_e| {
+                    std.log.warn(
+                        "Failed to clean up preview temp file '{s}': {}",
+                        .{ self.name(), del_e },
+                    );
+                };
+            },
+        }
+    }
+};
+
+const has_posix_shm = builtin.os.tag != .windows and builtin.link_libc;
+
+fn unlinkShmName(shm_name: []const u8) void {
+    if (comptime !has_posix_shm) return;
+    var name_z: [128]u8 = undefined;
+    if (shm_name.len >= name_z.len) return;
+    @memcpy(name_z[0..shm_name.len], shm_name);
+    name_z[shm_name.len] = 0;
+    _ = std.c.shm_unlink(@ptrCast(&name_z));
+}
+
+fn validateSurfacePitch(
+    surf: sdl.Surface,
+    row_bytes: usize,
+) !usize {
+    const raw_pitch = surf.pitch();
+    if (raw_pitch < 0) return error.InvalidPitch;
+    const pitch_usize: usize = @intCast(raw_pitch);
+    if (pitch_usize < row_bytes) return error.InvalidPitch;
+    return pitch_usize;
+}
+
+fn writeRgbaToShm(
+    io: std.Io,
+    final_surf: sdl.Surface,
+    dims: PositiveDimsU32,
+) !KittyTransferResult {
+    if (comptime !has_posix_shm) return error.UnsupportedPlatform;
+
+    const w_usize: usize = @intCast(dims.w);
+    const h_usize: usize = @intCast(dims.h);
+    const row_bytes = std.math.mul(usize, w_usize, 4) catch
+        return error.ShmSizeOverflow;
+    const total_bytes = std.math.mul(usize, row_bytes, h_usize) catch
+        return error.ShmSizeOverflow;
+    if (total_bytes == 0) return error.InvalidDimensions;
+    const shm_len = std.math.cast(std.c.off_t, total_bytes) orelse
+        return error.ShmSizeOverflow;
+    const pitch_usize = try validateSurfacePitch(final_surf, row_bytes);
+
+    const seq = preview_file_seq.fetchAdd(1, .monotonic);
+    const raw_ns: u96 = @bitCast(std.Io.Clock.awake.now(io).nanoseconds);
+    const tick: u32 = @truncate(raw_ns >> 12);
+    const oflag: c_int = @intCast(@backingInt(std.c.O{
+        .ACCMODE = .RDWR,
+        .CREAT = true,
+        .EXCL = true,
+    }));
+
+    var res = KittyTransferResult{
+        .kind = .shared_memory,
+        .dims = dims,
+    };
+    var fd_opt: ?std.posix.fd_t = null;
+    for (0..8) |attempt| {
+        // Enforce macOS PSHMNAMLEN (30 chars + NUL = 31 bytes).
+        const shm_name = std.mem.print(
+            &res.name_buf,
+            "/peng-{x}-{x}",
+            .{ tick, seq + attempt },
+        ) catch return error.NameTooLong;
+        if (shm_name.len > 30) return error.NameTooLong;
+        res.name_buf[shm_name.len] = 0;
+        const name_z: [*:0]const u8 = @ptrCast(&res.name_buf);
+
+        const raw_fd = if (comptime builtin.os.tag.isDarwin())
+            std.c.shm_open(name_z, oflag, @as(c_uint, 0o600))
+        else
+            std.c.shm_open(name_z, oflag, @as(std.c.mode_t, 0o600));
+        if (raw_fd >= 0) {
+            res.name_len = shm_name.len;
+            fd_opt = @intCast(raw_fd);
+            break;
+        }
+    }
+    const fd = fd_opt orelse return error.ShmOpenFailed;
+    errdefer unlinkShmName(res.name());
+    defer _ = std.c.close(fd);
+
+    if (std.c.ftruncate(fd, shm_len) != 0) {
+        return error.ShmTruncateFailed;
+    }
+
+    const mapped = try std.posix.mmap(
+        null,
+        total_bytes,
+        .{ .READ = true, .WRITE = true },
+        .{ .TYPE = .SHARED },
+        fd,
+        0,
+    );
+    defer std.posix.munmap(mapped);
+
+    const base_ptr = final_surf.pixels();
+    if (pitch_usize == row_bytes) {
+        @memcpy(mapped[0..total_bytes], base_ptr[0..total_bytes]);
+    } else {
+        for (0..h_usize) |row| {
+            const src_start = row * pitch_usize;
+            const dst_start = row * row_bytes;
+            @memcpy(
+                mapped[dst_start .. dst_start + row_bytes],
+                base_ptr[src_start .. src_start + row_bytes],
+            );
+        }
+    }
+    return res;
+}
+
+fn writeSurfaceRgbaToTempFile(
+    io: std.Io,
+    final_surf: sdl.Surface,
+    dims: PositiveDimsU32,
+) !PreviewRenderResult {
+    const w_usize: usize = @intCast(dims.w);
+    const h_usize: usize = @intCast(dims.h);
+    const row_bytes = std.math.mul(usize, w_usize, 4) catch
+        return error.InvalidDimensions;
+    const pitch_usize = try validateSurfacePitch(final_surf, row_bytes);
+
+    const tmp = try createTempPreviewFile(io, "rgba", dims);
+    var out_file = tmp.file;
+    const res = tmp.res;
+    errdefer {
+        std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, res.path()) catch |del_e| {
+            std.log.warn(
+                "Failed to clean up preview temp file '{s}': {}",
+                .{ res.path(), del_e },
+            );
+        };
+    }
+    defer out_file.close(io);
+
+    const base_ptr = final_surf.pixels();
+    if (pitch_usize == row_bytes) {
+        try out_file.writeStreamingAll(io, base_ptr[0 .. row_bytes * h_usize]);
+    } else {
+        for (0..h_usize) |row| {
+            const row_start = row * pitch_usize;
+            try out_file.writeStreamingAll(
+                io,
+                base_ptr[row_start .. row_start + row_bytes],
+            );
+        }
+    }
+    return res;
+}
+
+/// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
+/// raw packed RGBA32 bytes to POSIX shared memory (`t=s`) when available,
+/// falling back to a temporary file (`t=t`) if `shm_open` is unavailable.
+pub fn renderPreviewKittyLocal(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    thumb_cfg: ThumbCacheConfig,
+    path: []const u8,
+    max_dims: PositiveDimsU32,
+    cancel: anytype,
+) !KittyTransferResult {
+    const preview = try renderPreviewSurface(
+        allocator,
+        io,
+        thumb_cfg,
+        path,
+        max_dims,
+        cancel,
+    );
+    defer preview.deinit();
+
+    if (writeRgbaToShm(io, preview.surface, preview.dims)) |shm_res| {
+        if (cancel.isCanceled()) {
+            shm_res.cleanup(io);
+            return error.Canceled;
+        }
+        return shm_res;
+    } else |err| {
+        std.log.debug(
+            "POSIX shm preview unavailable ({s}); falling back to temp file",
+            .{@errorName(err)},
+        );
+    }
+
+    const tmp_res = try writeSurfaceRgbaToTempFile(
+        io,
+        preview.surface,
+        preview.dims,
+    );
+    const res = KittyTransferResult{
+        .kind = .temp_file,
+        .name_buf = tmp_res.path_buf,
+        .name_len = tmp_res.path_len,
+        .dims = tmp_res.dims,
+    };
+    if (cancel.isCanceled()) {
+        res.cleanup(io);
+        return error.Canceled;
+    }
+    return res;
+}
+
 /// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
 /// raw packed RGBA32 bytes to a temporary file in `/dev/shm` or `/tmp` for
 /// Kitty Graphics Protocol `t=t` transfer.
@@ -564,39 +806,21 @@ pub fn renderPreviewRgbaFile(
         cancel,
     );
     defer preview.deinit();
-    const final_surf = preview.surface;
 
-    const tmp = try createTempPreviewFile(io, "rgba", preview.dims);
-    var out_file = tmp.file;
-    const res = tmp.res;
-    errdefer {
+    const res = try writeSurfaceRgbaToTempFile(
+        io,
+        preview.surface,
+        preview.dims,
+    );
+    if (cancel.isCanceled()) {
         std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, res.path()) catch |del_e| {
             std.log.warn(
-                "Failed to clean up preview temp file '{s}': {}",
+                "Failed to clean up canceled preview temp file '{s}': {}",
                 .{ res.path(), del_e },
             );
         };
+        return error.Canceled;
     }
-    defer out_file.close(io);
-
-    const w_usize: usize = @intCast(res.dims.w);
-    const h_usize: usize = @intCast(res.dims.h);
-    const row_bytes: usize = w_usize * 4;
-    const pitch_usize: usize = @intCast(final_surf.pitch());
-    const base_ptr = final_surf.pixels();
-
-    if (pitch_usize == row_bytes) {
-        try out_file.writeStreamingAll(io, base_ptr[0 .. row_bytes * h_usize]);
-    } else {
-        for (0..h_usize) |row| {
-            const row_start = row * pitch_usize;
-            try out_file.writeStreamingAll(
-                io,
-                base_ptr[row_start .. row_start + row_bytes],
-            );
-        }
-    }
-    if (cancel.isCanceled()) return error.Canceled;
     return res;
 }
 
@@ -629,4 +853,28 @@ test "renderPreviewRgbaFile downscales and writes RGBA32 temp file" {
     );
     const expected_bytes = @as(u64, res.dims.w) * @as(u64, res.dims.h) * 4;
     try std.testing.expectEqual(expected_bytes, stat.size);
+}
+
+test "renderPreviewKittyLocal writes RGBA32 to POSIX shm and cleans up" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const res = try renderPreviewKittyLocal(
+        allocator,
+        io,
+        .disabled,
+        "testfiles/images/000_0_1024x682.jpg",
+        .{ .w = 160, .h = 120 },
+        NoCancel{},
+    );
+    defer res.cleanup(io);
+
+    try std.testing.expect(res.dims.w <= 160);
+    try std.testing.expect(res.dims.h <= 120);
+    try std.testing.expect(res.name().len > 0);
+    if (comptime has_posix_shm) {
+        try std.testing.expectEqual(KittyTransferKind.shared_memory, res.kind);
+        try std.testing.expect(std.mem.startsWith(u8, res.name(), "/peng-"));
+        try std.testing.expect(res.name().len <= 30);
+    }
 }

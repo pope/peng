@@ -36,12 +36,14 @@ pub const PreviewOptions = struct {
     cell_px: ?CellPixelSize = null,
 };
 
-/// Payload for Kitty Graphics Protocol emission (`t=t` temp file or chunked
-/// `t=d` direct RGBA32 / PNG).
+/// Payload for Kitty Graphics Protocol emission (`t=t` temp file, `t=s` POSIX
+/// shared memory, or chunked `t=d` direct RGBA32 / PNG). Optional `image_id`
+/// enables flicker-free in-place frame replacement.
 pub const KittyPayload = struct {
     medium: KittyMedium,
     dims: PositiveDimsU32,
     clear_first: bool = false,
+    image_id: ?u24 = null,
 };
 
 /// Payload for VT340 Sixel emission directly from in-memory RGBA32 pixels.
@@ -139,6 +141,7 @@ fn writePayloadRaw(
             k.medium,
             k.dims,
             k.clear_first,
+            k.image_id,
         ),
         .sixel => |s| sixel.writeSixelPreview(
             s.allocator,
@@ -164,7 +167,7 @@ fn writePayloadRaw(
 
 fn validatePayload(payload: PreviewPayload) !void {
     switch (payload) {
-        .kitty => |k| try kitty.validateMedium(k.medium, k.dims),
+        .kitty => |k| try kitty.validateMedium(k.medium, k.dims, k.image_id),
         .iterm2 => |it| {
             if (it.dims.w == 0 or it.dims.h == 0) {
                 return error.InvalidDimensions;
@@ -222,6 +225,7 @@ pub fn writePreview(
                 k.dims,
                 opts.cell_dims,
                 opts.cell_px,
+                k.image_id,
             ),
             .sixel, .iterm2 => return writeTmuxPassthrough(
                 writer,

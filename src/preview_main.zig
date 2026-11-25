@@ -6,7 +6,7 @@ const thumbcache = @import("thumbcache");
 
 const NoCancel = core.preview.NoCancel;
 const PreviewSurface = core.preview.PreviewSurface;
-const renderPreviewRgbaFile = core.preview.renderPreviewRgbaFile;
+const renderPreviewKittyLocal = core.preview.renderPreviewKittyLocal;
 const renderPreviewSurface = core.preview.renderPreviewSurface;
 const renderPreviewToOutputFile = core.preview.renderPreviewToOutputFile;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
@@ -148,7 +148,7 @@ pub fn main(init: std.process.Init) !void {
                     std.process.exit(1);
                 }
             } else {
-                const res = renderPreviewRgbaFile(
+                const res = renderPreviewKittyLocal(
                     gpa,
                     io,
                     thumb_cfg,
@@ -162,23 +162,18 @@ pub fn main(init: std.process.Init) !void {
                     );
                     std.process.exit(1);
                 };
+                const medium: termgfx.KittyMedium = switch (res.kind) {
+                    .shared_memory => .{ .shared_memory = res.name() },
+                    .temp_file => .{ .temp_file = res.name() },
+                };
                 if (!termgfx.writePreviewToStdout(io, .{
                     .kitty = .{
-                        .medium = .{ .temp_file = res.path() },
+                        .medium = medium,
                         .dims = res.dims,
                         .clear_first = parsed.clear_first,
                     },
                 }, preview_opts)) {
-                    std.Io.Dir.deleteFile(
-                        std.Io.Dir.cwd(),
-                        io,
-                        res.path(),
-                    ) catch |del_e| {
-                        std.log.warn(
-                            "Failed to clean up preview temp file '{s}': {}",
-                            .{ res.path(), del_e },
-                        );
-                    };
+                    res.cleanup(io);
                     std.process.exit(1);
                 }
             }
