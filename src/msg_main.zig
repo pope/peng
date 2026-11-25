@@ -343,12 +343,17 @@ pub fn main(init: std.process.Init) !void {
         var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
         const preview_opt = parsed_resp.value.getPreview();
         if (preview_opt) |prev| {
+            const target = termgfx.ProtocolMode.kitty.resolve(
+                init.environ_map,
+            );
             termgfx.writePreview(&stdout_writer.interface, .{
                 .kitty = .{
                     .temp_path = prev.path,
                     .dims = prev.dims,
                     .clear_first = clear_preview,
                 },
+            }, .{
+                .transport = target.transport,
             }) catch |err| {
                 std.log.err(
                     "Failed to write Kitty preview to stdout: {any}",

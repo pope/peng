@@ -5,6 +5,7 @@ const std = @import("std");
 const termgfx = @import("termgfx");
 const thumbcache = @import("thumbcache");
 
+const CellDims = termgfx.CellDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const ProtocolMode = termgfx.ProtocolMode;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
@@ -724,6 +725,7 @@ pub fn parseIpcCommandLineArgs(
 pub const PreviewArgs = struct {
     path: ?[]u8 = null,
     max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
+    cell_dims: ?CellDims = null,
     clear_first: bool = false,
     protocol: ProtocolMode = .auto,
     thumb_cache: ThumbCacheMode = .all,
@@ -752,6 +754,8 @@ pub fn printPreviewHelp(io: std.Io) void {
             protocol_modes_string ++ "; default: auto)\n" ++
             "      --size <WxH>          " ++
             "Maximum pixel dimensions (default: 800x600)\n" ++
+            "      --cells <COLSxROWS>   " ++
+            "Target terminal cell grid (for Kitty U=1 / tmux)\n" ++
             "      --thumb-cache <MODE>  XDG thumbnail cache policy (" ++
             thumb_cache_modes_string ++ ")\n" ++
             "      --no-thumb-cache      Disable XDG shared thumbnail cache\n",
@@ -764,6 +768,7 @@ fn parsePreviewArgsIterator(
 ) !PreviewArgs {
     var clear_first = false;
     var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
+    var cell_dims: ?CellDims = null;
     var has_flag_size = false;
     var protocol: ProtocolMode = .auto;
     var thumb_cache: ThumbCacheMode = .all;
@@ -803,6 +808,23 @@ fn parsePreviewArgsIterator(
                     }
                     return error.InvalidProtocol;
                 };
+            } else if (std.mem.eql(u8, arg, "--cells")) {
+                const val = args_it.next() orelse {
+                    if (!builtin.is_test) {
+                        std.log.err("Missing value for --cells flag.", .{});
+                    }
+                    return error.MissingFlagValue;
+                };
+                const dims = parsePreviewSize(val) orelse {
+                    if (!builtin.is_test) {
+                        std.log.err(
+                            "Invalid --cells value: {s}. Expected COLSxROWS.",
+                            .{val},
+                        );
+                    }
+                    return error.InvalidPreviewSize;
+                };
+                cell_dims = .{ .cols = dims.w, .rows = dims.h };
             } else if (std.mem.eql(u8, arg, "--size")) {
                 const val = args_it.next() orelse {
                     if (!builtin.is_test) {
@@ -894,6 +916,7 @@ fn parsePreviewArgsIterator(
     return .{
         .path = owned_path,
         .max_dims = max_dims,
+        .cell_dims = cell_dims,
         .clear_first = clear_first,
         .protocol = protocol,
         .thumb_cache = thumb_cache,
@@ -1736,12 +1759,42 @@ test "parsePreviewArgsIterator parses --protocol flag" {
 
     {
         var it = SliceIterator{
-            .slice = &[_][]const u8{ "--protocol", "iterm2", "photo.jpg" },
+            .slice = &[_][]const u8{
+                "--protocol",
+                "iterm2",
+                "--cells",
+                "60x30",
+                "photo.jpg",
+            },
         };
         var parsed = try parsePreviewArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expectEqual(ProtocolMode.iterm2, parsed.protocol);
+        try testing.expectEqual(
+            @as(?CellDims, .{ .cols = 60, .rows = 30 }),
+            parsed.cell_dims,
+        );
         try testing.expectEqualStrings("photo.jpg", parsed.path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--cells", "0x24", "photo.jpg" },
+        };
+        try testing.expectError(
+            error.InvalidPreviewSize,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--cells"},
+        };
+        try testing.expectError(
+            error.MissingFlagValue,
+            parsePreviewArgsIterator(&it, testing.allocator),
+        );
     }
 
     {

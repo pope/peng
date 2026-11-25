@@ -7,6 +7,25 @@ pub const Protocol = enum {
     iterm2,
 };
 
+/// Terminal cell dimensions (columns x rows), e.g. from `--cells COLSxROWS`.
+pub const CellDims = struct {
+    cols: u32,
+    rows: u32,
+};
+
+/// Escape-sequence framing mode for the active terminal / multiplexer.
+pub const TransportMode = enum {
+    direct,
+    tmux_passthrough,
+    tmux_unicode_placeholders,
+};
+
+/// Resolved terminal graphics backend and transport framing mode.
+pub const ResolvedTarget = struct {
+    protocol: Protocol,
+    transport: TransportMode = .direct,
+};
+
 /// User-facing protocol selection mode (`auto` resolves from environment).
 pub const ProtocolMode = enum {
     auto,
@@ -23,17 +42,22 @@ pub const ProtocolMode = enum {
         return null;
     }
 
-    /// Resolves this mode into a concrete `Protocol` using `environ_map`
-    /// when set to `.auto`.
+    /// Resolves this mode into a concrete `ResolvedTarget` (protocol and
+    /// `TransportMode`) using `environ_map`.
     pub fn resolve(
         self: ProtocolMode,
         environ_map: *const std.process.Environ.Map,
-    ) Protocol {
-        return switch (self) {
-            .auto => detectProtocolFromEnviron(environ_map),
+    ) ResolvedTarget {
+        const env = terminalEnvFromEnviron(environ_map);
+        const protocol: Protocol = switch (self) {
+            .auto => detectProtocol(env),
             .kitty => .kitty,
             .sixel => .sixel,
             .iterm2 => .iterm2,
+        };
+        return .{
+            .protocol = protocol,
+            .transport = resolveTransport(env, protocol),
         };
     }
 };
@@ -58,17 +82,31 @@ fn isNonEmpty(val: ?[]const u8) bool {
     return if (val) |s| s.len > 0 else false;
 }
 
+/// Resolves the `TransportMode` for `protocol` in `env`:
+/// - Outside `tmux`: `.direct`.
+/// - Inside `tmux`: `.tmux_unicode_placeholders` for Kitty (`U=1`),
+///   `.tmux_passthrough` for iTerm2, and `.direct` for native `tmux` Sixel.
+fn resolveTransport(env: TerminalEnv, protocol: Protocol) TransportMode {
+    if (!isNonEmpty(env.tmux)) return .direct;
+    return switch (protocol) {
+        .kitty => .tmux_unicode_placeholders,
+        .iterm2 => .tmux_passthrough,
+        .sixel => .direct,
+    };
+}
+
 /// Detects the preferred terminal graphics `Protocol` from `env` using
 /// zero-latency environment heuristics (no TTY raw-mode probing).
 ///
 /// Routing rules:
-/// - Inside `tmux`: `.sixel` (native Sixel; passthrough is a future follow-up).
-/// - Kitty & Ghostty: `.kitty`.
-/// - WezTerm, iTerm2, Warp, Tabby, Hyper: `.iterm2` (24-bit inline images).
+/// - Kitty & Ghostty: `.kitty` (uses `U=1` Unicode placeholders in `tmux`).
+/// - WezTerm: `.iterm2` outside `tmux` (24-bit truecolor); `.sixel` inside
+///   `tmux` (native `tmux` cell-grid rendering with clean cursor/exit).
+/// - iTerm2, Warp, Tabby, Hyper: `.iterm2`.
 /// - Foot, mlterm, mintty, Contour, Rio, VSCode, BlackBox, yaft: `.sixel`.
-/// - Unknown / stripped environment: `.kitty` fallback.
+/// - Unknown outer terminal inside `tmux`: `.sixel`; otherwise `.kitty`.
 fn detectProtocol(env: TerminalEnv) Protocol {
-    if (isNonEmpty(env.tmux)) return .sixel;
+    const in_tmux = isNonEmpty(env.tmux);
 
     if (env.term_program) |tp| {
         if (std.ascii.eqlIgnoreCase(tp, "kitty") or
@@ -76,8 +114,10 @@ fn detectProtocol(env: TerminalEnv) Protocol {
         {
             return .kitty;
         }
+        if (std.ascii.eqlIgnoreCase(tp, "wezterm")) {
+            return if (in_tmux) .sixel else .iterm2;
+        }
         const iterm2_programs = [_][]const u8{
-            "wezterm",
             "iterm.app",
             "warpterminal",
             "tabby",
@@ -106,10 +146,11 @@ fn detectProtocol(env: TerminalEnv) Protocol {
         return .kitty;
     }
 
-    if (isNonEmpty(env.iterm_session_id) or
-        isNonEmpty(env.wezterm_executable) or
-        isNonEmpty(env.wezterm_pane))
-    {
+    if (isNonEmpty(env.wezterm_executable) or isNonEmpty(env.wezterm_pane)) {
+        return if (in_tmux) .sixel else .iterm2;
+    }
+
+    if (isNonEmpty(env.iterm_session_id)) {
         return .iterm2;
     }
 
@@ -127,13 +168,14 @@ fn detectProtocol(env: TerminalEnv) Protocol {
         }
     }
 
+    if (in_tmux) return .sixel;
     return .kitty;
 }
 
-fn detectProtocolFromEnviron(
+fn terminalEnvFromEnviron(
     environ_map: *const std.process.Environ.Map,
-) Protocol {
-    return detectProtocol(.{
+) TerminalEnv {
+    return .{
         .term = environ_map.get("TERM"),
         .term_program = environ_map.get("TERM_PROGRAM"),
         .kitty_window_id = environ_map.get("KITTY_WINDOW_ID"),
@@ -142,7 +184,7 @@ fn detectProtocolFromEnviron(
         .wezterm_executable = environ_map.get("WEZTERM_EXECUTABLE"),
         .wezterm_pane = environ_map.get("WEZTERM_PANE"),
         .tmux = environ_map.get("TMUX"),
-    });
+    };
 }
 
 test "detectProtocol routes Kitty and Ghostty to kitty" {
@@ -196,16 +238,72 @@ test "detectProtocol routes WezTerm and iTerm2 to iterm2, foot/tmux to sixel" {
         Protocol.sixel,
         detectProtocol(.{ .term = "foot-extra" }),
     );
+    // Inside tmux: detect outer terminal rather than forcing sixel.
+    try std.testing.expectEqual(
+        Protocol.kitty,
+        detectProtocol(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+            .term_program = "ghostty",
+        }),
+    );
+    try std.testing.expectEqual(
+        Protocol.kitty,
+        detectProtocol(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+            .term_program = "tmux",
+            .kitty_window_id = "1",
+        }),
+    );
     try std.testing.expectEqual(
         Protocol.sixel,
         detectProtocol(.{
             .tmux = "/tmp/tmux-1000/default,123,0",
-            .kitty_window_id = "1",
+            .term_program = "WezTerm",
+        }),
+    );
+    try std.testing.expectEqual(
+        Protocol.sixel,
+        detectProtocol(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+            .term_program = "tmux",
+            .wezterm_pane = "0",
+        }),
+    );
+    try std.testing.expectEqual(
+        Protocol.sixel,
+        detectProtocol(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+            .term = "tmux-256color",
         }),
     );
     try std.testing.expectEqual(
         Protocol.kitty,
         detectProtocol(.{}),
+    );
+}
+
+test "resolveTransport selects direct, passthrough, or U=1 placeholders" {
+    try std.testing.expectEqual(
+        TransportMode.direct,
+        resolveTransport(.{}, .kitty),
+    );
+    try std.testing.expectEqual(
+        TransportMode.tmux_unicode_placeholders,
+        resolveTransport(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+        }, .kitty),
+    );
+    try std.testing.expectEqual(
+        TransportMode.tmux_passthrough,
+        resolveTransport(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+        }, .iterm2),
+    );
+    try std.testing.expectEqual(
+        TransportMode.direct,
+        resolveTransport(.{
+            .tmux = "/tmp/tmux-1000/default,123,0",
+        }, .sixel),
     );
 }
 

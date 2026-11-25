@@ -7,14 +7,25 @@
 const detect = @import("detect.zig");
 const geom = @import("geom");
 const iterm2 = @import("iterm2.zig");
+const kitty = @import("kitty.zig");
 const sixel = @import("sixel.zig");
 const std = @import("std");
 
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
+pub const CellDims = detect.CellDims;
 pub const Protocol = detect.Protocol;
 pub const ProtocolMode = detect.ProtocolMode;
+pub const ResolvedTarget = detect.ResolvedTarget;
+pub const TransportMode = detect.TransportMode;
 pub const protocol_modes_string = detect.protocol_modes_string;
+
+/// Options controlling terminal graphics framing (`TransportMode` and
+/// optional target cell grid for Kitty `U=1` Unicode placeholders).
+pub const PreviewOptions = struct {
+    transport: TransportMode = .direct,
+    cell_dims: ?CellDims = null,
+};
 
 /// Payload for Kitty Graphics Protocol `t=t` emission from an RGBA32 temp
 /// file.
@@ -46,32 +57,65 @@ pub const PreviewPayload = union(Protocol) {
     iterm2: Iterm2Payload,
 };
 
-fn writeKittyPreview(
-    writer: *std.Io.Writer,
-    temp_path: []const u8,
-    dims: PositiveDimsU32,
-    clear_first: bool,
-) !void {
-    var b64_buf: [512]u8 = undefined;
-    if (std.base64.standard.Encoder.calcSize(temp_path.len) > b64_buf.len) {
-        return error.PathTooLong;
-    }
-    const encoded = std.base64.standard.Encoder.encode(&b64_buf, temp_path);
-    const clear_seq = if (clear_first) "\x1b_Ga=d,d=A,q=2\x1b\\" else "";
-    try writer.print(
-        "{s}\x1b_Ga=T,f=32,s={d},v={d},t=t,q=2;{s}\x1b\\",
-        .{ clear_seq, dims.w, dims.h, encoded },
-    );
-}
+/// Zero-allocation `std.Io.Writer` wrapper that escapes `\x1b` as `\x1b\x1b`
+/// for `tmux` DCS passthrough (`\x1bPtmux;...\x1b\\`).
+const TmuxPassthroughWriter = struct {
+    inner: *std.Io.Writer,
+    interface: std.Io.Writer,
 
-/// Encodes and writes `payload` to `writer` using its tagged terminal
-/// graphics protocol.
-pub fn writePreview(
+    fn init(inner: *std.Io.Writer, buf: []u8) TmuxPassthroughWriter {
+        return .{
+            .inner = inner,
+            .interface = .{
+                .vtable = &.{ .drain = drain },
+                .buffer = buf,
+            },
+        };
+    }
+
+    fn writeEscaped(
+        inner: *std.Io.Writer,
+        bytes: []const u8,
+    ) std.Io.Writer.Error!void {
+        var rest = bytes;
+        while (std.mem.findScalar(u8, rest, '\x1b')) |esc_idx| {
+            if (esc_idx > 0) try inner.writeAll(rest[0..esc_idx]);
+            try inner.writeAll("\x1b\x1b");
+            rest = rest[esc_idx + 1 ..];
+        }
+        if (rest.len > 0) try inner.writeAll(rest);
+    }
+
+    fn drain(
+        w: *std.Io.Writer,
+        data: []const []const u8,
+        splat: usize,
+    ) std.Io.Writer.Error!usize {
+        const self: *TmuxPassthroughWriter = @fieldParentPtr("interface", w);
+        if (w.end > 0) {
+            try writeEscaped(self.inner, w.buffer[0..w.end]);
+            w.end = 0;
+        }
+        var consumed: usize = 0;
+        for (data[0 .. data.len - 1]) |slice| {
+            try writeEscaped(self.inner, slice);
+            consumed += slice.len;
+        }
+        const last = data[data.len - 1];
+        for (0..splat) |_| {
+            try writeEscaped(self.inner, last);
+            consumed += last.len;
+        }
+        return consumed;
+    }
+};
+
+fn writePayloadRaw(
     writer: *std.Io.Writer,
     payload: PreviewPayload,
 ) !void {
     return switch (payload) {
-        .kitty => |k| writeKittyPreview(
+        .kitty => |k| kitty.writeKittyStandard(
             writer,
             k.temp_path,
             k.dims,
@@ -92,7 +136,75 @@ pub fn writePreview(
     };
 }
 
-test "writePreview formats Kitty t=t and Sixel escape sequences" {
+fn validatePayload(payload: PreviewPayload) !void {
+    switch (payload) {
+        .kitty => |k| {
+            if (std.base64.standard.Encoder.calcSize(k.temp_path.len) > 512) {
+                return error.PathTooLong;
+            }
+        },
+        .iterm2 => |it| {
+            if (it.dims.w == 0 or it.dims.h == 0) {
+                return error.InvalidDimensions;
+            }
+            if (it.image_bytes.len == 0) return error.EmptyPayload;
+        },
+        .sixel => |s| {
+            if (s.dims.w == 0 or s.dims.h == 0) return error.InvalidDimensions;
+            if (s.dims.w > 4096 or s.dims.h > 4096) {
+                return error.DimensionsTooLarge;
+            }
+            const row_bytes = @as(u64, s.dims.w) * 4;
+            if (s.pitch < row_bytes) return error.InvalidPitch;
+            if (@as(u64, s.dims.h - 1) *| @as(u64, s.pitch) +| row_bytes >
+                s.rgba_pixels.len)
+            {
+                return error.BufferTooSmall;
+            }
+        },
+    }
+}
+
+/// Encodes and writes `payload` to `writer` using its tagged terminal
+/// graphics protocol, applying `opts` (Kitty `U=1` Unicode placeholders and
+/// `tmux` DCS passthrough wrapping).
+// TODO(termgfx): For `.iterm2` inside `tmux`, query cell pixel height via
+// `TIOCGWINSZ` (`ws_ypixel / ws_row`) to advance `tmux`'s cursor by the
+// exact image row height after passthrough without over-scrolling.
+pub fn writePreview(
+    writer: *std.Io.Writer,
+    payload: PreviewPayload,
+    opts: PreviewOptions,
+) !void {
+    switch (opts.transport) {
+        .direct => return writePayloadRaw(writer, payload),
+        .tmux_unicode_placeholders => switch (payload) {
+            .kitty => |k| return kitty.writeKittyUnicodePlaceholder(
+                writer,
+                k.temp_path,
+                k.dims,
+                opts.cell_dims,
+            ),
+            .sixel, .iterm2 => return writeTmuxPassthrough(writer, payload),
+        },
+        .tmux_passthrough => return writeTmuxPassthrough(writer, payload),
+    }
+}
+
+fn writeTmuxPassthrough(
+    writer: *std.Io.Writer,
+    payload: PreviewPayload,
+) !void {
+    try validatePayload(payload);
+    try writer.writeAll("\x1bPtmux;");
+    var tmux_buf: [4 * 1024]u8 = undefined;
+    var tmux_w = TmuxPassthroughWriter.init(writer, &tmux_buf);
+    try writePayloadRaw(&tmux_w.interface, payload);
+    try tmux_w.interface.flush();
+    try writer.writeAll("\x1b\\");
+}
+
+test "writePreview formats Kitty t=t, Sixel, iTerm2, and tmux passthrough" {
     var buf: [256]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try writePreview(&w, .{
@@ -101,7 +213,7 @@ test "writePreview formats Kitty t=t and Sixel escape sequences" {
             .dims = .{ .w = 320, .h = 240 },
             .clear_first = false,
         },
-    });
+    }, .{});
     try std.testing.expectEqualStrings(
         "\x1b_Ga=T,f=32,s=320,v=240,t=t,q=2;L2Rldi9zaG0vYS5yZ2Jh\x1b\\",
         w.buffered(),
@@ -114,7 +226,7 @@ test "writePreview formats Kitty t=t and Sixel escape sequences" {
             .dims = .{ .w = 320, .h = 240 },
             .clear_first = true,
         },
-    });
+    }, .{});
     try std.testing.expectEqualStrings(
         "\x1b_Ga=d,d=A,q=2\x1b\\" ++
             "\x1b_Ga=T,f=32,s=320,v=240,t=t,q=2;L2Rldi9zaG0vYS5yZ2Jh\x1b\\",
@@ -131,7 +243,7 @@ test "writePreview formats Kitty t=t and Sixel escape sequences" {
                 .dims = .{ .w = 10, .h = 10 },
                 .clear_first = false,
             },
-        }),
+        }, .{}),
     );
 
     var px: [4]u8 = .{ 255, 0, 0, 255 };
@@ -144,7 +256,7 @@ test "writePreview formats Kitty t=t and Sixel escape sequences" {
             .pitch = 4,
             .dims = .{ .w = 1, .h = 1 },
         },
-    });
+    }, .{});
     try std.testing.expect(
         std.mem.startsWith(u8, aw.written(), "\x1bP0;1;0q\"1;1;1;1"),
     );
@@ -155,16 +267,31 @@ test "writePreview formats Kitty t=t and Sixel escape sequences" {
             .image_bytes = "abc",
             .dims = .{ .w = 16, .h = 12 },
         },
-    });
+    }, .{});
     try std.testing.expectEqualStrings(
         "\x1b]1337;File=inline=1;size=3;width=16px;height=12px;" ++
             "preserveAspectRatio=1:YWJj\x07",
         w4.buffered(),
+    );
+
+    // tmux DCS passthrough wraps payload and doubles every inner ESC byte.
+    var w5 = std.Io.Writer.fixed(&buf);
+    try writePreview(&w5, .{
+        .iterm2 = .{
+            .image_bytes = "abc",
+            .dims = .{ .w = 16, .h = 12 },
+        },
+    }, .{ .transport = .tmux_passthrough });
+    try std.testing.expectEqualStrings(
+        "\x1bPtmux;\x1b\x1b]1337;File=inline=1;size=3;" ++
+            "width=16px;height=12px;preserveAspectRatio=1:YWJj\x07\x1b\\",
+        w5.buffered(),
     );
 }
 
 test {
     _ = detect;
     _ = iterm2;
+    _ = kitty;
     _ = sixel;
 }

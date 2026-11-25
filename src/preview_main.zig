@@ -39,10 +39,14 @@ pub fn main(init: std.process.Init) !void {
     );
     defer thumb_cfg.deinit(gpa);
 
-    const protocol = parsed.protocol.resolve(init.environ_map);
+    const target = parsed.protocol.resolve(init.environ_map);
+    const preview_opts: termgfx.PreviewOptions = .{
+        .transport = target.transport,
+        .cell_dims = parsed.cell_dims,
+    };
     const stdout = std.Io.File.stdout();
 
-    switch (protocol) {
+    switch (target.protocol) {
         .kitty => {
             const res = renderPreviewRgbaFile(
                 gpa,
@@ -67,7 +71,7 @@ pub fn main(init: std.process.Init) !void {
                         .dims = res.dims,
                         .clear_first = parsed.clear_first,
                     },
-                }) catch |err| break :blk err;
+                }, preview_opts) catch |err| break :blk err;
                 stdout_writer.interface.flush() catch |err| break :blk err;
                 break :blk null;
             };
@@ -122,7 +126,7 @@ pub fn main(init: std.process.Init) !void {
                         .pitch = pitch,
                         .dims = preview.dims,
                     },
-                }) catch |err| break :blk err;
+                }, preview_opts) catch |err| break :blk err;
                 stdout_writer.interface.flush() catch |err| break :blk err;
                 break :blk null;
             };
@@ -173,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
                         .image_bytes = image_bytes,
                         .dims = preview.dims,
                     },
-                }) catch |err| break :blk err;
+                }, preview_opts) catch |err| break :blk err;
                 stdout_writer.interface.flush() catch |err| break :blk err;
                 break :blk null;
             };
