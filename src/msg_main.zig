@@ -437,12 +437,67 @@ fn writeTerminalPreview(
 
     switch (target.protocol) {
         .kitty => {
+            if (target.is_remote) {
+                defer deleteTempFileQuiet(io, prev.path);
+                const bytes = readTempFileAlloc(
+                    gpa,
+                    io,
+                    prev.path,
+                ) catch |err| {
+                    std.log.err(
+                        "Failed to read preview RGBA temp file '{s}': {s}",
+                        .{ prev.path, @errorName(err) },
+                    );
+                    return false;
+                };
+                defer gpa.free(bytes);
+                const pitch = std.math.mul(usize, prev.dims.w, 4) catch {
+                    std.log.err("Preview RGBA dimensions overflow", .{});
+                    return false;
+                };
+                const expected = std.math.mul(usize, pitch, prev.dims.h) catch {
+                    std.log.err("Preview RGBA dimensions overflow", .{});
+                    return false;
+                };
+                if (bytes.len < expected) {
+                    std.log.err("Truncated preview RGBA temp file", .{});
+                    return false;
+                }
+                var stdout_buf: [16 * 1024]u8 = undefined;
+                var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+                const write_res: ?anyerror = blk: {
+                    termgfx.writePreview(&stdout_writer.interface, .{
+                        .kitty = .{
+                            .medium = .{
+                                .direct_rgba = .{
+                                    .rgba_pixels = bytes[0..expected],
+                                    .pitch = pitch,
+                                },
+                            },
+                            .dims = prev.dims,
+                            .clear_first = clear_first,
+                        },
+                    }, preview_opts) catch |err| break :blk err;
+                    stdout_writer.interface.flush() catch |err| break :blk err;
+                    break :blk null;
+                };
+                if (write_res) |err| {
+                    const write_err: anyerror = stdout_writer.err orelse err;
+                    if (write_err != error.BrokenPipe) {
+                        std.log.err("Failed to write Kitty preview: {s}", .{
+                            @errorName(write_err),
+                        });
+                    }
+                    return false;
+                }
+                return true;
+            }
             var stdout_buf: [1024]u8 = undefined;
             var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
             const write_res: ?anyerror = blk: {
                 termgfx.writePreview(&stdout_writer.interface, .{
                     .kitty = .{
-                        .temp_path = prev.path,
+                        .medium = .{ .temp_file = prev.path },
                         .dims = prev.dims,
                         .clear_first = clear_first,
                     },

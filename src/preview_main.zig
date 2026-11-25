@@ -80,51 +80,101 @@ pub fn main(init: std.process.Init) !void {
 
     switch (target.protocol) {
         .kitty => {
-            const res = renderPreviewRgbaFile(
-                gpa,
-                io,
-                thumb_cfg,
-                target_path,
-                max_dims,
-                NoCancel{},
-            ) catch |err| {
-                std.log.err(
-                    "Failed to render preview for '{s}': {s}",
-                    .{ target_path, @errorName(err) },
-                );
-                std.process.exit(1);
-            };
-            var stdout_buf: [1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .kitty = .{
-                        .temp_path = res.path(),
-                        .dims = res.dims,
-                        .clear_first = parsed.clear_first,
-                    },
-                }, preview_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write Kitty preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
-                std.Io.Dir.deleteFile(
-                    std.Io.Dir.cwd(),
+            if (target.is_remote) {
+                const preview = renderPreviewSurface(
+                    gpa,
                     io,
-                    res.path(),
-                ) catch |del_e| {
-                    std.log.warn(
-                        "Failed to clean up preview temp file '{s}': {}",
-                        .{ res.path(), del_e },
+                    thumb_cfg,
+                    target_path,
+                    max_dims,
+                    NoCancel{},
+                ) catch |err| {
+                    std.log.err(
+                        "Failed to render preview for '{s}': {s}",
+                        .{ target_path, @errorName(err) },
                     );
+                    std.process.exit(1);
                 };
-                std.process.exit(1);
+                defer preview.deinit();
+
+                const pitch: usize = @intCast(preview.surface.pitch());
+                const h_usize: usize = @intCast(preview.dims.h);
+                const pixels = preview.surface.pixels()[0 .. pitch * h_usize];
+
+                var stdout_buf: [16 * 1024]u8 = undefined;
+                var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+                const write_res: ?anyerror = blk: {
+                    termgfx.writePreview(&stdout_writer.interface, .{
+                        .kitty = .{
+                            .medium = .{
+                                .direct_rgba = .{
+                                    .rgba_pixels = pixels,
+                                    .pitch = pitch,
+                                },
+                            },
+                            .dims = preview.dims,
+                            .clear_first = parsed.clear_first,
+                        },
+                    }, preview_opts) catch |err| break :blk err;
+                    stdout_writer.interface.flush() catch |err| break :blk err;
+                    break :blk null;
+                };
+                if (write_res) |err| {
+                    const write_err: anyerror = stdout_writer.err orelse err;
+                    if (write_err != error.BrokenPipe) {
+                        std.log.err("Failed to write Kitty preview: {s}", .{
+                            @errorName(write_err),
+                        });
+                    }
+                    std.process.exit(1);
+                }
+            } else {
+                const res = renderPreviewRgbaFile(
+                    gpa,
+                    io,
+                    thumb_cfg,
+                    target_path,
+                    max_dims,
+                    NoCancel{},
+                ) catch |err| {
+                    std.log.err(
+                        "Failed to render preview for '{s}': {s}",
+                        .{ target_path, @errorName(err) },
+                    );
+                    std.process.exit(1);
+                };
+                var stdout_buf: [1024]u8 = undefined;
+                var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+                const write_res: ?anyerror = blk: {
+                    termgfx.writePreview(&stdout_writer.interface, .{
+                        .kitty = .{
+                            .medium = .{ .temp_file = res.path() },
+                            .dims = res.dims,
+                            .clear_first = parsed.clear_first,
+                        },
+                    }, preview_opts) catch |err| break :blk err;
+                    stdout_writer.interface.flush() catch |err| break :blk err;
+                    break :blk null;
+                };
+                if (write_res) |err| {
+                    const write_err: anyerror = stdout_writer.err orelse err;
+                    if (write_err != error.BrokenPipe) {
+                        std.log.err("Failed to write Kitty preview: {s}", .{
+                            @errorName(write_err),
+                        });
+                    }
+                    std.Io.Dir.deleteFile(
+                        std.Io.Dir.cwd(),
+                        io,
+                        res.path(),
+                    ) catch |del_e| {
+                        std.log.warn(
+                            "Failed to clean up preview temp file '{s}': {}",
+                            .{ res.path(), del_e },
+                        );
+                    };
+                    std.process.exit(1);
+                }
             }
         },
         .sixel => {

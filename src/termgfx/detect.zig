@@ -104,10 +104,12 @@ pub const TransportMode = enum {
     tmux_unicode_placeholders,
 };
 
-/// Resolved terminal graphics backend and transport framing mode.
+/// Resolved terminal graphics backend, transport framing mode, and whether the
+/// session is running over SSH (`is_remote`).
 pub const ResolvedTarget = struct {
     protocol: Protocol,
     transport: TransportMode = .direct,
+    is_remote: bool = false,
 };
 
 /// Requested preview sizing specification covering every valid combination of
@@ -258,6 +260,7 @@ pub const ProtocolMode = enum {
         return .{
             .protocol = protocol,
             .transport = resolveTransport(env, protocol),
+            .is_remote = isRemoteSession(env),
         };
     }
 };
@@ -276,10 +279,19 @@ const TerminalEnv = struct {
     wezterm_executable: ?[]const u8 = null,
     wezterm_pane: ?[]const u8 = null,
     tmux: ?[]const u8 = null,
+    ssh_connection: ?[]const u8 = null,
+    ssh_tty: ?[]const u8 = null,
+    ssh_client: ?[]const u8 = null,
 };
 
 fn isNonEmpty(val: ?[]const u8) bool {
     return if (val) |s| s.len > 0 else false;
+}
+
+fn isRemoteSession(env: TerminalEnv) bool {
+    return isNonEmpty(env.ssh_connection) or
+        isNonEmpty(env.ssh_tty) or
+        isNonEmpty(env.ssh_client);
 }
 
 /// Resolves the `TransportMode` for `protocol` in `env`:
@@ -385,6 +397,9 @@ fn terminalEnvFromEnviron(
         .wezterm_executable = environ_map.get("WEZTERM_EXECUTABLE"),
         .wezterm_pane = environ_map.get("WEZTERM_PANE"),
         .tmux = environ_map.get("TMUX"),
+        .ssh_connection = environ_map.get("SSH_CONNECTION"),
+        .ssh_tty = environ_map.get("SSH_TTY"),
+        .ssh_client = environ_map.get("SSH_CLIENT"),
     };
 }
 
@@ -638,4 +653,16 @@ test "PreviewSize combines pixels/cells and resolves pixel dims" {
         PositiveDimsU32{ .w = 600, .h = 600 },
         c_only.resolveMaxPixels(null),
     );
+}
+
+test "isRemoteSession detects SSH environment variables" {
+    try std.testing.expect(!isRemoteSession(.{}));
+    try std.testing.expect(!isRemoteSession(.{ .ssh_connection = "" }));
+    try std.testing.expect(isRemoteSession(.{
+        .ssh_connection = "1.2.3.4 55555 5.6.7.8 22",
+    }));
+    try std.testing.expect(isRemoteSession(.{ .ssh_tty = "/dev/pts/1" }));
+    try std.testing.expect(isRemoteSession(.{
+        .ssh_client = "1.2.3.4 55555 22",
+    }));
 }

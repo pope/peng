@@ -65,50 +65,187 @@ fn writeUtf8Codepoint(writer: *std.Io.Writer, cp: u21) !void {
     try writer.writeAll(buf[0..len]);
 }
 
-/// Derives a deterministic non-zero 24-bit Kitty image ID from `temp_path`
-/// so the ID fits directly in an RGB foreground color `\x1b[38;2;r;g;bm`.
-fn imageIdFromPath(temp_path: []const u8) u24 {
-    const h = std.hash.Wyhash.hash(0, temp_path);
-    const id: u24 = @truncate(h);
+/// Kitty Graphics Protocol pixel data transport medium:
+/// - `.temp_file`: local temporary RGBA32 file (`t=t`, unlinked by terminal).
+/// - `.direct_rgba`: inline 4096-byte base64 chunks (`t=d`, SSH-compatible).
+pub const KittyMedium = union(enum) {
+    temp_file: []const u8,
+    direct_rgba: struct {
+        rgba_pixels: []const u8,
+        pitch: usize,
+    },
+};
+
+/// Validates `medium` and `dims` before emitting any Kitty escape sequence.
+pub fn validateMedium(medium: KittyMedium, dims: PositiveDimsU32) !void {
+    if (dims.w == 0 or dims.h == 0) return error.InvalidDimensions;
+    switch (medium) {
+        .temp_file => |path| {
+            if (std.base64.standard.Encoder.calcSize(path.len) > 512) {
+                return error.PathTooLong;
+            }
+        },
+        .direct_rgba => |d| {
+            if (dims.w > 4096 or dims.h > 4096) return error.DimensionsTooLarge;
+            const row_bytes = @as(u64, dims.w) * 4;
+            if (d.pitch < row_bytes) return error.InvalidPitch;
+            if (@as(u64, dims.h - 1) *| @as(u64, d.pitch) +| row_bytes >
+                d.rgba_pixels.len)
+            {
+                return error.BufferTooSmall;
+            }
+        },
+    }
+}
+
+/// Derives a deterministic non-zero 24-bit Kitty image ID from `medium` and
+/// `dims` so the ID fits directly in an RGB foreground color
+/// `\x1b[38;2;r;g;bm`.
+fn imageIdFromMedium(medium: KittyMedium, dims: PositiveDimsU32) u24 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(std.mem.asBytes(&dims.w));
+    hasher.update(std.mem.asBytes(&dims.h));
+    switch (medium) {
+        .temp_file => |path| hasher.update(path),
+        .direct_rgba => |d| {
+            const row_bytes: usize = @as(usize, dims.w) * 4;
+            const sample_len = @min(row_bytes, 256);
+            const h_usize: usize = @intCast(dims.h);
+            const sample_rows = [_]usize{ 0, h_usize / 2, h_usize - 1 };
+            for (sample_rows) |row| {
+                const start = row * d.pitch;
+                hasher.update(d.rgba_pixels[start .. start + sample_len]);
+            }
+        },
+    }
+    const id: u24 = @truncate(hasher.final());
     return if (id == 0) 1 else id;
 }
 
-/// Writes a standard Kitty Graphics Protocol `t=t` escape sequence to
-/// `writer` using native pixel dimensions (avoiding cell-aspect stretching).
+fn writeDirectRgbaChunks(
+    writer: *std.Io.Writer,
+    rgba_pixels: []const u8,
+    pitch: usize,
+    dims: PositiveDimsU32,
+    first_header: []const u8,
+    tmux_wrap: bool,
+) !void {
+    const row_bytes: usize = @as(usize, dims.w) * 4;
+    const total_bytes: usize = row_bytes * @as(usize, dims.h);
+    // 3072 raw bytes encode to exactly 4096 base64 characters (Kitty chunk
+    // limit).
+    var raw_buf: [3072]u8 = undefined;
+    var b64_buf: [4096]u8 = undefined;
+    var raw_len: usize = 0;
+    var emitted_bytes: usize = 0;
+    var is_first = true;
+
+    for (0..@as(usize, dims.h)) |row| {
+        const row_start = row * pitch;
+        var slice = rgba_pixels[row_start .. row_start + row_bytes];
+        while (slice.len > 0) {
+            const take = @min(slice.len, raw_buf.len - raw_len);
+            @memcpy(raw_buf[raw_len .. raw_len + take], slice[0..take]);
+            raw_len += take;
+            slice = slice[take..];
+
+            if (raw_len == raw_buf.len or
+                emitted_bytes + raw_len == total_bytes)
+            {
+                emitted_bytes += raw_len;
+                const more: u8 = if (emitted_bytes < total_bytes) 1 else 0;
+                const encoded = std.base64.standard.Encoder.encode(
+                    &b64_buf,
+                    raw_buf[0..raw_len],
+                );
+                if (tmux_wrap) {
+                    if (is_first) {
+                        try writer.print(
+                            "\x1bPtmux;\x1b\x1b_G{s},t=d,m={d};{s}\x1b\x1b\\" ++
+                                "\x1b\\",
+                            .{ first_header, more, encoded },
+                        );
+                    } else {
+                        try writer.print(
+                            "\x1bPtmux;\x1b\x1b_Gm={d};{s}\x1b\x1b\\\x1b\\",
+                            .{ more, encoded },
+                        );
+                    }
+                } else {
+                    if (is_first) {
+                        try writer.print(
+                            "\x1b_G{s},t=d,m={d};{s}\x1b\\",
+                            .{ first_header, more, encoded },
+                        );
+                    } else {
+                        try writer.print(
+                            "\x1b_Gm={d};{s}\x1b\\",
+                            .{ more, encoded },
+                        );
+                    }
+                }
+                is_first = false;
+                raw_len = 0;
+            }
+        }
+    }
+}
+
+/// Writes a standard Kitty Graphics Protocol escape sequence (`t=t` or
+/// chunked `t=d`) to `writer` using native pixel dimensions.
 pub fn writeKittyStandard(
     writer: *std.Io.Writer,
-    temp_path: []const u8,
+    medium: KittyMedium,
     dims: PositiveDimsU32,
     clear_first: bool,
 ) !void {
-    var b64_buf: [512]u8 = undefined;
-    if (std.base64.standard.Encoder.calcSize(temp_path.len) > b64_buf.len) {
-        return error.PathTooLong;
+    try validateMedium(medium, dims);
+    if (clear_first) {
+        try writer.writeAll("\x1b_Ga=d,d=A,q=2\x1b\\");
     }
-    const encoded = std.base64.standard.Encoder.encode(&b64_buf, temp_path);
-    const clear_seq = if (clear_first) "\x1b_Ga=d,d=A,q=2\x1b\\" else "";
-    try writer.print(
-        "{s}\x1b_Ga=T,f=32,s={d},v={d},t=t,q=2;{s}\x1b\\",
-        .{ clear_seq, dims.w, dims.h, encoded },
-    );
+    switch (medium) {
+        .temp_file => |temp_path| {
+            var b64_buf: [512]u8 = undefined;
+            const encoded = std.base64.standard.Encoder.encode(
+                &b64_buf,
+                temp_path,
+            );
+            try writer.print(
+                "\x1b_Ga=T,f=32,s={d},v={d},t=t,q=2;{s}\x1b\\",
+                .{ dims.w, dims.h, encoded },
+            );
+        },
+        .direct_rgba => |d| {
+            var hdr_buf: [96]u8 = undefined;
+            const header = std.mem.print(
+                &hdr_buf,
+                "a=T,f=32,s={d},v={d},q=2",
+                .{ dims.w, dims.h },
+            ) catch unreachable;
+            try writeDirectRgbaChunks(
+                writer,
+                d.rgba_pixels,
+                d.pitch,
+                dims,
+                header,
+                false,
+            );
+        },
+    }
 }
 
 /// Writes a Kitty Graphics Protocol Unicode Placeholder (`U=1`) sequence for
 /// `tmux`: uploads the virtual placement (`a=T,U=1,i=<id>,c=<cols>,r=<rows>`)
-/// wrapped in `tmux` DCS passthrough, then emits plain `U+10EEEE` placeholder
-/// text cells so `tmux` tracks placement and clears the image cleanly on exit.
+/// wrapped in `tmux` DCS passthrough (per-chunk for `t=d`), then emits plain
+/// `U+10EEEE` placeholder text cells so `tmux` tracks placement cleanly.
 pub fn writeKittyUnicodePlaceholder(
     writer: *std.Io.Writer,
-    temp_path: []const u8,
+    medium: KittyMedium,
     dims: PositiveDimsU32,
     cell_dims: ?CellDims,
     cell_px: ?CellPixelSize,
 ) !void {
-    var b64_buf: [512]u8 = undefined;
-    if (std.base64.standard.Encoder.calcSize(temp_path.len) > b64_buf.len) {
-        return error.PathTooLong;
-    }
-    const encoded = std.base64.standard.Encoder.encode(&b64_buf, temp_path);
+    try validateMedium(medium, dims);
 
     const raw_cells = cell_dims orelse CellDims{ .cols = 80, .rows = 24 };
     const max_cells: CellDims = .{
@@ -117,12 +254,37 @@ pub fn writeKittyUnicodePlaceholder(
     };
     const fit = fitCells(dims, max_cells, cell_px);
 
-    const id = imageIdFromPath(temp_path);
-    try writer.print(
-        "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=32,s={d},v={d}," ++
-            "i={d},c={d},r={d},t=t,q=2;{s}\x1b\x1b\\\x1b\\",
-        .{ dims.w, dims.h, id, fit.cols, fit.rows, encoded },
-    );
+    const id = imageIdFromMedium(medium, dims);
+    switch (medium) {
+        .temp_file => |temp_path| {
+            var b64_buf: [512]u8 = undefined;
+            const encoded = std.base64.standard.Encoder.encode(
+                &b64_buf,
+                temp_path,
+            );
+            try writer.print(
+                "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=32,s={d},v={d}," ++
+                    "i={d},c={d},r={d},t=t,q=2;{s}\x1b\x1b\\\x1b\\",
+                .{ dims.w, dims.h, id, fit.cols, fit.rows, encoded },
+            );
+        },
+        .direct_rgba => |d| {
+            var hdr_buf: [128]u8 = undefined;
+            const header = std.mem.print(
+                &hdr_buf,
+                "a=T,U=1,f=32,s={d},v={d},i={d},c={d},r={d},q=2",
+                .{ dims.w, dims.h, id, fit.cols, fit.rows },
+            ) catch unreachable;
+            try writeDirectRgbaChunks(
+                writer,
+                d.rgba_pixels,
+                d.pitch,
+                dims,
+                header,
+                true,
+            );
+        },
+    }
 
     const r: u8 = @intCast((id >> 16) & 0xFF);
     const g: u8 = @intCast((id >> 8) & 0xFF);
@@ -178,7 +340,7 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
 
     try writeKittyUnicodePlaceholder(
         &aw.writer,
-        "/dev/shm/a.rgba",
+        .{ .temp_file = "/dev/shm/a.rgba" },
         .{ .w = 400, .h = 200 },
         .{ .cols = 8, .rows = 4 },
         null,
@@ -196,7 +358,7 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
     defer aw2.deinit();
     try writeKittyUnicodePlaceholder(
         &aw2.writer,
-        "/dev/shm/b.rgba",
+        .{ .temp_file = "/dev/shm/b.rgba" },
         .{ .w = 200, .h = 400 },
         .{ .cols = 1, .rows = 150 },
         null,
@@ -206,4 +368,80 @@ test "writeKittyUnicodePlaceholder emits U=1 upload and U+10EEEE grid" {
         std.mem.startsWith(u8, out2, "\x1bPtmux;\x1b\x1b_Ga=T,U=1,"),
     );
     try std.testing.expect(std.mem.find(u8, out2, "c=1,r=1,t=t,q=2;") != null);
+}
+
+test "writeKittyStandard and U=1 support direct_rgba chunking and pitch" {
+    const allocator = std.testing.allocator;
+
+    // 1x2 padded pitch (8 bytes per row, 4 bytes active): strips padding.
+    const padded = [_]u8{
+        1, 2, 3, 255, 99, 99, 99, 99,
+        4, 5, 6, 255, 88, 88, 88, 88,
+    };
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    try writeKittyStandard(
+        &aw.writer,
+        .{ .direct_rgba = .{ .rgba_pixels = &padded, .pitch = 8 } },
+        .{ .w = 1, .h = 2 },
+        false,
+    );
+    // base64({1,2,3,255,4,5,6,255}) = "AQID/wQFBv8="
+    try std.testing.expectEqualStrings(
+        "\x1b_Ga=T,f=32,s=1,v=2,q=2,t=d,m=0;AQID/wQFBv8=\x1b\\",
+        aw.written(),
+    );
+
+    // 32x32 RGBA = 4096 bytes -> 2 chunks (3072 bytes m=1, 1024 bytes m=0).
+    const big: [32 * 32 * 4]u8 = @splat(0xAA);
+    var aw2 = std.Io.Writer.Allocating.init(allocator);
+    defer aw2.deinit();
+    try writeKittyStandard(
+        &aw2.writer,
+        .{ .direct_rgba = .{ .rgba_pixels = &big, .pitch = 32 * 4 } },
+        .{ .w = 32, .h = 32 },
+        false,
+    );
+    const out2 = aw2.written();
+    try std.testing.expect(
+        std.mem.startsWith(u8, out2, "\x1b_Ga=T,f=32,s=32,v=32,q=2,t=d,m=1;"),
+    );
+    try std.testing.expect(std.mem.find(u8, out2, "\x1b\\\x1b_Gm=0;") != null);
+
+    // U=1 tmux placeholder wraps each direct_rgba chunk in DCS passthrough.
+    var aw3 = std.Io.Writer.Allocating.init(allocator);
+    defer aw3.deinit();
+    try writeKittyUnicodePlaceholder(
+        &aw3.writer,
+        .{ .direct_rgba = .{ .rgba_pixels = &big, .pitch = 32 * 4 } },
+        .{ .w = 32, .h = 32 },
+        .{ .cols = 4, .rows = 2 },
+        null,
+    );
+    const out3 = aw3.written();
+    try std.testing.expect(
+        std.mem.startsWith(u8, out3, "\x1bPtmux;\x1b\x1b_Ga=T,U=1,f=32,s=32,"),
+    );
+    try std.testing.expect(
+        std.mem.find(u8, out3, "\x1bPtmux;\x1b\x1b_Gm=0;") != null,
+    );
+    try std.testing.expect(std.mem.endsWith(u8, out3, "\x1b[39m"));
+
+    // Exact 3072-byte chunk boundary (24x32 RGBA = 3072 bytes) emits a single
+    // m=0 chunk with no empty trailing chunk.
+    const exact: [24 * 32 * 4]u8 = @splat(0x55);
+    var aw4 = std.Io.Writer.Allocating.init(allocator);
+    defer aw4.deinit();
+    try writeKittyStandard(
+        &aw4.writer,
+        .{ .direct_rgba = .{ .rgba_pixels = &exact, .pitch = 24 * 4 } },
+        .{ .w = 24, .h = 32 },
+        false,
+    );
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        aw4.written(),
+        "\x1b_Ga=T,f=32,s=24,v=32,q=2,t=d,m=0;",
+    ));
+    try std.testing.expect(std.mem.find(u8, aw4.written(), "m=1") == null);
 }

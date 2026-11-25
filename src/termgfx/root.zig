@@ -19,6 +19,7 @@ pub const CellDims = detect.CellDims;
 pub const CellPixelSize = detect.CellPixelSize;
 pub const cellsToPixels = detect.cellsToPixels;
 pub const default_cell_px = detect.default_cell_px;
+pub const KittyMedium = kitty.KittyMedium;
 pub const PreviewSize = detect.PreviewSize;
 pub const Protocol = detect.Protocol;
 pub const ProtocolMode = detect.ProtocolMode;
@@ -35,10 +36,10 @@ pub const PreviewOptions = struct {
     cell_px: ?CellPixelSize = null,
 };
 
-/// Payload for Kitty Graphics Protocol `t=t` emission from an RGBA32 temp
-/// file.
-pub const KittyFilePayload = struct {
-    temp_path: []const u8,
+/// Payload for Kitty Graphics Protocol emission (`t=t` temp file or chunked
+/// `t=d` direct RGBA32).
+pub const KittyPayload = struct {
+    medium: KittyMedium,
     dims: PositiveDimsU32,
     clear_first: bool = false,
 };
@@ -68,7 +69,7 @@ pub const HalfblocksPixelsPayload = struct {
 
 /// Protocol-tagged payload for terminal graphics preview emission.
 pub const PreviewPayload = union(Protocol) {
-    kitty: KittyFilePayload,
+    kitty: KittyPayload,
     sixel: SixelPixelsPayload,
     iterm2: Iterm2Payload,
     halfblocks: HalfblocksPixelsPayload,
@@ -135,7 +136,7 @@ fn writePayloadRaw(
     return switch (payload) {
         .kitty => |k| kitty.writeKittyStandard(
             writer,
-            k.temp_path,
+            k.medium,
             k.dims,
             k.clear_first,
         ),
@@ -163,11 +164,7 @@ fn writePayloadRaw(
 
 fn validatePayload(payload: PreviewPayload) !void {
     switch (payload) {
-        .kitty => |k| {
-            if (std.base64.standard.Encoder.calcSize(k.temp_path.len) > 512) {
-                return error.PathTooLong;
-            }
-        },
+        .kitty => |k| try kitty.validateMedium(k.medium, k.dims),
         .iterm2 => |it| {
             if (it.dims.w == 0 or it.dims.h == 0) {
                 return error.InvalidDimensions;
@@ -221,7 +218,7 @@ pub fn writePreview(
         .tmux_unicode_placeholders => switch (payload) {
             .kitty => |k| return kitty.writeKittyUnicodePlaceholder(
                 writer,
-                k.temp_path,
+                k.medium,
                 k.dims,
                 opts.cell_dims,
                 opts.cell_px,
@@ -271,7 +268,7 @@ test "writePreview formats Kitty t=t, Sixel, iTerm2, and tmux passthrough" {
     var w = std.Io.Writer.fixed(&buf);
     try writePreview(&w, .{
         .kitty = .{
-            .temp_path = "/dev/shm/a.rgba",
+            .medium = .{ .temp_file = "/dev/shm/a.rgba" },
             .dims = .{ .w = 320, .h = 240 },
             .clear_first = false,
         },
@@ -284,7 +281,7 @@ test "writePreview formats Kitty t=t, Sixel, iTerm2, and tmux passthrough" {
     var w2 = std.Io.Writer.fixed(&buf);
     try writePreview(&w2, .{
         .kitty = .{
-            .temp_path = "/dev/shm/a.rgba",
+            .medium = .{ .temp_file = "/dev/shm/a.rgba" },
             .dims = .{ .w = 320, .h = 240 },
             .clear_first = true,
         },
@@ -301,7 +298,7 @@ test "writePreview formats Kitty t=t, Sixel, iTerm2, and tmux passthrough" {
         error.PathTooLong,
         writePreview(&w3, .{
             .kitty = .{
-                .temp_path = &long_path,
+                .medium = .{ .temp_file = &long_path },
                 .dims = .{ .w = 10, .h = 10 },
                 .clear_first = false,
             },
