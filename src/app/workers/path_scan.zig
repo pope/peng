@@ -58,7 +58,7 @@ pub fn appendPathThreadSafe(
         gpa.free(dup);
         return;
     };
-    context.wakeUpMainThread();
+    workers.wakeMainThread();
 }
 
 /// Scans image files within `dir_path`, sorts them alphabetically
@@ -120,7 +120,7 @@ pub fn scanDirectoryThreadSafe(
             std.log.err("Failed to push path_discovered event: {}", .{err});
             dup_entry.deinit(gpa);
         };
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 }
 
@@ -138,7 +138,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         gpa.free(target_path);
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 
     const cancel = args.cancelToken();

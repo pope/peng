@@ -102,7 +102,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
         gpa.destroy(args);
         _ = active_dir_scans.fetchSub(1, .release);
         _ = workers.active_threads.fetchSub(1, .release);
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 
     if (cancel.isCanceled()) return;
@@ -259,7 +259,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
         return;
     };
     owns_arena = false;
-    context.wakeUpMainThread();
+    workers.wakeMainThread();
 
     const paths = unscanned_paths orelse return;
     for (paths) |path| {
@@ -291,7 +291,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
             gpa.free(path_dup);
             continue;
         };
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 }
 

@@ -91,7 +91,7 @@ fn failDecodeWorker(
     workers.event_queue.push(alloc, io, .{
         .decode_failed = .init(key, job_epoch, .{}),
     }) catch |e| std.log.err("Failed to push decode_failed event: {}", .{e});
-    context.wakeUpMainThread();
+    workers.wakeMainThread();
 }
 
 fn pushExifOrientation(
@@ -112,7 +112,7 @@ fn pushExifOrientation(
     }) catch |err| {
         std.log.err("Failed to push EXIF orientation event: {}", .{err});
     };
-    context.wakeUpMainThread();
+    workers.wakeMainThread();
 }
 
 fn pushThumbDecoded(
@@ -151,7 +151,7 @@ fn pushThumbDecoded(
         std.log.err("Failed to push thumbnail decode event: {}", .{err});
         surface.destroy();
     };
-    context.wakeUpMainThread();
+    workers.wakeMainThread();
 }
 
 fn pushDimensionsProbed(
@@ -175,7 +175,7 @@ fn pushDimensionsProbed(
     }) catch |err| {
         std.log.err("Failed to push dimensions probed event: {}", .{err});
     };
-    context.wakeUpMainThread();
+    workers.wakeMainThread();
 }
 
 const CacheProbeOutcome = enum {
@@ -710,14 +710,14 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             std.log.err("Failed to push image decode event: {}", .{err});
             f_surf.destroy();
         };
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
         return true;
     } else {
         if (is_pair) return false;
         workers.event_queue.push(alloc, io, .{
             .decode_failed = .init(key, args.job_epoch, .{}),
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
         return true;
     }
 }
@@ -1059,7 +1059,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         if (cancel.isCanceled()) {
             sdl.reclaimProcessHeap();
         }
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 
     if (cancel.isCanceled()) return;

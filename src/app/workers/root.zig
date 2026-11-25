@@ -21,6 +21,7 @@ pub const BackgroundEvent = events.BackgroundEvent;
 pub const DecodeArgs = decode.DecodeArgs;
 pub const DecodeMode = decode.DecodeMode;
 pub const DecodePriority = manager.DecodePriority;
+pub const EventWaker = context.EventWaker;
 pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
 pub const PreviewWorkerArgs = preview.PreviewWorkerArgs;
@@ -145,7 +146,7 @@ test "spawnIpcServer does not mark WorkerManager as busy" {
         .{tmp.sub_path},
     );
 
-    var workers = WorkerManager.init();
+    var workers = WorkerManager.init(.none);
     defer workers.deinit(allocator, io);
     workers.exiting.store(true, .release);
 

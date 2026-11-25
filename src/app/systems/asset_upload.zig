@@ -6,11 +6,13 @@ const gpu = @import("gpu");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const workers_mod = @import("../workers/root.zig");
 
 const AppState = app_state.AppState;
 const CacheEntry = cache_pkg.CacheEntry;
 const calcCyclicDistance = cache_pkg.calcCyclicDistance;
 const CpuAsset = cache_pkg.CpuAsset;
+const EventWaker = workers_mod.EventWaker;
 const FrameContext = context.FrameContext;
 const ImageCache = cache_pkg.ImageCache;
 const ImageCacheKey = cache_pkg.ImageCacheKey;
@@ -26,12 +28,13 @@ fn stageCopyWorker(
     io: std.Io,
     result_out: *?f64,
     done_flag: *std.atomic.Value(bool),
+    waker: EventWaker,
     job: StagedTransferJob,
 ) void {
     var local_job = job;
     result_out.* = local_job.executeStagingCopy(io);
     done_flag.store(true, .release);
-    _ = sdl.events.pushUserEvent();
+    waker.wake();
 }
 
 /// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures
@@ -356,6 +359,7 @@ fn prepareCacheTextures(state: *AppState, now_ms: u64) bool {
                     state.io,
                     &state.upload_stage_result,
                     &state.upload_stage_done,
+                    state.workers.waker,
                     started.job,
                 },
             )) |_| {

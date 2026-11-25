@@ -549,7 +549,7 @@ const AppGraphicsAndState = struct {
             .gpu_enabled = true,
             .unpack_compute_pipeline = null,
             .cache = .{},
-            .workers = .init(),
+            .workers = .init(.sdl),
             .server_idle_timeout_ms = if (parsed.server_mode)
                 parsed.idle_timeout_sec *| 1000
             else

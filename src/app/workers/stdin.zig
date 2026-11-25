@@ -1,4 +1,3 @@
-const context = @import("context.zig");
 const manager = @import("manager.zig");
 const path_scan = @import("path_scan.zig");
 const std = @import("std");
@@ -26,7 +25,7 @@ pub fn stdinWorker(args: *StdinArgs) void {
         }
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 
     var read_buf: [4096]u8 = undefined;

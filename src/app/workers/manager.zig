@@ -15,6 +15,7 @@ const thumbcache = @import("thumbcache");
 
 const EnabledThumbCacheConfig = thumbcache.EnabledThumbCacheConfig;
 const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
+const EventWaker = context.EventWaker;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
 const MpscQueue = core.MpscQueue;
 const PhysicalDims = geom.PhysicalDims;
@@ -103,6 +104,14 @@ pub const WorkerManager = struct {
     /// Encapsulated task group managing all spawned background worker threads
     /// under Zig 0.17 `std.Io`.
     group: std.Io.Group = .init,
+
+    /// Main-thread wakeup strategy invoked when workers finish or push events.
+    waker: EventWaker = .none,
+
+    /// Signals the configured main-thread event loop.
+    pub fn wakeMainThread(self: *const WorkerManager) void {
+        self.waker.wake();
+    }
 
     /// Takes a consistent atomic snapshot of all thumbnail telemetry counters.
     pub fn snapshotThumbStats(
@@ -213,7 +222,7 @@ pub const WorkerManager = struct {
         defer {
             sdl.reclaimProcessHeap();
             _ = self.active_thumb_writers.fetchSub(1, .release);
-            context.wakeUpMainThread();
+            self.wakeMainThread();
         }
 
         var scratch_arena: std.heap.ArenaAllocator = .init(allocator);
@@ -262,7 +271,7 @@ pub const WorkerManager = struct {
             defer {
                 job.deinit(allocator);
                 _ = self.thumb_cache_write_queued.fetchSub(1, .release);
-                context.wakeUpMainThread();
+                self.wakeMainThread();
             }
 
             if (self.exiting.load(.acquire)) continue;
@@ -374,7 +383,7 @@ pub const WorkerManager = struct {
             batch.deinit();
             sdl.reclaimProcessHeap();
             _ = self.active_thumb_writers.fetchSub(1, .release);
-            context.wakeUpMainThread();
+            self.wakeMainThread();
         }
 
         const base_cfg = switch (self.thumb_cache_config) {
@@ -435,7 +444,7 @@ pub const WorkerManager = struct {
                 .written => {
                     res.written += 1;
                     _ = self.thumb_cache_writes.fetchAdd(1, .release);
-                    context.wakeUpMainThread();
+                    self.wakeMainThread();
                 },
                 .already_valid => {
                     res.already_valid += 1;
@@ -513,11 +522,12 @@ pub const WorkerManager = struct {
         };
     }
 
-    /// Initializes a new WorkerManager with zero active threads, default event queues,
-    /// and pre-cached system CPU core count.
-    pub fn init() WorkerManager {
+    /// Initializes a new WorkerManager with zero active threads, default event
+    /// queues, the specified main-thread `waker`, and pre-cached CPU count.
+    pub fn init(waker: EventWaker) WorkerManager {
         return .{
             .cached_cpu_count = std.Thread.getCpuCount() catch 4,
+            .waker = waker,
         };
     }
 
@@ -682,7 +692,7 @@ test "WorkerManager.getCpuCount caching and fallback" {
     const mgr_zero = WorkerManager{ .cached_cpu_count = 0 };
     try std.testing.expect(mgr_zero.getCpuCount() >= 1);
 
-    const mgr_cached = WorkerManager.init();
+    const mgr_cached = WorkerManager.init(.none);
     try std.testing.expect(mgr_cached.cached_cpu_count >= 1);
     try std.testing.expectEqual(
         mgr_cached.cached_cpu_count,

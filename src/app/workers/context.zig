@@ -39,11 +39,20 @@ pub const CancellationToken = struct {
 /// and dimensions without reading the full file.
 pub const header_probe_limit: usize = 256 * 1024;
 
-/// Posts an SDL user event to wake up the main thread if it is blocked waiting
-/// in SDL_WaitEvent.
-pub fn wakeUpMainThread() void {
-    _ = sdl.events.pushUserEvent();
-}
+/// Strategy used by background workers and async upload staging tasks to wake
+/// the main event loop when new work or events are ready.
+pub const EventWaker = union(enum) {
+    none,
+    sdl,
+
+    /// Signals the configured main-thread event loop.
+    pub fn wake(self: EventWaker) void {
+        switch (self) {
+            .none => {},
+            .sdl => _ = sdl.events.pushUserEvent(),
+        }
+    }
+};
 
 test "CancellationToken.isCanceled and wrap" {
     var exiting = std.atomic.Value(bool).init(false);

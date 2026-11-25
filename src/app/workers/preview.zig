@@ -88,7 +88,7 @@ fn previewWorker(args: *PreviewWorkerArgs) void {
             sdl.reclaimProcessHeap();
         }
         _ = workers.active_threads.fetchSub(1, .acq_rel);
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
     defer args.deinit();
 

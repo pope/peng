@@ -1,5 +1,4 @@
 const builtin = @import("builtin");
-const context = @import("context.zig");
 const events = @import("events.zig");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
@@ -200,7 +199,7 @@ fn acceptIpcConnections(
             ipc.respondErrorName(io, client_stream, @errorName(err));
             continue;
         };
-        context.wakeUpMainThread();
+        workers.wakeMainThread();
     }
 }
 
@@ -227,7 +226,7 @@ test "acceptIpcConnections - accepts command and exits cleanly on wakeup" {
         std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
     }
 
-    var workers = WorkerManager.init();
+    var workers = WorkerManager.init(.none);
     defer workers.deinit(allocator, io);
 
     const ListenerCtx = struct {
