@@ -417,6 +417,49 @@ fn readTempFileAlloc(
     );
 }
 
+const LoadedRgbaTemp = struct {
+    bytes: []u8,
+    pixels: []const u8,
+    pitch: usize,
+
+    fn deinit(self: LoadedRgbaTemp, gpa: std.mem.Allocator) void {
+        gpa.free(self.bytes);
+    }
+};
+
+fn readRgbaTempFile(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    dims: PositiveDimsU32,
+) ?LoadedRgbaTemp {
+    const pitch = std.math.mul(usize, dims.w, 4) catch {
+        std.log.err("Preview RGBA dimensions overflow", .{});
+        return null;
+    };
+    const expected = std.math.mul(usize, pitch, dims.h) catch {
+        std.log.err("Preview RGBA dimensions overflow", .{});
+        return null;
+    };
+    const bytes = readTempFileAlloc(gpa, io, path) catch |err| {
+        std.log.err(
+            "Failed to read preview RGBA temp file '{s}': {s}",
+            .{ path, @errorName(err) },
+        );
+        return null;
+    };
+    if (bytes.len < expected) {
+        gpa.free(bytes);
+        std.log.err("Truncated preview RGBA temp file", .{});
+        return null;
+    }
+    return .{
+        .bytes = bytes,
+        .pixels = bytes[0..expected],
+        .pitch = pitch,
+    };
+}
+
 fn writeTerminalPreview(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -433,136 +476,58 @@ fn writeTerminalPreview(
         .cell_dims = cell_dims,
         .cell_px = cell_px,
     };
-    const stdout = std.Io.File.stdout();
 
     switch (target.protocol) {
         .kitty => {
             if (target.is_remote) {
                 defer deleteTempFileQuiet(io, prev.path);
-                const bytes = readTempFileAlloc(
+                const rgba = readRgbaTempFile(
                     gpa,
                     io,
                     prev.path,
-                ) catch |err| {
-                    std.log.err(
-                        "Failed to read preview RGBA temp file '{s}': {s}",
-                        .{ prev.path, @errorName(err) },
-                    );
-                    return false;
-                };
-                defer gpa.free(bytes);
-                const pitch = std.math.mul(usize, prev.dims.w, 4) catch {
-                    std.log.err("Preview RGBA dimensions overflow", .{});
-                    return false;
-                };
-                const expected = std.math.mul(usize, pitch, prev.dims.h) catch {
-                    std.log.err("Preview RGBA dimensions overflow", .{});
-                    return false;
-                };
-                if (bytes.len < expected) {
-                    std.log.err("Truncated preview RGBA temp file", .{});
-                    return false;
-                }
-                var stdout_buf: [16 * 1024]u8 = undefined;
-                var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-                const write_res: ?anyerror = blk: {
-                    termgfx.writePreview(&stdout_writer.interface, .{
-                        .kitty = .{
-                            .medium = .{
-                                .direct_rgba = .{
-                                    .rgba_pixels = bytes[0..expected],
-                                    .pitch = pitch,
-                                },
-                            },
-                            .dims = prev.dims,
-                            .clear_first = clear_first,
-                        },
-                    }, preview_opts) catch |err| break :blk err;
-                    stdout_writer.interface.flush() catch |err| break :blk err;
-                    break :blk null;
-                };
-                if (write_res) |err| {
-                    const write_err: anyerror = stdout_writer.err orelse err;
-                    if (write_err != error.BrokenPipe) {
-                        std.log.err("Failed to write Kitty preview: {s}", .{
-                            @errorName(write_err),
-                        });
-                    }
-                    return false;
-                }
-                return true;
-            }
-            var stdout_buf: [1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
+                    prev.dims,
+                ) orelse return false;
+                defer rgba.deinit(gpa);
+                return termgfx.writePreviewToStdout(io, .{
                     .kitty = .{
-                        .medium = .{ .temp_file = prev.path },
+                        .medium = .{
+                            .direct_rgba = .{
+                                .rgba_pixels = rgba.pixels,
+                                .pitch = rgba.pitch,
+                            },
+                        },
                         .dims = prev.dims,
                         .clear_first = clear_first,
                     },
-                }, preview_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write Kitty preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
-                deleteTempFileQuiet(io, prev.path);
-                return false;
+                }, preview_opts);
             }
-            return true;
+            const ok = termgfx.writePreviewToStdout(io, .{
+                .kitty = .{
+                    .medium = .{ .temp_file = prev.path },
+                    .dims = prev.dims,
+                    .clear_first = clear_first,
+                },
+            }, preview_opts);
+            if (!ok) deleteTempFileQuiet(io, prev.path);
+            return ok;
         },
         .sixel => {
             defer deleteTempFileQuiet(io, prev.path);
-            const bytes = readTempFileAlloc(gpa, io, prev.path) catch |err| {
-                std.log.err(
-                    "Failed to read preview RGBA temp file '{s}': {s}",
-                    .{ prev.path, @errorName(err) },
-                );
-                return false;
-            };
-            defer gpa.free(bytes);
-            const pitch = std.math.mul(usize, prev.dims.w, 4) catch {
-                std.log.err("Preview RGBA dimensions overflow", .{});
-                return false;
-            };
-            const expected = std.math.mul(usize, pitch, prev.dims.h) catch {
-                std.log.err("Preview RGBA dimensions overflow", .{});
-                return false;
-            };
-            if (bytes.len < expected) {
-                std.log.err("Truncated preview RGBA temp file", .{});
-                return false;
-            }
-            var stdout_buf: [16 * 1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .sixel = .{
-                        .allocator = gpa,
-                        .rgba_pixels = bytes[0..expected],
-                        .pitch = pitch,
-                        .dims = prev.dims,
-                    },
-                }, preview_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write Sixel preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
-                return false;
-            }
-            return true;
+            const rgba = readRgbaTempFile(
+                gpa,
+                io,
+                prev.path,
+                prev.dims,
+            ) orelse return false;
+            defer rgba.deinit(gpa);
+            return termgfx.writePreviewToStdout(io, .{
+                .sixel = .{
+                    .allocator = gpa,
+                    .rgba_pixels = rgba.pixels,
+                    .pitch = rgba.pitch,
+                    .dims = prev.dims,
+                },
+            }, preview_opts);
         },
         .iterm2 => {
             defer deleteTempFileQuiet(io, prev.path);
@@ -574,78 +539,33 @@ fn writeTerminalPreview(
                 return false;
             };
             defer gpa.free(bytes);
-            var stdout_buf: [16 * 1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .iterm2 = .{
-                        .image_bytes = bytes,
-                        .dims = prev.dims,
-                    },
-                }, preview_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write iTerm2 preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
-                return false;
-            }
-            return true;
+            return termgfx.writePreviewToStdout(io, .{
+                .iterm2 = .{
+                    .image_bytes = bytes,
+                    .dims = prev.dims,
+                },
+            }, preview_opts);
         },
         .halfblocks => {
             defer deleteTempFileQuiet(io, prev.path);
-            const bytes = readTempFileAlloc(gpa, io, prev.path) catch |err| {
-                std.log.err(
-                    "Failed to read preview RGBA temp file '{s}': {s}",
-                    .{ prev.path, @errorName(err) },
-                );
-                return false;
-            };
-            defer gpa.free(bytes);
-            const pitch = std.math.mul(usize, prev.dims.w, 4) catch {
-                std.log.err("Preview RGBA dimensions overflow", .{});
-                return false;
-            };
-            const expected = std.math.mul(usize, pitch, prev.dims.h) catch {
-                std.log.err("Preview RGBA dimensions overflow", .{});
-                return false;
-            };
-            if (bytes.len < expected) {
-                std.log.err("Truncated preview RGBA temp file", .{});
-                return false;
-            }
+            const rgba = readRgbaTempFile(
+                gpa,
+                io,
+                prev.path,
+                prev.dims,
+            ) orelse return false;
+            defer rgba.deinit(gpa);
             var hb_opts = preview_opts;
             if (hb_opts.cell_px == null) {
                 hb_opts.cell_px = termgfx.default_cell_px;
             }
-            var stdout_buf: [16 * 1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .halfblocks = .{
-                        .rgba_pixels = bytes[0..expected],
-                        .pitch = pitch,
-                        .dims = prev.dims,
-                    },
-                }, hb_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write halfblocks preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
-                return false;
-            }
-            return true;
+            return termgfx.writePreviewToStdout(io, .{
+                .halfblocks = .{
+                    .rgba_pixels = rgba.pixels,
+                    .pitch = rgba.pitch,
+                    .dims = prev.dims,
+                },
+            }, hb_opts);
         },
     }
 }

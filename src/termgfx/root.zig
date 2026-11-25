@@ -249,6 +249,53 @@ pub fn writePreview(
     }
 }
 
+fn protocolLabel(payload: PreviewPayload) []const u8 {
+    return switch (payload) {
+        .kitty => "Kitty",
+        .sixel => "Sixel",
+        .iterm2 => "iTerm2",
+        .halfblocks => "halfblocks",
+    };
+}
+
+fn writePreviewToFile(
+    io: std.Io,
+    file: std.Io.File,
+    payload: PreviewPayload,
+    opts: PreviewOptions,
+) !void {
+    var buf: [16 * 1024]u8 = undefined;
+    var file_writer = file.writerStreaming(io, &buf);
+    const write_res: ?anyerror = blk: {
+        writePreview(&file_writer.interface, payload, opts) catch |err|
+            break :blk err;
+        file_writer.interface.flush() catch |err| break :blk err;
+        break :blk null;
+    };
+    if (write_res) |err| {
+        return file_writer.err orelse err;
+    }
+}
+
+/// Encodes and streams `payload` to `stdout`, logging non-`BrokenPipe` write
+/// failures and returning `true` on success.
+pub fn writePreviewToStdout(
+    io: std.Io,
+    payload: PreviewPayload,
+    opts: PreviewOptions,
+) bool {
+    writePreviewToFile(io, std.Io.File.stdout(), payload, opts) catch |err| {
+        if (err != error.BrokenPipe) {
+            std.log.err("Failed to write {s} preview: {s}", .{
+                protocolLabel(payload),
+                @errorName(err),
+            });
+        }
+        return false;
+    };
+    return true;
+}
+
 fn writeTmuxPassthrough(
     writer: *std.Io.Writer,
     payload: PreviewPayload,

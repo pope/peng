@@ -5,10 +5,48 @@ const termgfx = @import("termgfx");
 const thumbcache = @import("thumbcache");
 
 const NoCancel = core.preview.NoCancel;
+const PreviewSurface = core.preview.PreviewSurface;
 const renderPreviewRgbaFile = core.preview.renderPreviewRgbaFile;
 const renderPreviewSurface = core.preview.renderPreviewSurface;
 const renderPreviewToOutputFile = core.preview.renderPreviewToOutputFile;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
+
+fn renderSurfaceOrExit(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    thumb_cfg: ThumbCacheConfig,
+    target_path: []const u8,
+    max_dims: anytype,
+) PreviewSurface {
+    return renderPreviewSurface(
+        gpa,
+        io,
+        thumb_cfg,
+        target_path,
+        max_dims,
+        NoCancel{},
+    ) catch |err| {
+        std.log.err(
+            "Failed to render preview for '{s}': {s}",
+            .{ target_path, @errorName(err) },
+        );
+        std.process.exit(1);
+    };
+}
+
+const SurfaceRgbaView = struct {
+    pixels: []const u8,
+    pitch: usize,
+};
+
+fn surfaceRgbaView(preview: PreviewSurface) SurfaceRgbaView {
+    const pitch: usize = @intCast(preview.surface.pitch());
+    const h_usize: usize = @intCast(preview.dims.h);
+    return .{
+        .pixels = preview.surface.pixels()[0 .. pitch * h_usize],
+        .pitch = pitch,
+    };
+}
 
 /// Standalone CLI entry point for rendering a terminal image preview
 /// (Kitty Graphics Protocol `t=t`, VT340 Sixel, iTerm2 Inline Images, or
@@ -76,56 +114,31 @@ pub fn main(init: std.process.Init) !void {
         .cell_dims = parsed.size.cellDims(),
         .cell_px = cell_px,
     };
-    const stdout = std.Io.File.stdout();
 
     switch (target.protocol) {
         .kitty => {
             if (target.is_remote) {
-                const preview = renderPreviewSurface(
+                const preview = renderSurfaceOrExit(
                     gpa,
                     io,
                     thumb_cfg,
                     target_path,
                     max_dims,
-                    NoCancel{},
-                ) catch |err| {
-                    std.log.err(
-                        "Failed to render preview for '{s}': {s}",
-                        .{ target_path, @errorName(err) },
-                    );
-                    std.process.exit(1);
-                };
+                );
                 defer preview.deinit();
-
-                const pitch: usize = @intCast(preview.surface.pitch());
-                const h_usize: usize = @intCast(preview.dims.h);
-                const pixels = preview.surface.pixels()[0 .. pitch * h_usize];
-
-                var stdout_buf: [16 * 1024]u8 = undefined;
-                var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-                const write_res: ?anyerror = blk: {
-                    termgfx.writePreview(&stdout_writer.interface, .{
-                        .kitty = .{
-                            .medium = .{
-                                .direct_rgba = .{
-                                    .rgba_pixels = pixels,
-                                    .pitch = pitch,
-                                },
+                const rgba = surfaceRgbaView(preview);
+                if (!termgfx.writePreviewToStdout(io, .{
+                    .kitty = .{
+                        .medium = .{
+                            .direct_rgba = .{
+                                .rgba_pixels = rgba.pixels,
+                                .pitch = rgba.pitch,
                             },
-                            .dims = preview.dims,
-                            .clear_first = parsed.clear_first,
                         },
-                    }, preview_opts) catch |err| break :blk err;
-                    stdout_writer.interface.flush() catch |err| break :blk err;
-                    break :blk null;
-                };
-                if (write_res) |err| {
-                    const write_err: anyerror = stdout_writer.err orelse err;
-                    if (write_err != error.BrokenPipe) {
-                        std.log.err("Failed to write Kitty preview: {s}", .{
-                            @errorName(write_err),
-                        });
-                    }
+                        .dims = preview.dims,
+                        .clear_first = parsed.clear_first,
+                    },
+                }, preview_opts)) {
                     std.process.exit(1);
                 }
             } else {
@@ -143,26 +156,13 @@ pub fn main(init: std.process.Init) !void {
                     );
                     std.process.exit(1);
                 };
-                var stdout_buf: [1024]u8 = undefined;
-                var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-                const write_res: ?anyerror = blk: {
-                    termgfx.writePreview(&stdout_writer.interface, .{
-                        .kitty = .{
-                            .medium = .{ .temp_file = res.path() },
-                            .dims = res.dims,
-                            .clear_first = parsed.clear_first,
-                        },
-                    }, preview_opts) catch |err| break :blk err;
-                    stdout_writer.interface.flush() catch |err| break :blk err;
-                    break :blk null;
-                };
-                if (write_res) |err| {
-                    const write_err: anyerror = stdout_writer.err orelse err;
-                    if (write_err != error.BrokenPipe) {
-                        std.log.err("Failed to write Kitty preview: {s}", .{
-                            @errorName(write_err),
-                        });
-                    }
+                if (!termgfx.writePreviewToStdout(io, .{
+                    .kitty = .{
+                        .medium = .{ .temp_file = res.path() },
+                        .dims = res.dims,
+                        .clear_first = parsed.clear_first,
+                    },
+                }, preview_opts)) {
                     std.Io.Dir.deleteFile(
                         std.Io.Dir.cwd(),
                         io,
@@ -178,65 +178,34 @@ pub fn main(init: std.process.Init) !void {
             }
         },
         .sixel => {
-            const preview = renderPreviewSurface(
+            const preview = renderSurfaceOrExit(
                 gpa,
                 io,
                 thumb_cfg,
                 target_path,
                 max_dims,
-                NoCancel{},
-            ) catch |err| {
-                std.log.err(
-                    "Failed to render preview for '{s}': {s}",
-                    .{ target_path, @errorName(err) },
-                );
-                std.process.exit(1);
-            };
+            );
             defer preview.deinit();
-
-            const pitch: usize = @intCast(preview.surface.pitch());
-            const h_usize: usize = @intCast(preview.dims.h);
-            const pixels = preview.surface.pixels()[0 .. pitch * h_usize];
-
-            var stdout_buf: [16 * 1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .sixel = .{
-                        .allocator = gpa,
-                        .rgba_pixels = pixels,
-                        .pitch = pitch,
-                        .dims = preview.dims,
-                    },
-                }, preview_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write Sixel preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
+            const rgba = surfaceRgbaView(preview);
+            if (!termgfx.writePreviewToStdout(io, .{
+                .sixel = .{
+                    .allocator = gpa,
+                    .rgba_pixels = rgba.pixels,
+                    .pitch = rgba.pitch,
+                    .dims = preview.dims,
+                },
+            }, preview_opts)) {
                 std.process.exit(1);
             }
         },
         .iterm2 => {
-            const preview = renderPreviewSurface(
+            const preview = renderSurfaceOrExit(
                 gpa,
                 io,
                 thumb_cfg,
                 target_path,
                 max_dims,
-                NoCancel{},
-            ) catch |err| {
-                std.log.err(
-                    "Failed to render preview for '{s}': {s}",
-                    .{ target_path, @errorName(err) },
-                );
-                std.process.exit(1);
-            };
+            );
             defer preview.deinit();
 
             const image_bytes = preview.surface.encodePreviewImageAlloc(
@@ -251,73 +220,37 @@ pub fn main(init: std.process.Init) !void {
             };
             defer gpa.free(image_bytes);
 
-            var stdout_buf: [16 * 1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .iterm2 = .{
-                        .image_bytes = image_bytes,
-                        .dims = preview.dims,
-                    },
-                }, preview_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write iTerm2 preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
+            if (!termgfx.writePreviewToStdout(io, .{
+                .iterm2 = .{
+                    .image_bytes = image_bytes,
+                    .dims = preview.dims,
+                },
+            }, preview_opts)) {
                 std.process.exit(1);
             }
         },
         .halfblocks => {
-            const preview = renderPreviewSurface(
+            const preview = renderSurfaceOrExit(
                 gpa,
                 io,
                 thumb_cfg,
                 target_path,
                 max_dims,
-                NoCancel{},
-            ) catch |err| {
-                std.log.err(
-                    "Failed to render preview for '{s}': {s}",
-                    .{ target_path, @errorName(err) },
-                );
-                std.process.exit(1);
-            };
+            );
             defer preview.deinit();
-
-            const pitch: usize = @intCast(preview.surface.pitch());
-            const h_usize: usize = @intCast(preview.dims.h);
-            const pixels = preview.surface.pixels()[0 .. pitch * h_usize];
+            const rgba = surfaceRgbaView(preview);
 
             var hb_opts = preview_opts;
             if (hb_opts.cell_px == null) {
                 hb_opts.cell_px = termgfx.default_cell_px;
             }
-            var stdout_buf: [16 * 1024]u8 = undefined;
-            var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-            const write_res: ?anyerror = blk: {
-                termgfx.writePreview(&stdout_writer.interface, .{
-                    .halfblocks = .{
-                        .rgba_pixels = pixels,
-                        .pitch = pitch,
-                        .dims = preview.dims,
-                    },
-                }, hb_opts) catch |err| break :blk err;
-                stdout_writer.interface.flush() catch |err| break :blk err;
-                break :blk null;
-            };
-            if (write_res) |err| {
-                const write_err: anyerror = stdout_writer.err orelse err;
-                if (write_err != error.BrokenPipe) {
-                    std.log.err("Failed to write halfblocks preview: {s}", .{
-                        @errorName(write_err),
-                    });
-                }
+            if (!termgfx.writePreviewToStdout(io, .{
+                .halfblocks = .{
+                    .rgba_pixels = rgba.pixels,
+                    .pitch = rgba.pitch,
+                    .dims = preview.dims,
+                },
+            }, hb_opts)) {
                 std.process.exit(1);
             }
         },
