@@ -859,23 +859,16 @@ test "buildRenderPacket and executeFrame emit TextureRef image batch" {
     gpu_pkg.graphics.initSdlCore(true) catch return;
     defer gpu_pkg.graphics.quitSdlCore();
 
-    const setup = gpu_pkg.graphics.initGraphicsAndWindow(
-        "ui-renderer-test",
-        .{ .headless = true, .debug_mode = false },
-    ) catch return;
-    defer {
-        setup.gpu_device.destroy();
-        setup.window.destroy();
-    }
+    const dev = gpu_pkg.graphics.createGpuDevice(false) catch return;
+    defer dev.destroy();
 
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var gpu_res = gpu_pkg.graphics.initGpuResources(
         io,
-        setup.gpu_device,
-        setup.window,
-        setup.initial_dpi_scale,
-        true,
+        dev,
+        .headless,
+        1.0,
     ) catch return;
     defer gpu_res.deinit(allocator);
 

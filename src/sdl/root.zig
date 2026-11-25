@@ -34,6 +34,7 @@ pub const quitTtf = font.quitTtf;
 pub const SoftwarePresenter = window.SoftwarePresenter;
 pub const Surface = surface.Surface;
 pub const SystemCursor = window.SystemCursor;
+pub const wasInit = events.wasInit;
 pub const Window = window.Window;
 pub const window_flags = window.window_flags;
 

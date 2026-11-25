@@ -26,6 +26,14 @@ pub const GraphicsSetup = struct {
     initial_dpi_scale: f32,
 };
 
+/// Render target format source for `initGpuResources`: either a GPU-claimed
+/// window (matching its swapchain format) or headless offscreen rendering
+/// (`.rgba8_unorm`).
+pub const ResourceTarget = union(enum) {
+    window: sdl.Window,
+    headless,
+};
+
 /// Configuration options for graphics and window creation (headless mode,
 /// initial hidden state, high-DPI scaling, and borderless mode).
 pub const GraphicsOptions = struct {
@@ -939,6 +947,9 @@ pub fn createWindowOnly(
     window_title: [:0]const u8,
     options: GraphicsOptions,
 ) !WindowSetup {
+    std.debug.assert(
+        (sdl.wasInit(sdl.init_flags.video) & sdl.init_flags.video) != 0,
+    );
     var win_flags = if (options.headless)
         sdl.window_flags.hidden
     else if (options.high_dpi)
@@ -972,6 +983,19 @@ pub fn createWindowOnly(
     };
 }
 
+/// Creates an SDL3 GPU device (SPIR-V/MSL) without requiring a window.
+/// Assumes `initSdlCore` has been called.
+pub fn createGpuDevice(debug_mode: bool) !sdl.gpu.Device {
+    std.debug.assert(
+        (sdl.wasInit(sdl.init_flags.video) & sdl.init_flags.video) != 0,
+    );
+    const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
+    return sdl.gpu.Device.create(shader_flags, debug_mode) orelse {
+        logInitErr("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
+        return error.DeviceCreationFailed;
+    };
+}
+
 /// Creates the main window and claims the GPU graphics device.
 /// Assumes SDL core and TTF subsystems have been initialized via `initSdlCore`.
 pub fn initGraphicsAndWindow(
@@ -981,12 +1005,7 @@ pub fn initGraphicsAndWindow(
     const win_setup = try createWindowOnly(window_title, options);
     errdefer win_setup.window.destroy();
 
-    // Create GPU Device
-    const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
-    const dev = sdl.gpu.Device.create(shader_flags, options.debug_mode) orelse {
-        logInitErr("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
-        return error.DeviceCreationFailed;
-    };
+    const dev = try createGpuDevice(options.debug_mode);
     errdefer dev.destroy();
 
     // Claim window for GPU
@@ -1113,20 +1132,20 @@ fn makeQuadPipelineInfo(
 }
 
 /// Creates core GPU pipelines, samplers, primary font, and static buffers.
-/// Heavy optional resources (full color-grading `image_pipeline`, RGB24 compute
-/// unpack pipeline, blur pipelines, and CJK fallback font) are initialized
-/// lazily on first demand to minimize cold-start latency.
+/// Targets either a GPU-claimed window swapchain format or headless offscreen
+/// rendering (`.rgba8_unorm`). Heavy optional resources (`image_pipeline`,
+/// RGB24 compute unpack, blur pipelines, and CJK fallback font) are
+/// initialized lazily on first demand to minimize cold-start latency.
 pub fn initGpuResources(
     io: std.Io,
     dev: sdl.gpu.Device,
-    window: sdl.Window,
+    target: ResourceTarget,
     initial_dpi_scale: f32,
-    headless: bool,
 ) !RenderResources {
-    const target_format = if (headless)
-        sdl.gpu.TextureFormat.rgba8_unorm
-    else
-        dev.getSwapchainTextureFormat(window);
+    const target_format = switch (target) {
+        .window => |win| dev.getSwapchainTextureFormat(win),
+        .headless => sdl.gpu.TextureFormat.rgba8_unorm,
+    };
 
     // Load primary UI font from memory (CJK fallback `unifont_jp.otf` is
     // attached lazily on first non-ASCII glyph demand).
@@ -1586,24 +1605,12 @@ test "RenderResources.snapshotMetrics combines pass and atlas telemetry" {
     initSdlCore(true) catch return;
     defer quitSdlCore();
 
-    const setup = initGraphicsAndWindow(
-        "gpu-metrics-test",
-        .{ .headless = true, .debug_mode = false },
-    ) catch return;
-    defer {
-        setup.gpu_device.destroy();
-        setup.window.destroy();
-    }
+    const dev = createGpuDevice(false) catch return;
+    defer dev.destroy();
 
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var gpu_res = initGpuResources(
-        io,
-        setup.gpu_device,
-        setup.window,
-        setup.initial_dpi_scale,
-        true,
-    ) catch return;
+    var gpu_res = initGpuResources(io, dev, .headless, 1.0) catch return;
     defer gpu_res.deinit(allocator);
 
     gpu_res.metrics.last_ui_vertex_count = 360;

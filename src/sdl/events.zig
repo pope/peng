@@ -209,6 +209,11 @@ pub fn init(flags: u32) bool {
     return true;
 }
 
+/// Returns a bitmask of the specified SDL subsystems that are initialized.
+pub fn wasInit(flags: u32) u32 {
+    return c.SDL_WasInit(flags);
+}
+
 /// Cleans up and terminates all initialized SDL subsystems.
 pub fn quit() void {
     if (comptime has_posix_signals) {

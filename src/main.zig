@@ -365,9 +365,8 @@ const AppGraphicsAndState = struct {
         const res = try gpu.graphics.initGpuResources(
             self.io,
             dev,
-            self.window,
+            .{ .window = self.window },
             self.initial_dpi_scale,
-            self.parsed.headless,
         );
         self.backend = .{
             .gpu_ready = .{
@@ -636,15 +635,7 @@ const AppGraphicsAndState = struct {
             return true;
         }
 
-        const shader_flags =
-            sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
-        const dev = sdl.gpu.Device.create(
-            shader_flags,
-            builtin.mode == .debug,
-        ) orelse {
-            std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
-            return error.DeviceCreationFailed;
-        };
+        const dev = try gpu.graphics.createGpuDevice(builtin.mode == .debug);
         errdefer dev.destroy();
 
         if (!parsed.headless) {
@@ -661,9 +652,8 @@ const AppGraphicsAndState = struct {
         const res = try gpu.graphics.initGpuResources(
             proc_init.io,
             dev,
-            self.window,
+            if (parsed.headless) .headless else .{ .window = self.window },
             self.initial_dpi_scale,
-            parsed.headless,
         );
         self.backend = .{
             .gpu_ready = .{
