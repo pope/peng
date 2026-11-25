@@ -39,17 +39,27 @@ pub const CancellationToken = struct {
 /// and dimensions without reading the full file.
 pub const header_probe_limit: usize = 256 * 1024;
 
+/// Opaque context + thread-safe wakeup callback invoked by background workers
+/// when an event loop other than SDL (such as `peng-tui`) owns the main loop.
+/// The caller must ensure `ctx` outlives all workers sharing this callback.
+pub const WakeCallback = struct {
+    ctx: *anyopaque,
+    wake_fn: *const fn (*anyopaque) void,
+};
+
 /// Strategy used by background workers and async upload staging tasks to wake
 /// the main event loop when new work or events are ready.
 pub const EventWaker = union(enum) {
     none,
     sdl,
+    callback: WakeCallback,
 
     /// Signals the configured main-thread event loop.
     pub fn wake(self: EventWaker) void {
         switch (self) {
             .none => {},
             .sdl => _ = sdl.events.pushUserEvent(),
+            .callback => |cb| cb.wake_fn(cb.ctx),
         }
     }
 };
@@ -92,4 +102,36 @@ test "CancellationToken - Aborts immediately when job epoch is incremented" {
     try std.testing.expect(!token.isCanceled());
     _ = job_epoch.fetchAdd(1, .release);
     try std.testing.expect(token.isCanceled());
+}
+
+test "EventWaker.callback invokes wake_fn across threads" {
+    const Counter = struct {
+        wakes: std.atomic.Value(u32) = .init(0),
+
+        fn onWake(ptr: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            _ = self.wakes.fetchAdd(1, .release);
+        }
+
+        fn workerMain(waker: EventWaker) void {
+            waker.wake();
+            waker.wake();
+        }
+    };
+
+    var counter: Counter = .{};
+    const waker: EventWaker = .{
+        .callback = .{
+            .ctx = &counter,
+            .wake_fn = Counter.onWake,
+        },
+    };
+
+    const thread = try std.Thread.spawn(.{}, Counter.workerMain, .{waker});
+    thread.join();
+
+    try std.testing.expectEqual(@as(u32, 2), counter.wakes.load(.acquire));
+
+    const noop: EventWaker = .none;
+    noop.wake();
 }
