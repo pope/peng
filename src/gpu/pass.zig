@@ -22,6 +22,7 @@ const FontSizePage = text_cache.FontSizePage;
 const GlyphCacheKey = text_cache.GlyphCacheKey;
 const GlyphCacheValue = text_cache.GlyphCacheValue;
 const ImageUniforms = render_image.ImageUniforms;
+const MappedReadback = graphics.MappedReadback;
 const MaterialType = render_image.MaterialType;
 const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
@@ -68,6 +69,27 @@ pub const PassTimings = struct {
     gpu_encode_ms: f64 = 0.0,
     swapchain_wait_ms: f64 = 0.0,
     swapchain_present_ts: ?std.Io.Timestamp = null,
+};
+
+/// Rendered offscreen frame readback plus pass timings returned by
+/// `executeOffscreenReadback`. Caller must call `readback.deinit()` before
+/// reusing `gpu_res.download_buffer` on a subsequent frame.
+pub const OffscreenFrameResult = struct {
+    readback: MappedReadback,
+    timings: PassTimings,
+};
+
+const FrameCapture = union(enum) {
+    none,
+    png_file: [:0]const u8,
+    readback: *?MappedReadback,
+
+    fn isRequested(self: FrameCapture) bool {
+        return switch (self) {
+            .none => false,
+            .png_file, .readback => true,
+        };
+    }
 };
 
 fn buildPassTimings(
@@ -1027,6 +1049,73 @@ pub fn executeFrame(
         build_ctx: PacketBuildContext,
     ) anyerror!RenderPacket,
 ) !PassTimings {
+    const capture: FrameCapture = if (target.capture_filename) |filename|
+        .{ .png_file = filename }
+    else
+        .none;
+    return executeFrameImpl(
+        gpu_res,
+        view_params,
+        gpa_allocator,
+        frame_allocator,
+        target,
+        capture,
+        context,
+        build_packet_fn,
+    );
+}
+
+/// Renders a headless offscreen frame at `phys_dims` and downloads the
+/// rendered `.rgba8_unorm` pixels directly into memory without disk I/O.
+/// Caller owns the returned `readback` mapping and must call
+/// `result.readback.deinit()` before rendering another readback frame.
+pub fn executeOffscreenReadback(
+    gpu_res: *RenderResources,
+    view_params: ViewportParams,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
+    phys_dims: PhysicalDims,
+    scale: DpiScale,
+    context: anytype,
+    comptime build_packet_fn: fn (
+        ctx: @TypeOf(context),
+        build_ctx: PacketBuildContext,
+    ) anyerror!RenderPacket,
+) !OffscreenFrameResult {
+    var readback: ?MappedReadback = null;
+    errdefer if (readback) |rb| rb.deinit();
+    const timings = try executeFrameImpl(
+        gpu_res,
+        view_params,
+        gpa_allocator,
+        frame_allocator,
+        .{
+            .target = .{ .headless = phys_dims },
+            .scale = scale,
+        },
+        .{ .readback = &readback },
+        context,
+        build_packet_fn,
+    );
+    return .{
+        .readback = readback orelse return error.OffscreenReadbackUnavailable,
+        .timings = timings,
+    };
+}
+
+fn executeFrameImpl(
+    gpu_res: *RenderResources,
+    view_params: ViewportParams,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
+    target: FrameTargetOptions,
+    capture: FrameCapture,
+    context: anytype,
+    comptime build_packet_fn: fn (
+        ctx: @TypeOf(context),
+        build_ctx: PacketBuildContext,
+    ) anyerror!RenderPacket,
+) !PassTimings {
     const io = gpu_res.io;
     const pass_start = std.Io.Clock.awake.now(io);
     var swapchain_wait: std.Io.Duration = .zero;
@@ -1095,7 +1184,7 @@ pub fn executeFrame(
         if (target_w == 0 or target_h == 0) {
             cmd_buf_submitted = true;
             _ = cmd_buf.submit();
-            if (target.capture_filename != null) {
+            if (capture.isRequested()) {
                 return error.SwapchainTextureUnavailable;
             }
             return buildPassTimings(
@@ -1162,41 +1251,55 @@ pub fn executeFrame(
         gpu_res.metrics.last_ui_batch_count = batch_count;
         gpu_res.frame_index += 1;
 
-        if (target.capture_filename) |filename| {
-            cmd_buf_submitted = true;
-            const readback = try downloadTexture(
-                dev,
-                cmd_buf,
-                &gpu_res.download_buffer,
-                tex,
-                target_dims,
-                target_format,
-            );
-            defer readback.deinit();
-            try saveReadbackToPng(readback, filename);
-        } else if (is_headless) {
-            cmd_buf_submitted = true;
-            const fence_opt = cmd_buf.submitAndAcquireFence();
-            if (fence_opt) |fence| {
-                _ = dev.waitForFence(fence);
-                dev.releaseFence(fence);
-            } else {
-                std.log.err(
-                    "Failed to acquire GPU fence for headless render: {s}",
-                    .{sdl.getError()},
+        switch (capture) {
+            .png_file => |filename| {
+                cmd_buf_submitted = true;
+                const readback = try downloadTexture(
+                    dev,
+                    cmd_buf,
+                    &gpu_res.download_buffer,
+                    tex,
+                    target_dims,
+                    target_format,
                 );
-                return error.FenceAcquisitionFailed;
-            }
-        } else {
-            cmd_buf_submitted = true;
-            if (cmd_buf.submit()) {
-                swapchain_present_ts = std.Io.Clock.awake.now(io);
-            }
+                defer readback.deinit();
+                try saveReadbackToPng(readback, filename);
+            },
+            .readback => |out| {
+                cmd_buf_submitted = true;
+                out.* = try downloadTexture(
+                    dev,
+                    cmd_buf,
+                    &gpu_res.download_buffer,
+                    tex,
+                    target_dims,
+                    target_format,
+                );
+            },
+            .none => if (is_headless) {
+                cmd_buf_submitted = true;
+                const fence_opt = cmd_buf.submitAndAcquireFence();
+                if (fence_opt) |fence| {
+                    _ = dev.waitForFence(fence);
+                    dev.releaseFence(fence);
+                } else {
+                    std.log.err(
+                        "Failed to acquire GPU fence for headless render: {s}",
+                        .{sdl.getError()},
+                    );
+                    return error.FenceAcquisitionFailed;
+                }
+            } else {
+                cmd_buf_submitted = true;
+                if (cmd_buf.submit()) {
+                    swapchain_present_ts = std.Io.Clock.awake.now(io);
+                }
+            },
         }
     } else {
         cmd_buf_submitted = true;
         _ = cmd_buf.submit();
-        if (target.capture_filename != null) {
+        if (capture.isRequested()) {
             return error.SwapchainTextureUnavailable;
         }
     }
@@ -1507,4 +1610,85 @@ test "findBlurSplit includes leading overlay_shadow in Pass 4b" {
     };
     const split = findBlurSplit(&shadow_then_blur, blur_res).?;
     try std.testing.expectEqual(@as(usize, 1), split.split_idx);
+}
+
+test "executeOffscreenReadback renders quad directly to MappedReadback" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    graphics.initSdlCore(true) catch return error.SkipZigTest;
+    defer graphics.quitSdlCore();
+
+    const dev = graphics.createGpuDevice(false) catch
+        return error.SkipZigTest;
+    defer dev.destroy();
+
+    var gpu_res = graphics.initGpuResources(
+        io,
+        dev,
+        .headless,
+        1.0,
+    ) catch return error.SkipZigTest;
+    defer gpu_res.deinit(allocator);
+
+    const Builder = struct {
+        fn build(
+            _: void,
+            build_ctx: PacketBuildContext,
+        ) !RenderPacket {
+            var packet: RenderPacket = .{};
+            errdefer packet.deinit(build_ctx.frame_allocator);
+
+            // Solid blue (R=0, G=0, B=255, A=255) in 0xAABBGGRR.
+            const blue: u32 = 0xFFFF0000;
+            const verts = [_]Vertex{
+                .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = blue },
+                .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = blue },
+                .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = blue },
+                .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = blue },
+                .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = blue },
+                .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = blue },
+            };
+            try packet.vertices.appendSlice(build_ctx.frame_allocator, &verts);
+            try addBatch(
+                &packet.batches,
+                build_ctx.frame_allocator,
+                0,
+                verts.len,
+                build_ctx.gpu_res.white_texture,
+                .ui_element,
+                null,
+            );
+            return packet;
+        }
+    };
+
+    var frame_arena = std.heap.ArenaAllocator.init(allocator);
+    defer frame_arena.deinit();
+
+    const res = try executeOffscreenReadback(
+        &gpu_res,
+        .{},
+        allocator,
+        frame_arena.allocator(),
+        .{ .w = 4.0, .h = 4.0 },
+        .{},
+        {},
+        Builder.build,
+    );
+    defer res.readback.deinit();
+
+    try std.testing.expectEqual(@as(u32, 4), res.readback.dims.w);
+    try std.testing.expectEqual(@as(u32, 4), res.readback.dims.h);
+    try std.testing.expectEqual(@as(u32, 16), res.readback.pitch);
+    try std.testing.expectEqual(
+        sdl.gpu.TextureFormat.rgba8_unorm,
+        res.readback.format,
+    );
+    try std.testing.expectEqual(@as(usize, 64), res.readback.pixels.len);
+    try std.testing.expectEqualSlices(
+        u8,
+        &.{ 0, 0, 255, 255 },
+        res.readback.pixels[0..4],
+    );
 }
