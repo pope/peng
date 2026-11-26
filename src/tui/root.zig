@@ -6,9 +6,11 @@
 pub const canvas = @import("canvas.zig");
 pub const infobar = @import("infobar.zig");
 pub const input = @import("input.zig");
+pub const overlays = @import("overlays.zig");
 
 test {
     _ = canvas;
     _ = infobar;
     _ = input;
+    _ = overlays;
 }

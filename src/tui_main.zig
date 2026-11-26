@@ -755,6 +755,68 @@ fn buildInfobarModel(app_state: *const AppState) tui.infobar.InfobarModel {
     };
 }
 
+fn buildDetailsModel(app_state: *const AppState) tui.overlays.DetailsModel {
+    const nav = &app_state.viewer.navigation;
+    const vp = app_state.viewer.viewport;
+    const entry_opt = nav.getCurrentImageEntry();
+    const cache_opt = app_state.getCurrentEntry();
+    const auth = if (cache_opt) |c|
+        c.getAuthoritativeDims()
+    else
+        PhysicalDims{ .w = 0.0, .h = 0.0 };
+
+    const src_path: []const u8 = if (entry_opt) |e| switch (e) {
+        .filesystem => |f| f.path,
+        .archive_entry => |a| a.archive_path,
+        .pair => |p| p.raw_path,
+    } else "";
+
+    const filter_name: []const u8 = switch (vp.scale_filter) {
+        .nearest => "Nearest",
+        .linear => "Linear",
+        .pixel_art => "PixelAA",
+        .mitchell => "Mitchell",
+        .lanczos3 => "Lanczos3",
+        .fsr => "FSR",
+        .tiny_cnn => "TinyCNN",
+    };
+
+    const zoom_pct: u32 = if (std.math.isFinite(vp.zoom_factor.get()) and
+        vp.zoom_factor.get() > 0.0)
+        @intFromFloat(@min(@round(vp.zoom_factor.get() * 100.0), 99999.0))
+    else
+        100;
+    const rot_deg: i32 = if (std.math.isFinite(vp.rotation_angle))
+        @intFromFloat(@mod(@round(vp.rotation_angle), 360.0))
+    else
+        0;
+
+    const size_bytes: ?u64 = if (cache_opt) |c| switch (c.resident.asset) {
+        .loaded_gpu => |g| g.size_bytes,
+        .promoting_gpu => |p| p.active.size_bytes,
+        .loaded_cpu => |cpu| cpu.cpu.size_bytes,
+        .none, .failed => null,
+    } else null;
+
+    return .{
+        .filename = if (entry_opt) |e| e.getBasename() else "",
+        .source_path = src_path,
+        .width = if (std.math.isFinite(auth.w) and auth.w > 0.0)
+            std.math.lossyCast(u32, @round(auth.w))
+        else
+            0,
+        .height = if (std.math.isFinite(auth.h) and auth.h > 0.0)
+            std.math.lossyCast(u32, @round(auth.h))
+        else
+            0,
+        .file_size_bytes = size_bytes,
+        .classification = nav.getCurrentClassification(),
+        .zoom_pct = zoom_pct,
+        .rotation_deg = rot_deg,
+        .filter_name = filter_name,
+    };
+}
+
 fn timerWakeTask(
     io: std.Io,
     loop: *vaxis.Loop(TuiEvent),
@@ -882,6 +944,7 @@ pub fn main(init: std.process.Init) !void {
     var mouse_left_down = false;
     var last_mouse_x: f32 = 0.0;
     var last_mouse_y: f32 = 0.0;
+    var prev_overlay_open = false;
 
     while (app_state.viewer.running) {
         _ = frame_arena.reset(.retain_capacity);
@@ -906,7 +969,7 @@ pub fn main(init: std.process.Init) !void {
             last_mouse_y,
         );
         defer acc.deinit();
-        const text_capture = app_state.viewer.ui.palette.isOpen();
+        const text_capture = app_state.viewer.ui.palette.isAcceptingInput();
 
         // Block only when no events are queued and engine says we can idle.
         var first_event = loop.tryEvent() catch |err| switch (err) {
@@ -1001,8 +1064,12 @@ pub fn main(init: std.process.Init) !void {
         if (!app_state.viewer.running) break;
 
         // Settle animations so terminal frames don't waste bandwidth on
-        // intermediate interpolation frames.
+        // intermediate interpolation frames, and finalize any closing palette.
         app_state.viewer.animations.settleAll();
+        switch (app_state.viewer.ui.palette.lifecycle) {
+            .closing => app_state.viewer.ui.palette.reset(),
+            .open, .closed => {},
+        }
 
         const root_win = vx.window();
         root_win.clear();
@@ -1040,8 +1107,12 @@ pub fn main(init: std.process.Init) !void {
             }
 
             if (pres.kitty_image) |img| {
+                // z < -1_073_741_824 places the image beneath both text and
+                // non-default cell backgrounds (Kitty spec), so modals with
+                // explicit RGB backgrounds render opaque while `.default`
+                // viewport cells let the image show through.
                 try img.draw(image_win, .{
-                    .z_index = -1,
+                    .z_index = -1_073_741_825,
                     .size = .{
                         .cols = active_layout.image_cols,
                         .rows = active_layout.image_rows,
@@ -1065,9 +1136,42 @@ pub fn main(init: std.process.Init) !void {
             tui.infobar.render(bar, buildInfobarModel(&app_state), frame_alloc);
         }
 
+        const pal_open = app_state.viewer.ui.palette.isAcceptingInput();
+        const details_open = app_state.viewer.ui.overlays.info_panel.visible;
+        const overlay_open = pal_open or details_open;
+        if (pal_open) {
+            const nav_slice = app_state.viewer.navigation.items.slice();
+            tui.overlays.renderPalette(
+                image_win,
+                &app_state.viewer.ui.palette,
+                nav_slice.items(.entry),
+                nav_slice.items(.classification),
+                frame_alloc,
+            );
+        } else if (details_open) {
+            tui.overlays.renderDetails(
+                image_win,
+                buildDetailsModel(&app_state),
+                frame_alloc,
+            );
+        }
+        if (!prev_overlay_open and overlay_open) {
+            if (pres.has_kitty_fallback) {
+                emitKittyDeleteFallback(tty.writer(), pres.transport);
+            }
+            if (pres.post_render.bytes.items.len > 0) {
+                vx.queueRefresh();
+            }
+        } else if (prev_overlay_open and !overlay_open) {
+            pres.post_render.dirty = true;
+        }
+        prev_overlay_open = overlay_open;
+
         try vx.render(tty.writer());
 
-        if (pres.post_render.dirty and pres.post_render.bytes.items.len > 0) {
+        if (!overlay_open and pres.post_render.dirty and
+            pres.post_render.bytes.items.len > 0)
+        {
             // Save/restore cursor via DECSC/DECRC so raw post-render graphics
             // never desync vaxis's tracked cursor state.
             try tty.writer().print(
