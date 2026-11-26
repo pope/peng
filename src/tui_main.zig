@@ -624,14 +624,27 @@ const UiRenderKey = struct {
     }
 };
 
+const KittyVaxisState = struct {
+    image: vaxis.Image,
+    pending_free_id: ?u32 = null,
+};
+
+const PostRenderState = struct {
+    payload: CachedPostRenderPayload = .{},
+    kitty_fallback: ?termgfx.TransportMode = null,
+};
+
+const PresentationContent = union(enum) {
+    none,
+    kitty_vaxis: KittyVaxisState,
+    halfblocks: CachedHalfblocks,
+    post_render: PostRenderState,
+};
+
 const PresentationState = struct {
-    transport: termgfx.TransportMode = .direct,
     last_key: ?RenderKey = null,
     last_ui_key: ?UiRenderKey = null,
-    kitty_image: ?vaxis.Image = null,
-    has_kitty_fallback: bool = false,
-    halfblocks: CachedHalfblocks = .{},
-    post_render: CachedPostRenderPayload = .{},
+    content: PresentationContent = .none,
 
     fn deinit(
         self: *PresentationState,
@@ -639,26 +652,148 @@ const PresentationState = struct {
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
     ) void {
-        self.clearImage(vx, tty_writer);
-        self.halfblocks.deinit(gpa);
-        self.post_render.deinit(gpa);
+        self.clearImage(gpa, vx, tty_writer);
     }
 
-    fn clearImage(
+    fn flushPendingKittyFree(
         self: *PresentationState,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
     ) void {
+        switch (self.content) {
+            .kitty_vaxis => |*kv| {
+                if (kv.pending_free_id) |old_id| {
+                    vx.freeImage(tty_writer, old_id);
+                    kv.pending_free_id = null;
+                }
+            },
+            .none, .halfblocks, .post_render => {},
+        }
+    }
+
+    fn clearContent(
+        self: *PresentationState,
+        gpa: std.mem.Allocator,
+        vx: *vaxis.Vaxis,
+        tty_writer: *std.Io.Writer,
+    ) void {
+        switch (self.content) {
+            .none => {},
+            .kitty_vaxis => |*kv| {
+                if (kv.pending_free_id) |old_id| {
+                    vx.freeImage(tty_writer, old_id);
+                }
+                vx.freeImage(tty_writer, kv.image.id);
+            },
+            .halfblocks => |*hb| hb.deinit(gpa),
+            .post_render => |*pr| {
+                if (pr.kitty_fallback) |tr| {
+                    emitKittyDeleteFallback(tty_writer, tr);
+                }
+                pr.payload.deinit(gpa);
+            },
+        }
+        self.content = .none;
+    }
+
+    fn clearImage(
+        self: *PresentationState,
+        gpa: std.mem.Allocator,
+        vx: *vaxis.Vaxis,
+        tty_writer: *std.Io.Writer,
+    ) void {
         self.last_key = null;
-        if (self.kitty_image) |img| {
-            vx.freeImage(tty_writer, img.id);
-            self.kitty_image = null;
+        self.clearContent(gpa, vx, tty_writer);
+    }
+
+    fn hasActiveContent(self: *const PresentationState) bool {
+        return switch (self.content) {
+            .none => false,
+            .kitty_vaxis, .halfblocks, .post_render => true,
+        };
+    }
+
+    fn uiImageState(
+        self: *const PresentationState,
+        has_quad: bool,
+    ) UiImageState {
+        if (!has_quad) return .none;
+        return switch (self.content) {
+            .none => .none,
+            .kitty_vaxis => |kv| .{ .kitty = kv.image.id },
+            .halfblocks, .post_render => .other,
+        };
+    }
+
+    fn markPostRenderDirty(self: *PresentationState) void {
+        switch (self.content) {
+            .post_render => |*pr| pr.payload.dirty = true,
+            .none, .kitty_vaxis, .halfblocks => {},
         }
-        if (self.has_kitty_fallback) {
-            emitKittyDeleteFallback(tty_writer, self.transport);
-            self.has_kitty_fallback = false;
+    }
+
+    fn ensureHalfblocks(
+        self: *PresentationState,
+        gpa: std.mem.Allocator,
+        vx: *vaxis.Vaxis,
+        tty_writer: *std.Io.Writer,
+    ) *CachedHalfblocks {
+        switch (self.content) {
+            .halfblocks => |*hb| return hb,
+            .none, .kitty_vaxis, .post_render => {
+                self.clearContent(gpa, vx, tty_writer);
+                self.content = .{ .halfblocks = .{} };
+                return &self.content.halfblocks;
+            },
         }
-        self.post_render.clear();
+    }
+
+    fn ensurePostRender(
+        self: *PresentationState,
+        gpa: std.mem.Allocator,
+        vx: *vaxis.Vaxis,
+        tty_writer: *std.Io.Writer,
+        kitty_fallback: ?termgfx.TransportMode,
+    ) *CachedPostRenderPayload {
+        switch (self.content) {
+            .post_render => |*pr| {
+                pr.kitty_fallback = kitty_fallback;
+                pr.payload.clear();
+                return &pr.payload;
+            },
+            .none, .kitty_vaxis, .halfblocks => {
+                self.clearContent(gpa, vx, tty_writer);
+                self.content = .{
+                    .post_render = .{ .kitty_fallback = kitty_fallback },
+                };
+                return &self.content.post_render.payload;
+            },
+        }
+    }
+
+    fn setKittyImage(
+        self: *PresentationState,
+        gpa: std.mem.Allocator,
+        vx: *vaxis.Vaxis,
+        tty_writer: *std.Io.Writer,
+        new_img: vaxis.Image,
+    ) void {
+        switch (self.content) {
+            .kitty_vaxis => |*kv| {
+                // Defer freeing the previous Kitty image until after
+                // `vx.render()` places `new_img` inside Synchronized Output,
+                // preventing a black flash between `a=d` and `a=p`.
+                if (kv.pending_free_id) |old_id| {
+                    vx.freeImage(tty_writer, old_id);
+                }
+                kv.pending_free_id = kv.image.id;
+                kv.image = new_img;
+            },
+            .none, .halfblocks, .post_render => {
+                self.clearContent(gpa, vx, tty_writer);
+                self.content = .{ .kitty_vaxis = .{ .image = new_img } };
+            },
+        }
     }
 };
 
@@ -696,8 +831,8 @@ fn transmitFrame(
 ) !void {
     switch (target.protocol) {
         .halfblocks => {
-            try pres.halfblocks.update(gpa, readback);
-            pres.post_render.clear();
+            const hb = pres.ensureHalfblocks(gpa, vx, tty_writer);
+            try hb.update(gpa, readback);
         },
         .kitty => {
             if (vx.caps.kitty_graphics and target.transport == .direct and
@@ -758,18 +893,19 @@ fn transmitFrame(
                     );
                 };
 
-                if (pres.kitty_image) |old| {
-                    vx.freeImage(tty_writer, old.id);
-                }
-                pres.kitty_image = new_img;
-                pres.post_render.clear();
+                pres.setKittyImage(gpa, vx, tty_writer, new_img);
             } else {
-                pres.post_render.clear();
+                const payload = pres.ensurePostRender(
+                    gpa,
+                    vx,
+                    tty_writer,
+                    target.transport,
+                );
                 var aw: std.Io.Writer.Allocating = .fromArrayList(
                     gpa,
-                    &pres.post_render.bytes,
+                    &payload.bytes,
                 );
-                defer pres.post_render.bytes = aw.toArrayList();
+                defer payload.bytes = aw.toArrayList();
 
                 const opts: termgfx.PreviewOptions = .{
                     .transport = target.transport,
@@ -815,17 +951,16 @@ fn transmitFrame(
                     );
                 }
                 try aw.writer.flush();
-                pres.has_kitty_fallback = true;
-                pres.post_render.dirty = true;
+                payload.dirty = true;
             }
         },
         .sixel => {
-            pres.post_render.clear();
+            const payload = pres.ensurePostRender(gpa, vx, tty_writer, null);
             var aw: std.Io.Writer.Allocating = .fromArrayList(
                 gpa,
-                &pres.post_render.bytes,
+                &payload.bytes,
             );
-            defer pres.post_render.bytes = aw.toArrayList();
+            defer payload.bytes = aw.toArrayList();
             try termgfx.writePreview(
                 &aw.writer,
                 .{
@@ -839,17 +974,17 @@ fn transmitFrame(
                 .{ .transport = target.transport },
             );
             try aw.writer.flush();
-            pres.post_render.dirty = true;
+            payload.dirty = true;
         },
         .iterm2 => {
-            pres.post_render.clear();
+            const payload = pres.ensurePostRender(gpa, vx, tty_writer, null);
             const png = try encodeReadbackPng(frame_allocator, readback);
             defer frame_allocator.free(png);
             var aw: std.Io.Writer.Allocating = .fromArrayList(
                 gpa,
-                &pres.post_render.bytes,
+                &payload.bytes,
             );
-            defer pres.post_render.bytes = aw.toArrayList();
+            defer payload.bytes = aw.toArrayList();
             try termgfx.writePreview(
                 &aw.writer,
                 .{
@@ -861,7 +996,7 @@ fn transmitFrame(
                 .{ .transport = target.transport },
             );
             try aw.writer.flush();
-            pres.post_render.dirty = true;
+            payload.dirty = true;
         },
     }
 }
@@ -1238,7 +1373,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         .hidden;
     var prev_title_pinned = initial_pinned;
     var last_gpu_pass_ms: f64 = 0.0;
-    var pres: PresentationState = .{ .transport = target.transport };
+    var pres: PresentationState = .{};
     defer pres.deinit(gpa, &vx, tty.writer());
 
     var frame_arena = std.heap.ArenaAllocator.init(gpa);
@@ -1329,7 +1464,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
 
         if (resized) {
             try vx.resize(gpa, tty.writer(), winsize);
-            pres.post_render.dirty = true;
+            pres.markPostRenderDirty();
         }
         if (acc.local_actions.cycle_infobar) {
             infobar_pos = infobar_pos.next();
@@ -1344,7 +1479,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     prev_title_pinned = false;
                 },
             }
-            pres.post_render.dirty = true;
+            pres.markPostRenderDirty();
         }
         if (acc.local_actions.open_file_search) {
             try app_state.pushIntent(.{ .set_palette = .{ .mode = .files } });
@@ -1392,7 +1527,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 }
                 infobar_pos = .none;
             }
-            pres.post_render.dirty = true;
+            pres.markPostRenderDirty();
         }
 
         // Settle animations so terminal frames don't waste bandwidth on
@@ -1443,10 +1578,8 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 pres.last_key = key;
                 image_changed = true;
             }
-        } else if (pres.last_key != null or pres.kitty_image != null or
-            pres.has_kitty_fallback)
-        {
-            pres.clearImage(&vx, tty.writer());
+        } else if (pres.last_key != null or pres.hasActiveContent()) {
+            pres.clearImage(gpa, &vx, tty.writer());
             image_changed = true;
         }
 
@@ -1467,12 +1600,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         else
             .none;
         const overlay_open = active_overlay.isOpen();
-        const ui_image: UiImageState = if (active_quad == null)
-            .none
-        else if (pres.kitty_image) |img|
-            .{ .kitty = img.id }
-        else
-            .other;
+        const ui_image = pres.uiImageState(active_quad != null);
 
         const infobar_model = buildInfobarModel(&app_state);
         const ui_key = UiRenderKey.init(
@@ -1492,30 +1620,32 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             root_win.clear();
             const image_win = render_layout.imageWindow(root_win);
 
-            if (active_quad != null) {
-                if (pres.kitty_image) |img| {
+            if (active_quad != null) switch (pres.content) {
+                .kitty_vaxis => |kv| {
                     // z < -1_073_741_824 places the image beneath both text
                     // and non-default cell backgrounds (Kitty spec), so modals
                     // with explicit RGB backgrounds render opaque while
                     // `.default` viewport cells let the image show through.
-                    try img.draw(image_win, .{
+                    try kv.image.draw(image_win, .{
                         .z_index = -1_073_741_825,
                         .size = .{
                             .cols = render_layout.image_cols,
                             .rows = render_layout.image_rows,
                         },
                     });
-                } else if (target.protocol == .halfblocks and
-                    pres.halfblocks.pixels.len > 0)
-                {
-                    tui.canvas.blitHalfblocksToWindow(
-                        image_win,
-                        pres.halfblocks.pixels,
-                        pres.halfblocks.pitch,
-                        pres.halfblocks.dims,
-                    );
-                }
-            }
+                },
+                .halfblocks => |hb| {
+                    if (hb.pixels.len > 0) {
+                        tui.canvas.blitHalfblocksToWindow(
+                            image_win,
+                            hb.pixels,
+                            hb.pitch,
+                            hb.dims,
+                        );
+                    }
+                },
+                .none, .post_render => {},
+            };
 
             if (render_layout.infobarWindow(root_win)) |bar| {
                 tui.infobar.render(bar, infobar_model, frame_alloc);
@@ -1546,32 +1676,43 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 // and requires clearing before opening a modal. iTerm2 and
                 // Sixel cells outside the modal rect stay visible when vaxis
                 // diffs only the modal cells over them.
-                if (pres.has_kitty_fallback) {
-                    emitKittyDeleteFallback(tty.writer(), pres.transport);
-                    vx.queueRefresh();
+                switch (pres.content) {
+                    .post_render => |pr| {
+                        if (pr.kitty_fallback) |tr| {
+                            emitKittyDeleteFallback(tty.writer(), tr);
+                            vx.queueRefresh();
+                        }
+                    },
+                    .none, .kitty_vaxis, .halfblocks => {},
                 }
             } else if (prev_overlay_open and !overlay_open) {
-                pres.post_render.dirty = true;
+                pres.markPostRenderDirty();
             }
             prev_overlay_open = overlay_open;
 
             try vx.render(tty.writer());
+            pres.flushPendingKittyFree(&vx, tty.writer());
             pres.last_ui_key = ui_key;
         }
 
-        if (!overlay_open and pres.post_render.dirty and
-            pres.post_render.bytes.items.len > 0)
-        {
-            // Save/restore cursor via DECSC/DECRC so raw post-render graphics
-            // never desync vaxis's tracked cursor state.
-            try tty.writer().print(
-                "\x1b7\x1b[{d};1H",
-                .{render_layout.image_row + 1},
-            );
-            try tty.writer().writeAll(pres.post_render.bytes.items);
-            try tty.writer().writeAll("\x1b8");
-            try tty.writer().flush();
-            pres.post_render.dirty = false;
+        switch (pres.content) {
+            .post_render => |*pr| {
+                if (!overlay_open and pr.payload.dirty and
+                    pr.payload.bytes.items.len > 0)
+                {
+                    // Save/restore cursor via DECSC/DECRC so raw post-render
+                    // graphics never desync vaxis's tracked cursor state.
+                    try tty.writer().print(
+                        "\x1b7\x1b[{d};1H",
+                        .{render_layout.image_row + 1},
+                    );
+                    try tty.writer().writeAll(pr.payload.bytes.items);
+                    try tty.writer().writeAll("\x1b8");
+                    try tty.writer().flush();
+                    pr.payload.dirty = false;
+                }
+            },
+            .none, .kitty_vaxis, .halfblocks => {},
         }
     }
 
