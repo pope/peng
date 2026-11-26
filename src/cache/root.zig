@@ -15,6 +15,7 @@ const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const RawMetadata = probe.RawMetadata;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
+const UvRect = geom.UvRect;
 const VisibleNeighbors = triage.VisibleNeighbors;
 
 /// Decoded CPU software surface stored in host RAM.
@@ -514,6 +515,40 @@ pub const CacheEntry = struct {
             }
         }
         return .{ .w = 0.0, .h = 0.0 };
+    }
+
+    /// Computes the GPU UV crop, effective rotation angle, and source
+    /// dimensions for rendering `thumb_info` of this entry at
+    /// `rotation_angle`, compensating for pre-oriented cached thumbnails.
+    pub fn computeThumbnailUvRect(
+        self: CacheEntry,
+        thumb_info: ThumbnailInfo,
+        auth: PhysicalDims,
+        rotation_angle: f32,
+    ) UvRect {
+        const pre_oriented = thumb_info.source.isPreOriented();
+        const swapped = pre_oriented and
+            self.metadata.orientation.isDimensionSwapped();
+        const ref_full: PhysicalDims = if (self.metadata.full_dims) |fd|
+            (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
+        else
+            .{ .w = 0.0, .h = 0.0 };
+        var uv = state_pkg.view_transform.computeThumbnailUvCrop(
+            ref_full,
+            .{ .w = thumb_info.w, .h = thumb_info.h },
+            thumb_info.dct_snapped,
+        );
+        uv.alpha = 1.0;
+        uv.rotation_angle = if (pre_oriented)
+            @mod(
+                rotation_angle - self.metadata.orientation.toDegrees() + 360.0,
+                360.0,
+            )
+        else
+            rotation_angle;
+        uv.source_w = if (swapped) auth.h else auth.w;
+        uv.source_h = if (swapped) auth.w else auth.h;
+        return uv;
     }
 
     /// Releases resident thumbnail, primary assets, and in-flight state.
@@ -1933,4 +1968,89 @@ test "ImageCache resets current_image_cache_hit across lifecycle methods" {
     cache.current_image_cache_hit = true;
     cache.deinit(allocator, null);
     try std.testing.expect(!cache.current_image_cache_hit);
+}
+
+test "CacheEntry.computeThumbnailUvRect handles pre-oriented cached thumbs" {
+    const entry = CacheEntry{
+        .metadata = .{
+            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
+            .orientation = .rotate_90,
+        },
+    };
+    const auth = entry.getAuthoritativeDims();
+
+    // 3:2 full image in 4:3 embedded thumb gets letterbox UV crop; not swapped
+    const embedded_uv = entry.computeThumbnailUvRect(
+        .{
+            .w = 160.0,
+            .h = 120.0,
+            .source = .embedded_header,
+            .dct_snapped = true,
+        },
+        auth,
+        90.0,
+    );
+    try std.testing.expectEqual(@as(f32, 1.0), embedded_uv.alpha);
+    try std.testing.expectEqual(@as(f32, 90.0), embedded_uv.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 6000.0), embedded_uv.source_w);
+    try std.testing.expectEqual(@as(f32, 4000.0), embedded_uv.source_h);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 8.0 / 120.0),
+        embedded_uv.v_min,
+        0.001,
+    );
+
+    // Pre-oriented cached thumb swaps ref_full (4000x6000) -> no crop, 0 deg
+    const cached_uv = entry.computeThumbnailUvRect(
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        auth,
+        90.0,
+    );
+    try std.testing.expectEqual(@as(f32, 1.0), cached_uv.alpha);
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 4000.0), cached_uv.source_w);
+    try std.testing.expectEqual(@as(f32, 6000.0), cached_uv.source_h);
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.u_min);
+    try std.testing.expectEqual(@as(f32, 1.0), cached_uv.u_max);
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.v_min);
+    try std.testing.expectEqual(@as(f32, 1.0), cached_uv.v_max);
+
+    // Negative rotation difference wraps cleanly via Euclidean @mod
+    const wrapped_uv = entry.computeThumbnailUvRect(
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        auth,
+        0.0,
+    );
+    try std.testing.expectEqual(@as(f32, 270.0), wrapped_uv.rotation_angle);
+
+    // 180-deg pre-oriented thumb compensates angle without swapping dims
+    const entry_180 = CacheEntry{
+        .metadata = .{
+            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
+            .orientation = .rotate_180,
+        },
+    };
+    const uv_180 = entry_180.computeThumbnailUvRect(
+        .{ .w = 256.0, .h = 170.0, .source = .freedesktop_cache },
+        .{ .w = 6000.0, .h = 4000.0 },
+        180.0,
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), uv_180.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 6000.0), uv_180.source_w);
+    try std.testing.expectEqual(@as(f32, 4000.0), uv_180.source_h);
+
+    // Missing full_dims yields uncropped 0..1 UVs while still swapping auth
+    const entry_no_full = CacheEntry{
+        .metadata = .{ .orientation = .rotate_270 },
+    };
+    const uv_no_full = entry_no_full.computeThumbnailUvRect(
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        .{ .w = 6000.0, .h = 4000.0 },
+        0.0,
+    );
+    try std.testing.expectEqual(@as(f32, 90.0), uv_no_full.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 4000.0), uv_no_full.source_w);
+    try std.testing.expectEqual(@as(f32, 6000.0), uv_no_full.source_h);
+    try std.testing.expectEqual(@as(f32, 0.0), uv_no_full.u_min);
+    try std.testing.expectEqual(@as(f32, 1.0), uv_no_full.v_max);
 }

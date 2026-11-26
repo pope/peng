@@ -401,28 +401,11 @@ fn resolveActiveImageQuad(
 
     switch (entry.resident.thumbnail) {
         .loaded => |thumb| {
-            const pre_oriented = thumb.info.source.isPreOriented();
-            const swapped = pre_oriented and
-                entry.metadata.orientation.isDimensionSwapped();
-            const ref_full: PhysicalDims = if (entry.metadata.full_dims) |fd|
-                (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
-            else
-                .{ .w = 0.0, .h = 0.0 };
-            var uv = state_pkg.view_transform.computeThumbnailUvCrop(
-                ref_full,
-                .{ .w = thumb.info.w, .h = thumb.info.h },
-                thumb.info.dct_snapped,
+            const uv = entry.computeThumbnailUvRect(
+                thumb.info,
+                auth,
+                vp.rotation_angle,
             );
-            uv.rotation_angle = if (pre_oriented)
-                @mod(
-                    vp.rotation_angle -
-                        entry.metadata.orientation.toDegrees() + 360.0,
-                    360.0,
-                )
-            else
-                vp.rotation_angle;
-            uv.source_w = if (swapped) auth.h else auth.w;
-            uv.source_h = if (swapped) auth.w else auth.h;
             return .{
                 .tex = thumb.texture,
                 .render_crop = render_crop,

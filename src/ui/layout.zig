@@ -23,7 +23,6 @@ const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const PaletteState = palette_pkg.PaletteState;
-const PhysicalDims = geom.PhysicalDims;
 const renderEditPanel = edit_panel.renderEditPanel;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
 const renderPalette = palette.renderPalette;
@@ -702,37 +701,6 @@ fn formatLoadingText(
     };
 }
 
-fn buildThumbnailUvRect(
-    entry: CacheEntry,
-    thumb_info: state.ThumbnailInfo,
-    auth: PhysicalDims,
-    rotation_angle: f32,
-) UvRect {
-    const pre_oriented = thumb_info.source.isPreOriented();
-    const swapped = pre_oriented and
-        entry.metadata.orientation.isDimensionSwapped();
-    const ref_full: PhysicalDims = if (entry.metadata.full_dims) |fd|
-        (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
-    else
-        .{ .w = 0.0, .h = 0.0 };
-    var uv = view_transform.computeThumbnailUvCrop(
-        ref_full,
-        .{ .w = thumb_info.w, .h = thumb_info.h },
-        thumb_info.dct_snapped,
-    );
-    uv.alpha = 1.0;
-    uv.rotation_angle = if (pre_oriented)
-        @mod(
-            rotation_angle - entry.metadata.orientation.toDegrees() + 360.0,
-            360.0,
-        )
-    else
-        rotation_angle;
-    uv.source_w = if (swapped) auth.h else auth.w;
-    uv.source_h = if (swapped) auth.w else auth.h;
-    return uv;
-}
-
 fn renderImageCanvas(
     list: *UiDrawList,
     ui_model: UiViewModel,
@@ -764,8 +732,7 @@ fn renderImageCanvas(
         switch (entry.resident.thumbnail) {
             .loaded => |thumb| {
                 const thumb_tex = thumb.texture;
-                const thumb_uv = buildThumbnailUvRect(
-                    entry,
+                const thumb_uv = entry.computeThumbnailUvRect(
                     thumb.info,
                     auth,
                     rotation_angle,
@@ -788,8 +755,7 @@ fn renderImageCanvas(
             if (show_thumb) {
                 drew_thumb = true;
                 const thumb_tex = thumb.texture;
-                const uv_crop = buildThumbnailUvRect(
-                    entry,
+                const uv_crop = entry.computeThumbnailUvRect(
                     thumb.info,
                     auth,
                     rotation_angle,
@@ -1210,36 +1176,6 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 
     interaction_inst.setPointerStateForTest(.{ .x = 500.0, .y = 400.0 });
     try std.testing.expect(interaction_inst.isPointerOverViewport());
-}
-
-test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
-    const entry = CacheEntry{
-        .metadata = .{
-            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
-            .orientation = .rotate_90,
-        },
-    };
-    const auth = entry.getAuthoritativeDims();
-
-    const embedded_uv = buildThumbnailUvRect(
-        entry,
-        .{ .w = 160.0, .h = 120.0, .source = .embedded_header },
-        auth,
-        90.0,
-    );
-    try std.testing.expectEqual(@as(f32, 90.0), embedded_uv.rotation_angle);
-    try std.testing.expectEqual(@as(f32, 6000.0), embedded_uv.source_w);
-    try std.testing.expectEqual(@as(f32, 4000.0), embedded_uv.source_h);
-
-    const cached_uv = buildThumbnailUvRect(
-        entry,
-        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
-        auth,
-        90.0,
-    );
-    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.rotation_angle);
-    try std.testing.expectEqual(@as(f32, 4000.0), cached_uv.source_w);
-    try std.testing.expectEqual(@as(f32, 6000.0), cached_uv.source_h);
 }
 
 test "renderImageCanvas loading grace period across InFlightState variants" {
