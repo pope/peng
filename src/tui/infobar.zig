@@ -615,3 +615,73 @@ test "infobar.render displays sanitized notification and restores on clear" {
         std.mem.find(u8, normal_line, "[1/12] photo.jpg") != null,
     );
 }
+
+test "infobar.render handles empty, loading, compare, paused, and 0x0" {
+    const allocator = std.testing.allocator;
+    var screen = try vaxis.Screen.init(allocator, .{
+        .cols = 100,
+        .rows = 1,
+        .x_pixel = 1000,
+        .y_pixel = 20,
+    });
+    defer screen.deinit(allocator);
+
+    const win: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 100,
+        .height = 1,
+        .screen = &screen,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // 1. Empty vs loading when visible_pos is null.
+    render(win, .{ .is_loading = true }, arena.allocator());
+    const loading_line = try readRowText(allocator, win);
+    defer allocator.free(loading_line);
+    try std.testing.expect(
+        std.mem.find(u8, loading_line, "Loading images...") != null,
+    );
+
+    render(win, .{ .is_loading = false }, arena.allocator());
+    const empty_line = try readRowText(allocator, win);
+    defer allocator.free(empty_line);
+    try std.testing.expect(std.mem.find(u8, empty_line, "No images") != null);
+
+    // 2. Compare original ([ORIG]) and paused slideshow ([PAUSE]).
+    render(win, .{
+        .visible_pos = 2,
+        .visible_count = 4,
+        .filename = "a.jpg",
+        .compare_original = true,
+        .slideshow_active = true,
+        .slideshow_paused = true,
+    }, arena.allocator());
+    const status_line = try readRowText(allocator, win);
+    defer allocator.free(status_line);
+    try std.testing.expect(std.mem.find(u8, status_line, "[ORIG]") != null);
+    try std.testing.expect(std.mem.find(u8, status_line, "[PAUSE]") != null);
+
+    // 3. 0x0 window returns safely without panicking.
+    var zero_screen = try vaxis.Screen.init(allocator, .{
+        .cols = 0,
+        .rows = 0,
+        .x_pixel = 0,
+        .y_pixel = 0,
+    });
+    defer zero_screen.deinit(allocator);
+    const zero_win: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 0,
+        .height = 0,
+        .screen = &zero_screen,
+    };
+    render(zero_win, .{ .filename = "ignored.jpg" }, arena.allocator());
+}

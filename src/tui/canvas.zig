@@ -780,6 +780,18 @@ test "ViewportLayout computes bottom, top, none, child windows, and clamps" {
     try std.testing.expectEqual(@as(?u16, null), zero_ws.infobar_row);
     try std.testing.expectEqual(termgfx.default_cell_px, zero_ws.cell_px);
 
+    // Single-row terminal suppresses infobar; x_pixel < cols uses default cell.
+    const one_row = ViewportLayout.compute(.{
+        .cols = 20,
+        .rows = 1,
+        .x_pixel = 10,
+        .y_pixel = 20,
+    }, .top);
+    try std.testing.expectEqual(@as(?u16, null), one_row.infobar_row);
+    try std.testing.expectEqual(@as(u16, 0), one_row.image_row);
+    try std.testing.expectEqual(@as(u16, 1), one_row.image_rows);
+    try std.testing.expectEqual(termgfx.default_cell_px, one_row.cell_px);
+
     // Verify imageWindow and infobarWindow child bounds.
     const allocator = std.testing.allocator;
     var screen = try vaxis.Screen.init(allocator, ws);
@@ -884,4 +896,46 @@ test "blitHalfblocksToWindow handles exact, padded, scaled, and invalid" {
         vaxis.Color{ .rgb = .{ 0, 150, 0 } },
         win.readCell(0, 0).?.style.bg,
     );
+}
+
+test "ImageCellCrop.pixelTrimByteRange rejects invalid and no-op trims" {
+    const cell_px: CellPixelSize = .{ .w = 10, .h = 20 };
+    const crop: ImageCellCrop = .{
+        .col_off = 0,
+        .row_off = 0,
+        .cols = 4,
+        .rows = 2,
+        .px = .{ .w = 40, .h = 40 },
+    };
+    const full_buf_len: usize = 40 * 40 * 4;
+
+    // Non-finite rect returns null.
+    try std.testing.expect(ImageCellCrop.pixelTrimByteRange(
+        crop,
+        .{ .x = std.math.nan(f32), .y = 0, .w = 20, .h = 20 },
+        cell_px,
+        crop.px,
+        40 * 4,
+        full_buf_len,
+    ) == null);
+
+    // Exact full-crop rect is a no-op (returns null).
+    try std.testing.expect(ImageCellCrop.pixelTrimByteRange(
+        crop,
+        .{ .x = 0, .y = 0, .w = 40, .h = 40 },
+        cell_px,
+        crop.px,
+        40 * 4,
+        full_buf_len,
+    ) == null);
+
+    // Pitch smaller than x1 * 4 returns null.
+    try std.testing.expect(ImageCellCrop.pixelTrimByteRange(
+        crop,
+        .{ .x = 4, .y = 4, .w = 20, .h = 20 },
+        cell_px,
+        crop.px,
+        16,
+        full_buf_len,
+    ) == null);
 }

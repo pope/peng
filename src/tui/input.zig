@@ -637,4 +637,50 @@ test "InputAccumulator translates mouse wheel, Ctrl+wheel, and xterm release" {
         .type = .release,
     }, 8.0, 16.0);
     try std.testing.expect(!acc.mouse_left_down);
+
+    // Drag with negative coords clamps to 0 and keeps mouse_left_down true.
+    acc.handleMouse(.{
+        .col = -2,
+        .row = -1,
+        .xoffset = 0,
+        .yoffset = 0,
+        .button = .left,
+        .mods = .{ .shift = true },
+        .type = .drag,
+    }, 8.0, 16.0);
+    try std.testing.expectEqual(@as(f32, 0.0), acc.mouse_x);
+    try std.testing.expectEqual(@as(f32, 0.0), acc.mouse_y);
+    try std.testing.expect(acc.mouse_left_down);
+    try std.testing.expect(acc.key_modifiers.shift);
+}
+
+test "InputAccumulator ignores modified arrows for directional_held" {
+    const allocator = std.testing.allocator;
+    var acc = InputAccumulator.init(allocator, false, 0.0, 0.0);
+    defer acc.deinit();
+    acc.track_held = true;
+
+    // Ctrl+Left must not latch directional_held even with track_held enabled.
+    try acc.handleKeyPress(.{
+        .codepoint = vaxis.Key.left,
+        .mods = .{ .ctrl = true },
+    }, false);
+    try std.testing.expect(!acc.directional_held.hasAny());
+
+    // Unmodified Right latches directional_held.right (positive control).
+    try acc.handleKeyPress(.{ .codepoint = vaxis.Key.right }, false);
+    try std.testing.expect(acc.directional_held.right);
+    try std.testing.expect(!acc.directional_held.left);
+
+    // Super and Meta modifiers map to gui.
+    try acc.handleKeyPress(.{
+        .codepoint = 'a',
+        .mods = .{ .super = true },
+    }, false);
+    try std.testing.expect(acc.key_modifiers.gui);
+    try acc.handleKeyPress(.{
+        .codepoint = 'b',
+        .mods = .{ .meta = true },
+    }, false);
+    try std.testing.expect(acc.key_modifiers.gui);
 }

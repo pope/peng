@@ -643,6 +643,85 @@ test "renderPalette draws Command Palette modal and selected action" {
     ));
 }
 
+test "renderPalette handles files, scrolling, prompts, and empty matches" {
+    const allocator = std.testing.allocator;
+    var screen = try vaxis.Screen.init(allocator, .{
+        .cols = 80,
+        .rows = 12,
+        .x_pixel = 800,
+        .y_pixel = 240,
+    });
+    defer screen.deinit(allocator);
+
+    const root: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 80,
+        .height = 12,
+        .screen = &screen,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var pal = try PaletteState.init(allocator);
+    defer pal.deinit(allocator);
+
+    // 1. Empty matches renders "No matching items".
+    pal.lifecycle = .{ .open = .actions };
+    renderPalette(root, &pal, &.{}, &.{}, arena.allocator());
+    try std.testing.expect(try screenContains(
+        allocator,
+        root,
+        "No matching items",
+    ));
+
+    // 2. Prompt mode renders prompt instructions instead of match list.
+    root.clear();
+    pal.lifecycle = .{ .open = .{ .prompt = .go_to_image } };
+    renderPalette(root, &pal, &.{}, &.{}, arena.allocator());
+    try std.testing.expect(try screenContains(
+        allocator,
+        root,
+        "Enter: apply",
+    ));
+
+    // 3. Files mode with triage badges and scrolled selection.
+    const entries = [_]MediaEntry{
+        .{ .filesystem = .{ .path = "/a/00.jpg" } },
+        .{ .filesystem = .{ .path = "/a/01.jpg" } },
+        .{ .filesystem = .{ .path = "/a/02.jpg" } },
+        .{ .filesystem = .{ .path = "/a/03.jpg" } },
+        .{ .filesystem = .{ .path = "/a/04.jpg" } },
+        .{ .filesystem = .{ .path = "/a/05.jpg" } },
+        .{ .filesystem = .{ .path = "/a/06.jpg" } },
+        .{ .filesystem = .{ .path = "/a/07.jpg" } },
+    };
+    const classes = [_]Classification{
+        .unflagged,
+        .unflagged,
+        .unflagged,
+        .unflagged,
+        .unflagged,
+        .pick,
+        .reject,
+        .pick,
+    };
+    pal.lifecycle = .{ .open = .files };
+    for (0..entries.len) |idx| {
+        try pal.matches.append(allocator, idx);
+    }
+    pal.selected_idx = 7;
+
+    root.clear();
+    renderPalette(root, &pal, &entries, &classes, arena.allocator());
+    try std.testing.expect(try screenContains(allocator, root, "* 07.jpg"));
+    try std.testing.expect(try screenContains(allocator, root, "x 06.jpg"));
+    try std.testing.expect(!try screenContains(allocator, root, "00.jpg"));
+}
+
 test "renderDetails renders metadata and handles narrow screens safely" {
     const allocator = std.testing.allocator;
     var screen = try vaxis.Screen.init(allocator, .{
