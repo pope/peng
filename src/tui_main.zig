@@ -78,6 +78,7 @@ fn tuiLogFn(
 
 const TuiEvent = union(enum) {
     key_press: vaxis.Key,
+    key_release: vaxis.Key,
     mouse: vaxis.Mouse,
     winsize: vaxis.Winsize,
     focus_in,
@@ -1524,7 +1525,9 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     var tty = try vaxis.Tty.init(io, &tty_buf);
     defer tty.deinit();
 
-    var vx = try vaxis.init(io, gpa, init.environ_map, .{});
+    var vx = try vaxis.init(io, gpa, init.environ_map, .{
+        .kitty_keyboard_flags = .{ .report_events = true },
+    });
     defer vx.deinit(gpa, tty.writer());
 
     var loop: vaxis.Loop(TuiEvent) = .init(io, &tty, &vx);
@@ -1633,6 +1636,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     var mouse_left_down = false;
     var last_mouse_x: f32 = 0.0;
     var last_mouse_y: f32 = 0.0;
+    var directional_held: state_pkg.DirectionFlags = .{};
     var prev_overlay_open = false;
     var unpack_warmed = false;
 
@@ -1652,14 +1656,17 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             now_ms,
         );
 
+        const text_capture = app_state.viewer.ui.palette.isAcceptingInput();
+        if (text_capture) {
+            directional_held = .{};
+        }
         var acc = InputAccumulator.init(
             frame_alloc,
             mouse_left_down,
             last_mouse_x,
             last_mouse_y,
-        );
+        ).withDirectionalHeld(directional_held, vx.caps.kitty_keyboard);
         defer acc.deinit();
-        const text_capture = app_state.viewer.ui.palette.isAcceptingInput();
 
         // Block only when no events are queued and engine says we can idle.
         var first_event = loop.tryEvent() catch |err| switch (err) {
@@ -1700,12 +1707,14 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         while (ev_opt) |ev| {
             switch (ev) {
                 .key_press => |k| try acc.handleKeyPress(k, text_capture),
+                .key_release => |k| acc.handleKeyRelease(k),
                 .mouse => |m| acc.handleMouse(m, cell_w_f, cell_h_f),
                 .winsize => |ws| {
                     winsize = ws;
                     resized = true;
                 },
-                .focus_in, .focus_out, .worker_ready, .timer_tick => {},
+                .focus_out => acc.clearHeld(),
+                .focus_in, .worker_ready, .timer_tick => {},
             }
             ev_opt = loop.tryEvent() catch |err| switch (err) {
                 error.Closed => break,
@@ -1739,6 +1748,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         mouse_left_down = acc.mouse_left_down;
         last_mouse_x = acc.mouse_x;
         last_mouse_y = acc.mouse_y;
+        directional_held = acc.directional_held;
 
         const post_ms = state_pkg.timestampToMs(std.Io.Clock.awake.now(io));
         _ = app.drainWorkerEvents(&app_state, post_ms);

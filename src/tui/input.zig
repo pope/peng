@@ -9,6 +9,7 @@ const state = @import("state");
 const std = @import("std");
 const vaxis = @import("vaxis");
 
+const DirectionFlags = state.DirectionFlags;
 const FrameInput = state.FrameInput;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
@@ -187,6 +188,8 @@ pub const InputAccumulator = struct {
     mouse_inside: bool = false,
     scroll_delta_x: f32 = 0.0,
     scroll_delta_y: f32 = 0.0,
+    directional_held: DirectionFlags = .{},
+    track_held: bool = false,
 
     /// Initializes a fresh per-frame accumulator backed by `frame_allocator`.
     pub fn init(
@@ -200,6 +203,34 @@ pub const InputAccumulator = struct {
             .mouse_left_down = mouse_left_down,
             .mouse_x = mouse_x,
             .mouse_y = mouse_y,
+        };
+    }
+
+    /// Configures persistent directional key-hold tracking for terminals that
+    /// report key-release events (Kitty keyboard protocol `report_events`).
+    pub fn withDirectionalHeld(
+        self: InputAccumulator,
+        held: DirectionFlags,
+        track_held: bool,
+    ) InputAccumulator {
+        var next = self;
+        next.directional_held = if (track_held) held else .{};
+        next.track_held = track_held;
+        return next;
+    }
+
+    /// Clears all tracked held directional keys (e.g. on terminal focus loss).
+    pub fn clearHeld(self: *InputAccumulator) void {
+        self.directional_held = .{};
+    }
+
+    fn directionForMappedKey(key: Key) DirectionFlags {
+        return switch (key) {
+            .left, .char_h => .{ .left = true },
+            .right, .char_l => .{ .right = true },
+            .up, .char_k => .{ .up = true },
+            .down, .char_j => .{ .down = true },
+            else => .{},
         };
     }
 
@@ -247,12 +278,33 @@ pub const InputAccumulator = struct {
         if (mapped.key != .unknown) {
             try self.keys_pressed.append(self.frame_allocator, mapped.key);
             self.key_modifiers = mapped.mods;
+            if (self.track_held and !text_capture_active and
+                mapped.mods.eql(.{}))
+            {
+                const dir = directionForMappedKey(mapped.key);
+                if (dir.hasAny()) {
+                    self.directional_held = self.directional_held.merge(dir);
+                }
+            }
         }
 
         if (text_capture_active and !mapped.mods.ctrl and !mapped.mods.alt and
             !mapped.mods.gui)
         {
             try self.appendPrintableText(key);
+        }
+    }
+
+    /// Consumes a `vaxis.Key` release event (Kitty keyboard `report_events`),
+    /// clearing any corresponding bit from `directional_held`.
+    pub fn handleKeyRelease(self: *InputAccumulator, key: vaxis.Key) void {
+        if (!self.track_held or key.isModifier()) return;
+        const mapped = mapKey(key);
+        const dir = directionForMappedKey(mapped.key);
+        if (dir.hasAny()) {
+            self.directional_held = DirectionFlags.fromRaw(
+                self.directional_held.raw() & ~dir.raw(),
+            );
         }
     }
 
@@ -364,6 +416,7 @@ pub const InputAccumulator = struct {
             .scroll_delta_y = self.scroll_delta_y,
             .keys_pressed = self.keys_pressed,
             .key_modifiers = self.key_modifiers,
+            .directional_held = self.directional_held,
             .text_input = text_opt,
             .dropped_path = null,
             .delta_time_ms = delta_time_ms,
@@ -371,6 +424,39 @@ pub const InputAccumulator = struct {
         };
     }
 };
+
+test "InputAccumulator tracks simultaneous directional holds via key release" {
+    const allocator = std.testing.allocator;
+    var acc = InputAccumulator.init(allocator, false, 0.0, 0.0)
+        .withDirectionalHeld(.{}, true);
+    defer acc.deinit();
+
+    // Hold left + up simultaneously -> diagonal DirectionFlags.
+    try acc.handleKeyPress(.{ .codepoint = vaxis.Key.left }, false);
+    try acc.handleKeyPress(.{ .codepoint = vaxis.Key.up }, false);
+    const frame1 = acc.toFrameInput(800.0, 600.0, 16.0, 100);
+    try std.testing.expect(frame1.directional_held.left);
+    try std.testing.expect(frame1.directional_held.up);
+    try std.testing.expect(!frame1.directional_held.right);
+    try std.testing.expect(!frame1.directional_held.down);
+
+    // Releasing left keeps up held; releasing up clears all.
+    acc.handleKeyRelease(.{ .codepoint = vaxis.Key.left });
+    try std.testing.expect(!acc.directional_held.left);
+    try std.testing.expect(acc.directional_held.up);
+
+    acc.handleKeyRelease(.{ .codepoint = vaxis.Key.up });
+    try std.testing.expect(!acc.directional_held.hasAny());
+
+    // Simultaneous vim-style down + right (`j` + `l`) works identically.
+    try acc.handleKeyPress(.{ .codepoint = 'j', .text = "j" }, false);
+    try acc.handleKeyPress(.{ .codepoint = 'l', .text = "l" }, false);
+    try std.testing.expect(acc.directional_held.down);
+    try std.testing.expect(acc.directional_held.right);
+
+    acc.clearHeld();
+    try std.testing.expect(!acc.directional_held.hasAny());
+}
 
 test "mapKey unifies legacy VT, Kitty CSI-u, and base_layout_codepoint" {
     // Kitty CSI-u Shift+; -> :
