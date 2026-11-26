@@ -1000,6 +1000,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         .io = io,
     };
     app_state.viewer.resetToDefaults();
+    app_state.viewer.ui.palette.hide_gui_only_actions = true;
     app_state.viewer.viewport.scale_filter = cli.scale_filter;
     if (cli.slideshow_interval_s) |secs| {
         app_state.viewer.navigation.slideshow = .{
