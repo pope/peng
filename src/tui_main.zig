@@ -88,6 +88,208 @@ const TuiEvent = union(enum) {
     focus_out,
     worker_ready,
     timer_tick,
+    terminate_signal,
+};
+
+const has_posix_signals = std.posix.Sigaction != void;
+
+const SessionExit = union(enum) {
+    normal: ?[]u8,
+    signal: if (has_posix_signals) std.posix.SIG else void,
+};
+
+const TermSignalGuard = if (has_posix_signals) struct {
+    var received_sig: std.atomic.Value(u32) = .init(0);
+    var stopping_flag: std.atomic.Value(bool) = .init(false);
+    var write_fd: std.atomic.Value(std.posix.fd_t) = .init(-1);
+    var in_handler: std.atomic.Value(u32) = .init(0);
+
+    orig_int: std.posix.Sigaction,
+    orig_term: std.posix.Sigaction,
+    orig_hup: std.posix.Sigaction,
+    hup_installed: bool,
+    pipe_read: std.Io.File,
+    pipe_write: std.Io.File,
+    watcher: std.Io.Future(void),
+
+    fn handleSignal(sig: std.posix.SIG) callconv(.c) void {
+        _ = in_handler.fetchAdd(1, .acquire);
+        defer _ = in_handler.fetchSub(1, .release);
+
+        const saved_errno = std.c._errno().*;
+        defer std.c._errno().* = saved_errno;
+
+        const sig_num: u32 = @intCast(@backingInt(sig));
+        const already = received_sig.cmpxchgStrong(
+            0,
+            sig_num,
+            .acq_rel,
+            .acquire,
+        ) != null;
+        if (already) {
+            const dfl: std.posix.Sigaction = .{
+                .handler = .{ .handler = std.posix.SIG.DFL },
+                .mask = std.posix.sigemptyset(),
+                .flags = 0,
+            };
+            std.posix.sigaction(sig, &dfl, null);
+            _ = std.c.raise(sig);
+            return;
+        }
+        const fd = write_fd.load(.acquire);
+        if (fd >= 0) {
+            const byte: [1]u8 = .{1};
+            _ = std.posix.system.write(fd, &byte, byte.len);
+        }
+    }
+
+    fn watchPipe(
+        io: std.Io,
+        pipe_read: std.Io.File,
+        loop: *vaxis.Loop(TuiEvent),
+    ) void {
+        var buf: [64]u8 = undefined;
+        while (true) {
+            const n = pipe_read.readStreaming(io, &.{&buf}) catch return;
+            if (n == 0 or stopping_flag.load(.acquire)) return;
+            if (received_sig.load(.acquire) != 0) {
+                _ = loop.tryPostEvent(.terminate_signal) catch {};
+                return;
+            }
+        }
+    }
+
+    fn init(
+        io: std.Io,
+        loop: *vaxis.Loop(TuiEvent),
+    ) !TermSignalGuard {
+        var fds: [2]std.posix.fd_t = undefined;
+        switch (std.posix.errno(std.posix.system.pipe(&fds))) {
+            .SUCCESS => {},
+            .NFILE => return error.SystemFdQuotaExceeded,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+        errdefer {
+            _ = std.posix.system.close(fds[0]);
+            _ = std.posix.system.close(fds[1]);
+        }
+
+        for (fds) |fd| {
+            const rc = std.posix.system.fcntl(
+                fd,
+                std.posix.F.SETFD,
+                @as(c_int, std.posix.FD_CLOEXEC),
+            );
+            switch (std.posix.errno(rc)) {
+                .SUCCESS => {},
+                else => |err| return std.posix.unexpectedErrno(err),
+            }
+        }
+        const cur_fl = std.posix.system.fcntl(fds[1], std.posix.F.GETFL);
+        switch (std.posix.errno(cur_fl)) {
+            .SUCCESS => {},
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+        const nonblock: c_int = @intCast(
+            @backingInt(std.posix.O{ .NONBLOCK = true }),
+        );
+        switch (std.posix.errno(
+            std.posix.system.fcntl(
+                fds[1],
+                std.posix.F.SETFL,
+                @as(c_int, cur_fl | nonblock),
+            ),
+        )) {
+            .SUCCESS => {},
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+
+        const pipe_read: std.Io.File = .{
+            .handle = fds[0],
+            .flags = .{ .nonblocking = false },
+        };
+        const pipe_write: std.Io.File = .{
+            .handle = fds[1],
+            .flags = .{ .nonblocking = true },
+        };
+
+        received_sig.store(0, .release);
+        stopping_flag.store(false, .release);
+        write_fd.store(fds[1], .release);
+        errdefer write_fd.store(-1, .release);
+
+        const watcher = try io.concurrent(watchPipe, .{ io, pipe_read, loop });
+
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = handleSignal },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        var orig_int: std.posix.Sigaction = undefined;
+        var orig_term: std.posix.Sigaction = undefined;
+        var orig_hup: std.posix.Sigaction = undefined;
+        std.posix.sigaction(.INT, &act, &orig_int);
+        std.posix.sigaction(.TERM, &act, &orig_term);
+        std.posix.sigaction(.HUP, null, &orig_hup);
+        const hup_installed = (orig_hup.flags & std.posix.SA.SIGINFO) != 0 or
+            orig_hup.handler.handler != std.posix.SIG.IGN;
+        if (hup_installed) {
+            std.posix.sigaction(.HUP, &act, &orig_hup);
+        }
+
+        return .{
+            .orig_int = orig_int,
+            .orig_term = orig_term,
+            .orig_hup = orig_hup,
+            .hup_installed = hup_installed,
+            .pipe_read = pipe_read,
+            .pipe_write = pipe_write,
+            .watcher = watcher,
+        };
+    }
+
+    fn receivedSignal(_: *const TermSignalGuard) ?std.posix.SIG {
+        const sig_num = received_sig.load(.acquire);
+        if (sig_num == 0) return null;
+        return @fromBackingInt(@as(
+            @typeInfo(std.posix.SIG).@"enum".tag_type,
+            @intCast(sig_num),
+        ));
+    }
+
+    fn received(self: *const TermSignalGuard) bool {
+        return self.receivedSignal() != null;
+    }
+
+    fn deinit(self: *TermSignalGuard, io: std.Io) void {
+        std.posix.sigaction(.INT, &self.orig_int, null);
+        std.posix.sigaction(.TERM, &self.orig_term, null);
+        if (self.hup_installed) {
+            std.posix.sigaction(.HUP, &self.orig_hup, null);
+        }
+        write_fd.store(-1, .release);
+        while (in_handler.load(.acquire) != 0) {
+            std.atomic.spinLoopHint();
+        }
+        stopping_flag.store(true, .release);
+        const wake: [1]u8 = .{0};
+        _ = std.posix.system.write(self.pipe_write.handle, &wake, wake.len);
+        self.watcher.await(io);
+        self.pipe_read.close(io);
+        self.pipe_write.close(io);
+    }
+} else struct {
+    fn init(_: std.Io, _: *vaxis.Loop(TuiEvent)) !TermSignalGuard {
+        return .{};
+    }
+    fn receivedSignal(_: *const TermSignalGuard) ?void {
+        return null;
+    }
+    fn received(_: *const TermSignalGuard) bool {
+        return false;
+    }
+    fn deinit(_: *TermSignalGuard, _: std.Io) void {}
 };
 
 fn parseProcessArgs(init: std.process.Init) !TuiCliArgs {
@@ -1450,45 +1652,64 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (cli.log_file) |log_path| {
-        const f = std.Io.Dir.cwd().createFile(io, log_path, .{
-            .truncate = true,
-        }) catch |err| {
-            std.log.err("Failed to open log file '{s}': {s}", .{
-                log_path,
-                @errorName(err),
-            });
-            std.process.exit(1);
+    const session_exit = blk: {
+        if (cli.log_file) |log_path| {
+            const f = std.Io.Dir.cwd().createFile(io, log_path, .{
+                .truncate = true,
+            }) catch |err| {
+                std.log.err("Failed to open log file '{s}': {s}", .{
+                    log_path,
+                    @errorName(err),
+                });
+                std.process.exit(1);
+            };
+            tui_log_io = io;
+            tui_log_mutex.lockUncancelable(io);
+            tui_log_file = f;
+            tui_log_mutex.unlock(io);
+            tui_log_file_enabled.store(true, .release);
+        }
+        defer if (tui_log_file_enabled.swap(false, .acq_rel)) {
+            const log_io = tui_log_io.?;
+            tui_log_mutex.lockUncancelable(log_io);
+            const f_opt = tui_log_file;
+            tui_log_file = null;
+            tui_log_mutex.unlock(log_io);
+            if (f_opt) |f| f.close(log_io);
         };
-        tui_log_io = io;
-        tui_log_mutex.lockUncancelable(io);
-        tui_log_file = f;
-        tui_log_mutex.unlock(io);
-        tui_log_file_enabled.store(true, .release);
-    }
-    defer if (tui_log_file_enabled.swap(false, .acq_rel)) {
-        const log_io = tui_log_io.?;
-        tui_log_mutex.lockUncancelable(log_io);
-        const f_opt = tui_log_file;
-        tui_log_file = null;
-        tui_log_mutex.unlock(log_io);
-        if (f_opt) |f| f.close(log_io);
+
+        break :blk try runTuiSession(init, cli);
     };
 
-    const selections_tsv = try runTuiSession(init, cli);
-    defer if (selections_tsv) |tsv| gpa.free(tsv);
+    switch (session_exit) {
+        .normal => |selections_tsv| {
+            defer if (selections_tsv) |tsv| gpa.free(tsv);
 
-    // Emit TSV classifications to stdout strictly after alt-screen teardown
-    // so piped shell workflows receive clean `PICK\t<path>` / `REJECT\t<path>`.
-    if (selections_tsv) |tsv| {
-        var out_buf: [4096]u8 = undefined;
-        var out_w = std.Io.File.stdout().writerStreaming(io, &out_buf);
-        out_w.interface.writeAll(tsv) catch {};
-        out_w.interface.flush() catch {};
+            // Emit TSV classifications to stdout strictly after alt-screen
+            // teardown so piped shell workflows receive clean
+            // `PICK\t<path>` / `REJECT\t<path>`.
+            if (selections_tsv) |tsv| {
+                var out_buf: [4096]u8 = undefined;
+                var out_w = std.Io.File.stdout().writerStreaming(io, &out_buf);
+                out_w.interface.writeAll(tsv) catch {};
+                out_w.interface.flush() catch {};
+            }
+        },
+        .signal => |sig| {
+            if (comptime has_posix_signals) {
+                const dfl: std.posix.Sigaction = .{
+                    .handler = .{ .handler = std.posix.SIG.DFL },
+                    .mask = std.posix.sigemptyset(),
+                    .flags = 0,
+                };
+                std.posix.sigaction(sig, &dfl, null);
+                _ = std.c.raise(sig);
+            }
+        },
     }
 }
 
-fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
+fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
     const gpa = init.gpa;
     const io = init.io;
 
@@ -1516,6 +1737,15 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     defer loop.uninstallResizeHandler();
     try loop.start();
     defer loop.stop();
+
+    var term_sig = try TermSignalGuard.init(io, &loop);
+    defer term_sig.deinit(io);
+    if (sdl.events.consumeTerminateSignal()) {
+        return if (comptime has_posix_signals)
+            .{ .signal = .TERM }
+        else
+            .{ .normal = null };
+    }
 
     try vx.enterAltScreen(tty.writer());
     tui_log_muted.store(true, .release);
@@ -1598,7 +1828,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     var prev_overlay_open = false;
     var unpack_warmed = false;
 
-    while (app_state.viewer.running) {
+    while (app_state.viewer.running and !term_sig.received()) {
         _ = frame_arena.reset(.retain_capacity);
         const frame_alloc = frame_arena.allocator();
 
@@ -1673,12 +1903,17 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 },
                 .focus_out => acc.clearHeld(),
                 .focus_in, .worker_ready, .timer_tick => {},
+                .terminate_signal => {
+                    app_state.viewer.running = false;
+                    break;
+                },
             }
             ev_opt = loop.tryEvent() catch |err| switch (err) {
                 error.Closed => break,
                 else => return err,
             };
         }
+        if (!app_state.viewer.running or term_sig.received()) break;
 
         if (resized) {
             try vx.resize(gpa, tty.writer(), winsize);
@@ -2006,10 +2241,13 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         }
     }
 
-    if (!app_state.viewer.navigation.triage.hasAnySelections()) return null;
+    if (term_sig.receivedSignal()) |sig| return .{ .signal = sig };
+    if (!app_state.viewer.navigation.triage.hasAnySelections()) {
+        return .{ .normal = null };
+    }
     var tsv: std.Io.Writer.Allocating = .init(gpa);
     errdefer tsv.deinit();
     try app_state.viewer.navigation.writeSelectionsTsv(&tsv.writer);
     try tsv.writer.flush();
-    return try tsv.toOwnedSlice();
+    return .{ .normal = try tsv.toOwnedSlice() };
 }
