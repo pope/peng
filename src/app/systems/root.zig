@@ -163,6 +163,12 @@ pub fn runUpdatePhase(
         !app_state.isSlideshowPaused(),
     );
 
+    // Clamp pan offsets to final image bounds after uploads, EXIF rotation
+    // sync, and animation settling (covers resize and edit panel toggling)
+    app_state.clampViewportPan(
+        app_state.getInputViewportPixelDims(input_frame),
+    );
+
     const sync_end = std.Io.Clock.awake.now(app_state.io);
     return .{
         .intents_ms = state_pkg.durationToMs(

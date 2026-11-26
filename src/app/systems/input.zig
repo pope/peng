@@ -129,10 +129,20 @@ pub fn sysProcessInput(
     // 1. Coalesce simultaneous directional keys when zoomed
     if (is_zoomed and no_mod) {
         const dt_f32 = @as(f32, @floatCast(ctx.delta_time_ms));
+        const dpi = input.dpiScale();
+        const view_dims = state.getInputViewportPixelDims(input);
+        const overflow_ratio = state.getImageOverflowRatio(view_dims) orelse
+            state.viewer.viewport.zoom_factor.get();
+        const pan_metrics = state_pkg.PanMetrics.fromViewport(
+            view_dims,
+            dpi,
+            overflow_ratio,
+        );
         const pan_opt = key_mapping.updateDirectionalPan(
             &state.viewer.pan_controller,
             input.directional_held,
             input.keys_pressed.items,
+            pan_metrics,
             dt_f32,
         );
         if (pan_opt) |pan| {
@@ -592,7 +602,12 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
     }, false);
 
     const inv_sqrt2: f32 = 0.70710678;
-    const exp_diag = inv_sqrt2 * 800.0 * (16.0 / 1000.0);
+    const exp_speed = state_pkg.PanMetrics.fromViewport(
+        .{ .w = 800.0, .h = 600.0 },
+        .{},
+        2.0,
+    ).glide_speed_px_per_sec;
+    const exp_diag = inv_sqrt2 * exp_speed * (16.0 / 1000.0);
 
     // Exactly 1 intent enqueued: pan_by with smooth diagonal delta
     try std.testing.expectEqual(
@@ -700,7 +715,12 @@ test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
     }, false);
 
     const inv_sqrt2: f32 = 0.70710678;
-    const exp_diag = inv_sqrt2 * 800.0 * (16.0 / 1000.0);
+    const exp_speed = state_pkg.PanMetrics.fromViewport(
+        .{ .w = 800.0, .h = 600.0 },
+        .{},
+        2.0,
+    ).glide_speed_px_per_sec;
+    const exp_diag = inv_sqrt2 * exp_speed * (16.0 / 1000.0);
 
     try std.testing.expectEqual(
         @as(usize, 1),
@@ -851,7 +871,12 @@ test "sysProcessInput continuous gliding and seamless diagonal transition" {
     switch (intent) {
         .pan_by => |p| {
             const inv_sqrt2: f32 = 0.70710678;
-            const exp = inv_sqrt2 * 800.0 * (16.0 / 1000.0);
+            const exp_speed = state_pkg.PanMetrics.fromViewport(
+                .{ .w = 800.0, .h = 600.0 },
+                .{},
+                2.0,
+            ).glide_speed_px_per_sec;
+            const exp = inv_sqrt2 * exp_speed * (16.0 / 1000.0);
             try std.testing.expectApproxEqAbs(exp, p.dx, 0.01);
             try std.testing.expectApproxEqAbs(exp, p.dy, 0.01);
         },
@@ -1247,4 +1272,148 @@ test "sysProcessInput continuous zoom hold crossing 1.0 pauses once" {
             try std.testing.expect(end_zoom < 1.0);
         }
     }
+}
+
+test "sysProcessInput scales pan by viewport, DPI, overflow, and edit panel" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Load a 2000x1000 image so getImageOverflowRatio is exercised end-to-end
+    _ = try app_st.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "pan_test.png" },
+    });
+    app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
+        .inflight = .{ .queued_decode = .{} },
+    });
+    app_st.cache.get(key0).?.metadata.full_dims = .{
+        .w = 2000.0,
+        .h = 1000.0,
+    };
+
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(3.0);
+
+    const keys_empty: std.ArrayList(Key) = .empty;
+    const input_1080p = FrameInput{
+        .win_w = 1920,
+        .win_h = 1080,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_request = .none,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys_empty,
+        .key_modifiers = .{},
+        .directional_held = .{ .right = true },
+        .text_input = null,
+        .dropped_path = null,
+        .delta_time_ms = 16.0,
+    };
+
+    // 1. 1080p @ 1x at high overflow (6000/1920 > 3.0)
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = input_1080p,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        std.meta.Tag(AppIntent).pan_by,
+        std.meta.activeTag(app_st.pending_intents.items[0]),
+    );
+    const dx_1080p_high = app_st.pending_intents.items[0].pan_by.dx;
+    app_st.clearIntents();
+    app_st.viewer.pan_controller.reset();
+
+    // 2. 4K (1080p logical @ 2x) at high overflow -> exact 2x physical step
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(6.0);
+    var input_4k = input_1080p;
+    input_4k.scale_x = 2.0;
+    input_4k.scale_y = 2.0;
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = input_4k,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        std.meta.Tag(AppIntent).pan_by,
+        std.meta.activeTag(app_st.pending_intents.items[0]),
+    );
+    const dx_4k_high = app_st.pending_intents.items[0].pan_by.dx;
+    try std.testing.expectApproxEqAbs(dx_1080p_high * 2.0, dx_4k_high, 0.01);
+    app_st.clearIntents();
+    app_st.viewer.pan_controller.reset();
+
+    // 3. Smaller viewport (800x600 @ 1x) at high overflow pans slower
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(3.0);
+    var input_small = input_1080p;
+    input_small.win_w = 800;
+    input_small.win_h = 600;
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = input_small,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    const dx_small = app_st.pending_intents.items[0].pan_by.dx;
+    try std.testing.expect(@abs(dx_small) < @abs(dx_1080p_high));
+    app_st.clearIntents();
+    app_st.viewer.pan_controller.reset();
+
+    // 4. Barely overflowing on 1080p (zoom 1.0 -> 2000/1920 ~= 1.04) is slower
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(1.0);
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = input_1080p,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    const dx_low_overflow = app_st.pending_intents.items[0].pan_by.dx;
+    try std.testing.expect(@abs(dx_low_overflow) < @abs(dx_1080p_high) * 0.6);
+    app_st.clearIntents();
+    app_st.viewer.pan_controller.reset();
+
+    // 5. Docked Edit Panel narrows visible viewport -> slower pan at high zoom
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(3.0);
+    app_st.viewer.ui.overlays.edit_panel.visible = true;
+    app_st.viewer.animations.start(.edit_panel, 1.0, 0.0, .linear);
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = input_1080p,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    const dx_edit_open = app_st.pending_intents.items[0].pan_by.dx;
+    try std.testing.expect(@abs(dx_edit_open) < @abs(dx_1080p_high));
 }

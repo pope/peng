@@ -121,17 +121,29 @@ pub inline fn isDirectionalKey(key: Key) bool {
 }
 
 /// Resolves directional panning from physical key state and frame delta time.
-/// Provides consistent, smooth movement at GLIDE_SPEED for both taps and holds,
-/// eliminating discrete jumps and typematic repeat stalls.
+/// Provides consistent, smooth movement at `metrics.glide_speed_px_per_sec`
+/// for both taps and holds, eliminating discrete jumps and typematic repeat
+/// stalls.
 pub fn updateDirectionalPan(
     ctrl: *state.PanController,
     current_held: state.DirectionFlags,
     keys_pressed: []const Key,
+    metrics: state.PanMetrics,
     dt_ms: f32,
 ) ?PanDelta {
     // Numerical guard and delta clamping
-    if (std.math.isNan(dt_ms) or dt_ms <= 0.0) return null;
+    if (!std.math.isFinite(dt_ms) or dt_ms <= 0.0) return null;
     const dt_sec = @min(dt_ms, 50.0) / 1000.0;
+    const tap_dist = if (std.math.isFinite(metrics.tap_distance_px) and
+        metrics.tap_distance_px > 0.0)
+        metrics.tap_distance_px
+    else
+        state.PanController.TAP_DISTANCE;
+    const raw_glide = metrics.glide_speed_px_per_sec;
+    const glide_speed = if (std.math.isFinite(raw_glide) and raw_glide > 0.0)
+        raw_glide
+    else
+        state.PanController.GLIDE_SPEED;
 
     // 1. Update suppressed mask and detect newly pressed keys this frame
     var pressed_mask: u4 = 0;
@@ -156,7 +168,7 @@ pub fn updateDirectionalPan(
         ctrl.tap = .{
             .active = .{
                 .direction = newly_pressed,
-                .remaining_px = state.PanController.TAP_DISTANCE,
+                .remaining_px = tap_dist,
             },
         };
     }
@@ -199,8 +211,8 @@ pub fn updateDirectionalPan(
         return null;
     }
 
-    // 5. Calculate continuous displacement at constant GLIDE_SPEED
-    var step_dist = state.PanController.GLIDE_SPEED * dt_sec;
+    // 5. Calculate continuous displacement at resolved glide speed
+    var step_dist = glide_speed * dt_sec;
 
     switch (ctrl.tap) {
         .idle => {},
@@ -258,7 +270,7 @@ pub fn updateZoomMotion(
     dt_ms: f32,
 ) ?ZoomDelta {
     // Numerical guard and delta clamping
-    if (std.math.isNan(dt_ms) or dt_ms <= 0.0) return null;
+    if (!std.math.isFinite(dt_ms) or dt_ms <= 0.0) return null;
     const dt_sec = @min(dt_ms, 50.0) / 1000.0;
 
     var pressed_mask: u2 = 0;
@@ -754,6 +766,7 @@ test "updateDirectionalPan constant speed cardinal and diagonal motion" {
         &ctrl,
         .{ .up = true, .left = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(res_ul != null);
@@ -766,6 +779,7 @@ test "updateDirectionalPan constant speed cardinal and diagonal motion" {
         &ctrl,
         .{ .down = true, .right = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(res_dr != null);
@@ -778,6 +792,7 @@ test "updateDirectionalPan constant speed cardinal and diagonal motion" {
         &ctrl,
         .{ .up = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(res_up != null);
@@ -790,6 +805,7 @@ test "updateDirectionalPan constant speed cardinal and diagonal motion" {
         &ctrl,
         .{ .up = true, .down = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expectEqual(@as(?PanDelta, null), res_opp);
@@ -806,6 +822,7 @@ test "updateDirectionalPan smooth tap completion after key release" {
         &ctrl,
         .{ .up = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(f0 != null);
@@ -813,20 +830,20 @@ test "updateDirectionalPan smooth tap completion after key release" {
     try std.testing.expect(ctrl.isBusy());
 
     // Frame 1: Key released (current_held is empty), smooth tap continues
-    const f1 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    const f1 = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 16.0);
     try std.testing.expect(f1 != null);
     try std.testing.expectApproxEqAbs(exp_cardinal, f1.?.dy, 0.01);
     try std.testing.expect(ctrl.isBusy());
 
     // Frame 2: Final frame of smooth tap completes remaining 4.4px
-    const f2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    const f2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 16.0);
     try std.testing.expect(f2 != null);
     const exp_rem = state.PanController.TAP_DISTANCE - (exp_cardinal * 2.0);
     try std.testing.expectApproxEqAbs(exp_rem, f2.?.dy, 0.01);
     try std.testing.expect(!ctrl.isBusy());
 
     // Frame 3: Tap finished, motion stops
-    const f3 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    const f3 = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 16.0);
     try std.testing.expectEqual(@as(?PanDelta, null), f3);
 
     // Total distance is exactly TAP_DISTANCE
@@ -850,6 +867,7 @@ test "updateDirectionalPan continuous hold without pauses or jumps" {
             &ctrl,
             .{ .up = true },
             &empty_keys,
+            .{},
             16.0,
         );
         try std.testing.expect(step != null);
@@ -871,6 +889,7 @@ test "updateDirectionalPan seamless orthogonal transition without stutter" {
         &ctrl,
         .{ .up = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(f_up != null);
@@ -881,6 +900,7 @@ test "updateDirectionalPan seamless orthogonal transition without stutter" {
         &ctrl,
         .{ .up = true, .left = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(f_diag != null);
@@ -892,6 +912,7 @@ test "updateDirectionalPan seamless orthogonal transition without stutter" {
         &ctrl,
         .{ .left = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(f_left != null);
@@ -899,8 +920,76 @@ test "updateDirectionalPan seamless orthogonal transition without stutter" {
     try std.testing.expectEqual(@as(f32, 0.0), f_left.?.dy);
 
     // 4. Release all keys: stops immediately
-    const f_stop = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    const f_stop = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 16.0);
     try std.testing.expectEqual(@as(?PanDelta, null), f_stop);
+}
+
+test "updateDirectionalPan custom PanMetrics and invalid-input fallbacks" {
+    var ctrl: PanController = .{};
+    const empty_keys = [_]Key{};
+
+    const custom = state.PanMetrics{
+        .tap_distance_px = 60.0,
+        .glide_speed_px_per_sec = 1600.0,
+    };
+
+    // Tap completes exact custom tap_distance_px at custom glide speed
+    const f0 = updateDirectionalPan(
+        &ctrl,
+        .{ .right = true },
+        &empty_keys,
+        custom,
+        16.0,
+    );
+    try std.testing.expect(f0 != null);
+    try std.testing.expectApproxEqAbs(@as(f32, -25.6), f0.?.dx, 0.01);
+
+    var total: f32 = -f0.?.dx;
+    var guard: usize = 0;
+    while (ctrl.isBusy() and guard < 20) : (guard += 1) {
+        const step = updateDirectionalPan(
+            &ctrl,
+            .{},
+            &empty_keys,
+            custom,
+            16.0,
+        );
+        if (step) |s| total += -s.dx;
+    }
+    try std.testing.expectApproxEqAbs(@as(f32, 60.0), total, 0.01);
+
+    // Non-finite/non-positive metrics fall back to PanController defaults
+    ctrl.reset();
+    const bad = state.PanMetrics{
+        .tap_distance_px = std.math.nan(f32),
+        .glide_speed_px_per_sec = -10.0,
+    };
+    const fallback = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        bad,
+        16.0,
+    );
+    try std.testing.expect(fallback != null);
+    try std.testing.expectApproxEqAbs(
+        state.PanController.GLIDE_SPEED * (16.0 / 1000.0),
+        fallback.?.dy,
+        0.01,
+    );
+
+    // +Inf dt_ms returns null safely
+    ctrl.reset();
+    try std.testing.expectEqual(
+        @as(?PanDelta, null),
+        updateDirectionalPan(
+            &ctrl,
+            .{ .up = true },
+            &empty_keys,
+            custom,
+            std.math.inf(f32),
+        ),
+    );
 }
 
 test "updateZoomMotion constant rate continuous hold" {
@@ -1268,7 +1357,13 @@ test "updateDirectionalPan held direction reversal clears stale tap" {
 
     // 1. Frame 0 .up held -> Frame 1 .down held -> Frame 2 released
     var ctrl: PanController = .{};
-    const f0 = updateDirectionalPan(&ctrl, .{ .up = true }, &empty_keys, 16.0);
+    const f0 = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        .{},
+        16.0,
+    );
     try std.testing.expect(f0 != null);
     try std.testing.expect(f0.?.dy > 0.0);
 
@@ -1276,18 +1371,25 @@ test "updateDirectionalPan held direction reversal clears stale tap" {
         &ctrl,
         .{ .down = true },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(f1 != null);
     try std.testing.expect(f1.?.dy < 0.0);
 
-    const f2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    const f2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 16.0);
     try std.testing.expectEqual(@as(?PanDelta, null), f2);
     try std.testing.expect(!ctrl.isBusy());
 
     // 2. Non-overlapping 90-degree switch at small dt clears stale .up tap
     ctrl.reset();
-    const s0 = updateDirectionalPan(&ctrl, .{ .up = true }, &empty_keys, 4.0);
+    const s0 = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        .{},
+        4.0,
+    );
     try std.testing.expect(s0 != null);
     try std.testing.expect(s0.?.dy > 0.0);
 
@@ -1295,20 +1397,27 @@ test "updateDirectionalPan held direction reversal clears stale tap" {
         &ctrl,
         .{ .left = true },
         &empty_keys,
+        .{},
         4.0,
     );
     try std.testing.expect(s1 != null);
     try std.testing.expect(s1.?.dx > 0.0);
     try std.testing.expectEqual(@as(f32, 0.0), s1.?.dy);
 
-    const s2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 4.0);
+    const s2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 4.0);
     try std.testing.expectEqual(@as(?PanDelta, null), s2);
     try std.testing.expect(!ctrl.isBusy());
 
     // 3. Overlapping orthogonal transition (.up -> .up + .left -> release)
     // preserves the remaining .up tap travel.
     ctrl.reset();
-    const o0 = updateDirectionalPan(&ctrl, .{ .up = true }, &empty_keys, 16.0);
+    const o0 = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        .{},
+        16.0,
+    );
     try std.testing.expect(o0 != null);
     const o1 = updateDirectionalPan(
         &ctrl,
@@ -1317,10 +1426,11 @@ test "updateDirectionalPan held direction reversal clears stale tap" {
             .left = true,
         },
         &empty_keys,
+        .{},
         16.0,
     );
     try std.testing.expect(o1 != null);
-    const o2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    const o2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, .{}, 16.0);
     try std.testing.expect(o2 != null);
     try std.testing.expect(o2.?.dy > 0.0);
     try std.testing.expectEqual(@as(f32, 0.0), o2.?.dx);

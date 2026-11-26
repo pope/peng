@@ -166,11 +166,16 @@ pub fn sysUpdateViewport(
         }
     }
 
+    const view_dims = state.getInputViewportPixelDims(input);
+
     // 3. Touch Pinch & Ctrl+Scroll Zoom at cursor / touch midpoint
     const has_pinch = input.pinch_delta != 0.0;
     const is_ctrl_scroll = is_ctrl_down and has_scroll_y;
     if (has_pinch or is_ctrl_scroll) {
         if (over_viewport) {
+            // Clamp drag/scroll pan before zoomAtPoint anchors against it
+            state.clampViewportPan(view_dims);
+
             const old_zoom = if (state.viewer.viewport.mode == .manual)
                 state.viewer.viewport.zoom_factor
             else
@@ -212,6 +217,8 @@ pub fn sysUpdateViewport(
             );
         }
     }
+
+    state.clampViewportPan(view_dims);
 }
 
 test "sysUpdateViewport cancels active panel drag when panel hides" {
@@ -257,4 +264,118 @@ test "sysUpdateViewport cancels active panel drag when panel hides" {
         state_pkg.DragState.none,
         app_st.viewer.drag_state,
     );
+}
+
+test "sysUpdateViewport clamps mouse drag and scroll to image bounds" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    _ = try app_st.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "bounds.png" },
+    });
+    app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
+        .inflight = .{ .queued_decode = .{} },
+    });
+    app_st.cache.get(key0).?.metadata.full_dims = .{
+        .w = 1600.0,
+        .h = 1200.0,
+    };
+
+    // 1600x1200 @ 1.0x in 800x600 -> max_x = 400, max_y = 300
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(1.0);
+    app_st.viewer.drag_state = .{
+        .viewport = .{ .last_x = 0.0, .last_y = 0.0 },
+    };
+
+    const frame_input = state_pkg.FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 700.0,
+        .mouse_y = -600.0,
+        .mouse_left_down = true,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_request = .none,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = .empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .delta_time_ms = 16.0,
+    };
+
+    sysUpdateViewport(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 400.0),
+        app_st.viewer.viewport.pan_x,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, -300.0),
+        app_st.viewer.viewport.pan_y,
+        0.01,
+    );
+
+    // 2. Scroll-wheel panning also clamps cleanly to [-400, 400] x [-300, 300]
+    app_st.viewer.drag_state = .none;
+    app_st.viewer.ui.interaction.beginFrameLayout();
+    app_st.viewer.ui.interaction.viewport = .{
+        .x = 0,
+        .y = 0,
+        .w = 800,
+        .h = 600,
+    };
+    app_st.viewer.ui.interaction.setPointerStateForTest(.{
+        .x = 100.0,
+        .y = 100.0,
+    });
+    var scroll_input = frame_input;
+    scroll_input.mouse_left_down = false;
+    scroll_input.scroll_delta_x = -200.0;
+    scroll_input.scroll_delta_y = 200.0;
+    sysUpdateViewport(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = scroll_input,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, -400.0),
+        app_st.viewer.viewport.pan_x,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 300.0),
+        app_st.viewer.viewport.pan_y,
+        0.01,
+    );
+
+    // 3. Ctrl+scroll zoom-out at corner pulls pan back inside shrunken bounds
+    var zoom_out_input = scroll_input;
+    zoom_out_input.key_modifiers = .{ .ctrl = true };
+    zoom_out_input.scroll_delta_x = 0.0;
+    zoom_out_input.scroll_delta_y = -20.0; // exp(-1) ~= 0.368 -> fits 800x600
+    sysUpdateViewport(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = zoom_out_input,
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.pan_y);
 }

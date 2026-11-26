@@ -82,6 +82,7 @@ pub const OverlayState = types.OverlayState;
 pub const PaletteClickHit = interaction.PaletteClickHit;
 pub const PaletteItemHit = interaction.PaletteItemHit;
 pub const PanController = viewport.PanController;
+pub const PanMetrics = viewport.PanMetrics;
 pub const PanTap = viewport.PanTap;
 pub const PRESENT_IDLE_GAP_MS = telemetry.PRESENT_IDLE_GAP_MS;
 pub const PresentCadence = telemetry.PresentCadence;
