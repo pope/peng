@@ -192,9 +192,9 @@ const FrameRenderer = union(enum) {
         };
     }
 
-    fn unpackPipeline(self: *const FrameRenderer) ?sdl.gpu.ComputePipeline {
+    fn ensureUnpackPipeline(self: *FrameRenderer) ?sdl.gpu.ComputePipeline {
         return switch (self.*) {
-            .gpu => |r| r.resources.unpack_compute_pipeline.get(),
+            .gpu => |*r| r.resources.ensureUnpackComputePipeline(),
         };
     }
 
@@ -1377,7 +1377,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         .display = .{ .visible = .headless },
         .gpu_device = renderer.gpuDevice(),
         .gpu_enabled = true,
-        .unpack_compute_pipeline = renderer.unpackPipeline(),
+        .unpack_compute_pipeline = null,
         .cache = .{},
         .workers = .init(.{
             .callback = .{
@@ -1449,6 +1449,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     var last_mouse_x: f32 = 0.0;
     var last_mouse_y: f32 = 0.0;
     var prev_overlay_open = false;
+    var unpack_warmed = false;
 
     while (app_state.viewer.running) {
         _ = frame_arena.reset(.retain_capacity);
@@ -1783,6 +1784,13 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 }
             },
             .none, .kitty_vaxis, .halfblocks => {},
+        }
+
+        // Lazily warm the RGB24 compute unpack pipeline after the first image
+        // is presented so cold-start time-to-first-pixel is never blocked.
+        if (!unpack_warmed and image_changed) {
+            unpack_warmed = true;
+            app_state.unpack_compute_pipeline = renderer.ensureUnpackPipeline();
         }
     }
 
