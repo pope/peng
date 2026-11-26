@@ -31,7 +31,7 @@ pub const TuiCliArgs = struct {
     log_file: ?[]const u8 = null,
     help: bool = false,
 
-    /// Releases owned `path` and `log_file` strings allocated by `parse`.
+    /// Releases owned `path` and `log_file` strings allocated by `parseArgs`.
     pub fn deinit(self: *TuiCliArgs, allocator: std.mem.Allocator) void {
         if (self.path) |p| allocator.free(p);
         if (self.log_file) |lf| allocator.free(lf);
@@ -57,10 +57,21 @@ pub fn parseArgs(
     var result: TuiCliArgs = .{};
     errdefer result.deinit(allocator);
 
+    var positional_only = false;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        if (positional_only) {
+            if (result.path == null) {
+                result.path = try allocator.dupe(u8, arg);
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--")) {
+            positional_only = true;
+        } else if (std.mem.eql(u8, arg, "-h") or
+            std.mem.eql(u8, arg, "--help"))
+        {
             result.help = true;
             return result;
         } else if (std.mem.eql(u8, arg, "--protocol")) {
@@ -286,4 +297,27 @@ test "parseArgs defaults, help, case-insensitive infobar, and OOM safety" {
         }
     };
     try std.testing.checkAllAllocationFailures(allocator, Runner.run, .{});
+}
+
+test "parseArgs supports -- end-of-options separator" {
+    const allocator = std.testing.allocator;
+
+    var dash_file = try parseArgs(
+        allocator,
+        &.{ "--protocol", "sixel", "--", "-weird-name.jpg" },
+    );
+    defer dash_file.deinit(allocator);
+    try std.testing.expectEqual(ProtocolMode.sixel, dash_file.protocol);
+    try std.testing.expect(!dash_file.help);
+    try std.testing.expectEqualStrings("-weird-name.jpg", dash_file.path.?);
+
+    var dash_help = try parseArgs(allocator, &.{ "--", "--help" });
+    defer dash_help.deinit(allocator);
+    try std.testing.expect(!dash_help.help);
+    try std.testing.expectEqualStrings("--help", dash_help.path.?);
+
+    var trailing = try parseArgs(allocator, &.{ "--infobar", "none", "--" });
+    defer trailing.deinit(allocator);
+    try std.testing.expectEqual(InfobarPosition.none, trailing.infobar);
+    try std.testing.expect(trailing.path == null);
 }
