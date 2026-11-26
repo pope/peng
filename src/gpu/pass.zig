@@ -977,7 +977,11 @@ fn executeRenderPass(
         defer final_pass.end();
 
         // 4a. Blit sharp base scene
-        final_pass.bindPipeline(gpu.blit_pipeline);
+        const blit_pipe = if (clear_color.a == 0.0)
+            gpu.ensureBlitPipelineReplace() orelse gpu.blit_pipeline
+        else
+            gpu.blit_pipeline;
+        final_pass.bindPipeline(blit_pipe);
         final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
             .buffer = gpu.fullscreen_vertex_buffer,
             .offset = 0,
