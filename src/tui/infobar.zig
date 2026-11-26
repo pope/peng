@@ -43,6 +43,7 @@ pub const InfobarModel = struct {
     compare_original: bool = false,
     slideshow_active: bool = false,
     slideshow_paused: bool = false,
+    notification: []const u8 = "",
 };
 
 fn scaleLabel(fit_mode: ZoomPreset, is_manual: bool) []const u8 {
@@ -253,6 +254,17 @@ pub fn render(
         _ = writeSpans(bar, right_start, right_w, right_spans);
     }
 
+    const left_max = right_start -| 1;
+    if (model.notification.len > 0) {
+        const clean_msg = sanitizeUtf8(frame_allocator, model.notification);
+        const notif_spans = [_]StyledSpan{
+            .{ .text = " ", .fg = fg_warn },
+            .{ .text = clean_msg, .fg = fg_warn, .bold = true },
+        };
+        _ = writeSpans(bar, 0, left_max, &notif_spans);
+        return;
+    }
+
     // --- Left section ---
     var left_spans_buf: [6]StyledSpan = undefined;
     var left_len: usize = 0;
@@ -323,7 +335,6 @@ pub fn render(
         left_len += 1;
     }
 
-    const left_max = right_start -| 1;
     const left_written = writeSpans(
         bar,
         0,
@@ -554,5 +565,53 @@ test "infobar.render sanitizes invalid UTF-8, control chars, CJK, and NaN" {
     try std.testing.expectEqualStrings(
         "0123456789abcdef_before_?_after.jpg",
         cleaned,
+    );
+}
+
+test "infobar.render displays sanitized notification and restores on clear" {
+    const allocator = std.testing.allocator;
+    var screen = try vaxis.Screen.init(allocator, .{
+        .cols = 80,
+        .rows = 1,
+        .x_pixel = 800,
+        .y_pixel = 20,
+    });
+    defer screen.deinit(allocator);
+
+    const win: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 80,
+        .height = 1,
+        .screen = &screen,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // Renders notification even when visible_pos is null and strips ESC bytes.
+    render(win, .{
+        .notification = "Pre-cached 12 thumbnails\x1b!",
+    }, arena.allocator());
+    const notif_line = try readRowText(allocator, win);
+    defer allocator.free(notif_line);
+    try std.testing.expect(std.mem.find(u8, notif_line, "\x1b") == null);
+    try std.testing.expect(
+        std.mem.find(u8, notif_line, "Pre-cached 12 thumbnails?!") != null,
+    );
+    try std.testing.expect(std.mem.find(u8, notif_line, ": palette") != null);
+
+    // Clearing notification restores normal metadata.
+    render(win, .{
+        .visible_pos = 1,
+        .visible_count = 12,
+        .filename = "photo.jpg",
+    }, arena.allocator());
+    const normal_line = try readRowText(allocator, win);
+    defer allocator.free(normal_line);
+    try std.testing.expect(
+        std.mem.find(u8, normal_line, "[1/12] photo.jpg") != null,
     );
 }

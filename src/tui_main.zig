@@ -597,6 +597,8 @@ const UiRenderKey = struct {
         hashBool(hasher, m.compare_original);
         hashBool(hasher, m.slideshow_active);
         hashBool(hasher, m.slideshow_paused);
+        hasher.update(m.notification);
+        hasher.update(&.{0});
     }
 
     fn init(
@@ -1273,6 +1275,10 @@ fn buildInfobarModel(app_state: *const AppState) tui.infobar.InfobarModel {
         .compare_original = vp.compare_original,
         .slideshow_active = ss_state.active,
         .slideshow_paused = ss_state.paused,
+        .notification = if (app_state.viewer.animations.get(.snackbar) > 0.001)
+            app_state.viewer.ui.snackbar.getMessage()
+        else
+            "",
     };
 }
 
@@ -1494,7 +1500,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         .defaults = .{
             .default_scale = cli.default_scale,
             .animations = .disabled,
-            .snackbar_enabled = false,
+            .snackbar_enabled = true,
             .auto_title = false,
             .stack_raw_jpeg = cli.stack_raw_jpeg,
         },
