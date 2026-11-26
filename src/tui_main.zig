@@ -219,7 +219,8 @@ const FrameRenderer = union(enum) {
 const RenderKey = struct {
     tex_ptr: usize,
     image_row: u16,
-    crop: ImageCellCrop,
+    render_crop: ImageCellCrop,
+    present_crop: ImageCellCrop,
     mode: @TypeOf(@as(ViewportParams, .{}).mode),
     fit_mode: @TypeOf(@as(ViewportParams, .{}).fit_mode),
     zoom_bits: u32,
@@ -234,7 +235,8 @@ const RenderKey = struct {
     fn init(
         tex: sdl.gpu.Texture,
         layout: ViewportLayout,
-        crop: ImageCellCrop,
+        render_crop: ImageCellCrop,
+        present_crop: ImageCellCrop,
         quad: ImageQuadContext,
     ) RenderKey {
         const vp = quad.view_params;
@@ -247,7 +249,8 @@ const RenderKey = struct {
         return .{
             .tex_ptr = @intFromPtr(tex.ptr),
             .image_row = layout.image_row,
-            .crop = crop,
+            .render_crop = render_crop,
+            .present_crop = present_crop,
             .mode = vp.mode,
             .fit_mode = vp.fit_mode,
             .zoom_bits = @bitCast(vp.zoom_factor.get()),
@@ -269,7 +272,8 @@ const RenderKey = struct {
 const ActiveImageQuad = struct {
     quad: ImageQuadContext,
     tex: sdl.gpu.Texture,
-    crop: ImageCellCrop,
+    render_crop: ImageCellCrop,
+    present_crop: ImageCellCrop,
 };
 
 fn resolveActiveImageQuad(
@@ -298,20 +302,51 @@ fn resolveActiveImageQuad(
         .w = draw_dims.w,
         .h = draw_dims.h,
     };
-    // Crop to fitted image cells in unpanned `.fit` mode to avoid reading back
-    // and transferring empty letterbox margins; keep full viewport when panned
-    // or in `.fill`/`.manual` modes so dragging/zooming never clips or
-    // reallocates the offscreen GPU target per frame.
-    const crop: ImageCellCrop = switch (vp.mode) {
+    // Crop the GPU offscreen target in unpanned `.fit` mode to avoid reading
+    // back empty letterbox margins; keep `fullCrop()` when panned or in
+    // `.fill`/`.manual` modes so dragging/zooming never reallocates the
+    // offscreen GPU texture per frame.
+    const render_crop: ImageCellCrop = switch (vp.mode) {
         .fit => if (vp.pan_x == 0.0 and vp.pan_y == 0.0)
             layout.cropForRect(full_rect)
         else
             layout.fullCrop(),
         .fill, .manual => layout.fullCrop(),
     };
+    // Compute the exact visible cell rectangle in all modes so `transmitFrame`
+    // can slice the mapped readback in O(1) to exclude empty letterbox margins
+    // across Kitty, iTerm2, Sixel, and Halfblocks without GPU reallocations.
+    const visible_rect: FRect = switch (vp.mode) {
+        .fit, .fill => .{
+            .x = full_rect.x + vp.pan_x,
+            .y = full_rect.y + vp.pan_y,
+            .w = full_rect.w,
+            .h = full_rect.h,
+        },
+        .manual => blk: {
+            const z = vp.zoom_factor.get();
+            if (!std.math.isFinite(z) or z <= 0.0) break :blk full_rect;
+            break :blk ImageCellCrop.rotatedAabb(
+                full_rect.x + full_rect.w * 0.5,
+                full_rect.y + full_rect.h * 0.5,
+                auth.w * z,
+                auth.h * z,
+                vp.rotation_angle,
+                vp.pan_x,
+                vp.pan_y,
+            );
+        },
+    };
+    const present_crop: ImageCellCrop = switch (vp.mode) {
+        .fit => if (vp.pan_x == 0.0 and vp.pan_y == 0.0)
+            render_crop
+        else
+            layout.cropForRect(visible_rect),
+        .fill, .manual => layout.cropForRect(visible_rect),
+    };
     const canvas_rect: FRect = .{
-        .x = full_rect.x - crop.pxOffsetX(layout.cell_px),
-        .y = full_rect.y - crop.pxOffsetY(layout.cell_px),
+        .x = full_rect.x - render_crop.pxOffsetX(layout.cell_px),
+        .y = full_rect.y - render_crop.pxOffsetY(layout.cell_px),
         .w = full_rect.w,
         .h = full_rect.h,
     };
@@ -326,7 +361,8 @@ fn resolveActiveImageQuad(
         .loaded_gpu => |g| {
             return .{
                 .tex = g.gpu_texture,
-                .crop = crop,
+                .render_crop = render_crop,
+                .present_crop = present_crop,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = g.gpu_texture },
@@ -342,7 +378,8 @@ fn resolveActiveImageQuad(
         .promoting_gpu => |promo| {
             return .{
                 .tex = promo.active.gpu_texture,
-                .crop = crop,
+                .render_crop = render_crop,
+                .present_crop = present_crop,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = promo.active.gpu_texture },
@@ -384,7 +421,8 @@ fn resolveActiveImageQuad(
             uv.source_h = if (swapped) auth.w else auth.h;
             return .{
                 .tex = thumb.texture,
-                .crop = crop,
+                .render_crop = render_crop,
+                .present_crop = present_crop,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = thumb.texture },
@@ -847,6 +885,38 @@ const PresentationState = struct {
         }
     }
 };
+
+const SlicedReadback = struct {
+    readback: MappedReadback,
+    crop: ImageCellCrop,
+};
+
+/// Returns a zero-copy strided sub-view of `readback` paired with the exact
+/// `ImageCellCrop` it covers. Falls back to `readback` + `render_crop` when
+/// `present_crop` matches `render_crop` or fails bounds validation.
+fn sliceReadbackToCrop(
+    readback: MappedReadback,
+    render_crop: ImageCellCrop,
+    present_crop: ImageCellCrop,
+    cell_px: termgfx.CellPixelSize,
+) SlicedReadback {
+    if (render_crop.eql(present_crop)) {
+        return .{ .readback = readback, .crop = render_crop };
+    }
+    const range = ImageCellCrop.subRectByteRange(
+        render_crop,
+        present_crop,
+        cell_px,
+        readback.dims,
+        readback.pitch,
+        readback.pixels.len,
+    ) orelse return .{ .readback = readback, .crop = render_crop };
+
+    var sub = readback;
+    sub.pixels = readback.pixels[range.start..range.end];
+    sub.dims = present_crop.px;
+    return .{ .readback = sub, .crop = present_crop };
+}
 
 fn wrapReadbackSurface(readback: MappedReadback) !sdl.Surface {
     const w_i32 = std.math.cast(i32, readback.dims.w) orelse
@@ -1635,7 +1705,8 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             const key = RenderKey.init(
                 active.tex,
                 render_layout,
-                active.crop,
+                active.render_crop,
+                active.present_crop,
                 active.quad,
             );
             const dirty = pres.last_key == null or
@@ -1645,10 +1716,17 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     gpa,
                     frame_alloc,
                     active.quad,
-                    active.crop.px,
+                    active.render_crop.px,
                 );
                 defer frame_res.readback.deinit();
                 last_gpu_pass_ms = frame_res.timings.total_pass_ms;
+
+                const sliced = sliceReadbackToCrop(
+                    frame_res.readback,
+                    active.render_crop,
+                    active.present_crop,
+                    render_layout.cell_px,
+                );
 
                 try transmitFrame(
                     gpa,
@@ -1658,8 +1736,8 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     tty.writer(),
                     target,
                     render_layout,
-                    active.crop,
-                    frame_res.readback,
+                    sliced.crop,
+                    sliced.readback,
                     &pres,
                 );
                 pres.last_key = key;

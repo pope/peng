@@ -65,6 +65,87 @@ pub const ImageCellCrop = struct {
         });
     }
 
+    /// Returns the pixel-space axis-aligned bounding box of a centered quad
+    /// (`base_w` x `base_h` before rotation) rotated by `rotation_deg` and
+    /// translated by `(pan_x, pan_y)` around `(center_x, center_y)`.
+    pub fn rotatedAabb(
+        center_x: f32,
+        center_y: f32,
+        base_w: f32,
+        base_h: f32,
+        rotation_deg: f32,
+        pan_x: f32,
+        pan_y: f32,
+    ) FRect {
+        const rad = rotation_deg * (std.math.pi / 180.0);
+        const cos_abs = @abs(@cos(rad));
+        const sin_abs = @abs(@sin(rad));
+        const aabb_w = base_w * cos_abs + base_h * sin_abs;
+        const aabb_h = base_w * sin_abs + base_h * cos_abs;
+        const cx = center_x + pan_x;
+        const cy = center_y + pan_y;
+        return .{
+            .x = cx - aabb_w * 0.5,
+            .y = cy - aabb_h * 0.5,
+            .w = aabb_w,
+            .h = aabb_h,
+        };
+    }
+
+    /// Byte range (`start`, `end`) for a zero-copy strided RGBA8888 sub-view
+    /// covering `present_crop` inside `render_crop`.
+    pub const SubRectByteRange = struct {
+        start: usize,
+        end: usize,
+    };
+
+    /// Computes the checked byte range of `present_crop` inside a strided
+    /// RGBA8888 buffer rendered for `render_crop`. Returns `null` if
+    /// `present_crop` does not fit cleanly inside `render_crop` / `buf_dims`
+    /// or if any arithmetic overflows.
+    pub fn subRectByteRange(
+        render_crop: ImageCellCrop,
+        present_crop: ImageCellCrop,
+        cell_px: CellPixelSize,
+        buf_dims: PositiveDimsU32,
+        pitch: usize,
+        buf_len: usize,
+    ) ?SubRectByteRange {
+        if (present_crop.col_off < render_crop.col_off or
+            present_crop.row_off < render_crop.row_off)
+        {
+            return null;
+        }
+        const sub_w: usize = present_crop.px.w;
+        const sub_h: usize = present_crop.px.h;
+        if (sub_w == 0 or sub_h == 0) return null;
+
+        const dcol: usize = present_crop.col_off - render_crop.col_off;
+        const drow: usize = present_crop.row_off - render_crop.row_off;
+        const dx_px = std.math.mul(usize, dcol, @as(usize, cell_px.w)) catch
+            return null;
+        const dy_px = std.math.mul(usize, drow, @as(usize, cell_px.h)) catch
+            return null;
+        const end_x = std.math.add(usize, dx_px, sub_w) catch return null;
+        const end_y = std.math.add(usize, dy_px, sub_h) catch return null;
+        if (end_x > buf_dims.w or end_y > buf_dims.h) return null;
+
+        const row_bytes = std.math.mul(usize, sub_w, 4) catch return null;
+        if (pitch < row_bytes) return null;
+
+        const dx_bytes = std.math.mul(usize, dx_px, 4) catch return null;
+        const dy_bytes = std.math.mul(usize, dy_px, pitch) catch return null;
+        const start = std.math.add(usize, dy_bytes, dx_bytes) catch
+            return null;
+        const tail_rows = std.math.mul(usize, sub_h - 1, pitch) catch
+            return null;
+        const span = std.math.add(usize, tail_rows, row_bytes) catch
+            return null;
+        const end = std.math.add(usize, start, span) catch return null;
+        if (end > buf_len) return null;
+        return .{ .start = start, .end = end };
+    }
+
     /// Returns `true` when two crops have identical cell and pixel bounds.
     pub fn eql(a: ImageCellCrop, b: ImageCellCrop) bool {
         return std.meta.eql(a, b);
@@ -395,6 +476,78 @@ test "ViewportLayout.cropForRect snaps outward, clamps, handles edge cases" {
         .w = 0.0,
         .h = 100.0,
     }).eql(layout.fullCrop()));
+
+    // Rotated AABB swaps width/height at 90 degrees and applies pan.
+    const rot_rect = ImageCellCrop.rotatedAabb(
+        500.0,
+        390.0,
+        400.0,
+        200.0,
+        90.0,
+        50.0,
+        -10.0,
+    );
+    try std.testing.expectApproxEqAbs(@as(f32, 450.0), rot_rect.x, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 180.0), rot_rect.y, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 200.0), rot_rect.w, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 400.0), rot_rect.h, 1e-3);
+
+    // Checked sub-rect byte range for strided RGBA readback slicing.
+    const full = layout.fullCrop();
+    const pitch: usize = @as(usize, full.px.w) * 4;
+    const total_len: usize = pitch * @as(usize, full.px.h);
+    const range = ImageCellCrop.subRectByteRange(
+        full,
+        crop,
+        layout.cell_px,
+        full.px,
+        pitch,
+        total_len,
+    ) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(@as(usize, 250 * 4), range.start);
+    try std.testing.expectEqual(
+        @as(usize, 250 * 4 + (780 - 1) * pitch + 500 * 4),
+        range.end,
+    );
+
+    // Reject zero dims, pitch < row_bytes, and same-dims-shifted-offset.
+    var zero_h = crop;
+    zero_h.px.h = 0;
+    try std.testing.expectEqual(
+        @as(?ImageCellCrop.SubRectByteRange, null),
+        ImageCellCrop.subRectByteRange(
+            full,
+            zero_h,
+            layout.cell_px,
+            full.px,
+            pitch,
+            total_len,
+        ),
+    );
+    try std.testing.expectEqual(
+        @as(?ImageCellCrop.SubRectByteRange, null),
+        ImageCellCrop.subRectByteRange(
+            full,
+            crop,
+            layout.cell_px,
+            full.px,
+            100,
+            total_len,
+        ),
+    );
+    var shifted_full = full;
+    shifted_full.col_off = 1;
+    try std.testing.expectEqual(
+        @as(?ImageCellCrop.SubRectByteRange, null),
+        ImageCellCrop.subRectByteRange(
+            full,
+            shifted_full,
+            layout.cell_px,
+            full.px,
+            pitch,
+            total_len,
+        ),
+    );
 }
 
 test "InfobarPosition.next cycles bottom -> top -> none -> bottom" {
