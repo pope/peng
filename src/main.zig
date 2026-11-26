@@ -525,40 +525,21 @@ const AppGraphicsAndState = struct {
         self.profiler = profiler;
         self.measure_data = .{ .measurer = .empty };
         self.ipc_server = null;
-        self.state = app.state.AppState{
-            .viewer = viewer_blk: {
-                var nav = try state_pkg.NavigationState.init(gpa);
-                errdefer nav.deinit(gpa);
-                const ui_state = try state_pkg.UiState.init(gpa);
-                break :viewer_blk .{
-                    .defaults = defaults,
-                    .navigation = nav,
-                    .ui = ui_state,
-                    .animations = .{},
-                    .rotation_map = .empty,
-                    .server_mode = parsed.server_mode,
-                    .running = true,
-                };
-            },
-            .display = if (start_hidden)
-                .{ .hidden = .headless }
+        try self.state.initInPlace(gpa, proc_init.io, .{
+            .defaults = defaults,
+            .visibility = if (start_hidden) .hidden else .visible,
+            .gpu = .deferred,
+            .waker = .sdl,
+            .server = if (parsed.server_mode)
+                .{
+                    .resident = .{
+                        .idle_timeout_ms = parsed.idle_timeout_sec *| 1000,
+                    },
+                }
             else
-                .{ .visible = .headless },
-            .gpu_device = null,
-            .gpu_enabled = true,
-            .unpack_compute_pipeline = null,
-            .cache = .{},
-            .workers = .init(.sdl),
-            .server_idle_timeout_ms = if (parsed.server_mode)
-                parsed.idle_timeout_sec *| 1000
-            else
-                0,
-            .allocator = gpa,
-            .io = proc_init.io,
-        };
-        self.state.viewer.resetToDefaults();
+                .disabled,
+        });
         errdefer self.state.deinit();
-        try self.state.ensureInitialCapacities();
         const thumb_mode = if (parsed.test_mode) .off else parsed.thumb_cache;
         const thumb_tier = if (thumb_mode == .off)
             ThumbTier.normal
@@ -572,19 +553,10 @@ const AppGraphicsAndState = struct {
 
         // Spawn initial directory scan & decode worker before window/GPU setup
         // to overlap CPU file I/O & decode with Wayland/Vulkan initialization.
-        if (self.parsed.arg_path) |path| {
-            try self.state.openPath(
-                path,
-                state_pkg.timestampToMs(std.Io.Clock.awake.now(proc_init.io)),
-            );
-        } else if (!self.parsed.server_mode) {
-            try app.workers.readPipedStdin(
-                &self.state.workers,
-                &self.state.viewer.navigation.active_file_scans,
-                proc_init.io,
-                gpa,
-            );
-        }
+        try self.state.openInitialTarget(
+            self.parsed.arg_path,
+            state_pkg.timestampToMs(std.Io.Clock.awake.now(proc_init.io)),
+        );
         self.profiler.log(proc_init.io, "open_path_spawned");
 
         // 4. Create Window Immediately

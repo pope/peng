@@ -1531,41 +1531,31 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     try vx.queryTerminal(tty.writer(), .fromMilliseconds(250));
     try vx.setMouseMode(tty.writer(), true);
 
-    var app_state = AppState{
-        .viewer = blk: {
-            var nav = try state_pkg.NavigationState.init(gpa);
-            errdefer nav.deinit(gpa);
-            const ui_state = try state_pkg.UiState.init(gpa);
-            break :blk .{
-                .defaults = .{
-                    .default_scale = cli.default_scale,
-                    .animations = .disabled,
-                    .snackbar_enabled = false,
-                    .auto_title = false,
-                    .stack_raw_jpeg = cli.stack_raw_jpeg,
-                },
-                .navigation = nav,
-                .ui = ui_state,
-                .animations = .{},
-                .rotation_map = .empty,
-                .running = true,
-            };
+    var app_state: AppState = undefined;
+    try app_state.initInPlace(gpa, io, .{
+        .defaults = .{
+            .default_scale = cli.default_scale,
+            .animations = .disabled,
+            .snackbar_enabled = false,
+            .auto_title = false,
+            .stack_raw_jpeg = cli.stack_raw_jpeg,
         },
-        .display = .{ .visible = .headless },
-        .gpu_device = renderer.gpuDevice(),
-        .gpu_enabled = true,
-        .unpack_compute_pipeline = null,
-        .cache = .{},
-        .workers = .init(.{
+        .visibility = .visible,
+        .gpu = if (renderer.gpuDevice()) |dev|
+            .{ .ready = dev }
+        else
+            .disabled,
+        .waker = .{
             .callback = .{
                 .ctx = &loop,
                 .wake_fn = wakeVaxisLoop,
             },
-        }),
-        .allocator = gpa,
-        .io = io,
-    };
-    app_state.viewer.resetToDefaults();
+        },
+    });
+    defer {
+        app_state.workers.exiting.store(true, .release);
+        app_state.deinit();
+    }
     app_state.viewer.ui.palette.hide_gui_only_actions = true;
     app_state.viewer.viewport.scale_filter = cli.scale_filter;
     if (cli.slideshow_interval_s) |secs| {
@@ -1573,24 +1563,10 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             .active = .{ .interval_s = secs },
         };
     }
-    defer {
-        app_state.workers.exiting.store(true, .release);
-        app_state.deinit();
-    }
-    try app_state.ensureInitialCapacities();
     app_state.initThumbCache(init.environ_map, cli.thumb_cache, .normal);
 
     const start_ms = state_pkg.timestampToMs(std.Io.Clock.awake.now(io));
-    if (cli.path) |path| {
-        try app_state.openPath(path, start_ms);
-    } else {
-        try app.workers.readPipedStdin(
-            &app_state.workers,
-            &app_state.viewer.navigation.active_file_scans,
-            io,
-            gpa,
-        );
-    }
+    try app_state.openInitialTarget(cli.path, start_ms);
 
     var winsize: vaxis.Winsize = tty.getWinsize() catch .{
         .cols = 80,
