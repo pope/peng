@@ -436,9 +436,198 @@ fn emitKittyDeleteFallback(
     tty_writer.flush() catch {};
 }
 
+const ActiveOverlay = union(enum) {
+    none,
+    palette,
+    stats: tui.overlays.StatsModel,
+    details: tui.overlays.DetailsModel,
+
+    fn isOpen(self: ActiveOverlay) bool {
+        return switch (self) {
+            .none => false,
+            .palette, .stats, .details => true,
+        };
+    }
+};
+
+const UiImageState = union(enum) {
+    none,
+    kitty: u32,
+    other,
+};
+
+const UiRenderKey = struct {
+    cols: u16,
+    rows: u16,
+    infobar_pos: InfobarPosition,
+    image: UiImageState,
+    overlay: std.meta.Tag(ActiveOverlay),
+    content_hash: u64,
+
+    fn hashBool(hasher: *std.hash.Wyhash, val: bool) void {
+        hasher.update(&.{@intFromBool(val)});
+    }
+
+    fn hashEnum(hasher: *std.hash.Wyhash, val: anytype) void {
+        const b: u8 = @intCast(@backingInt(val));
+        hasher.update(&.{b});
+    }
+
+    fn hashOptInt(
+        hasher: *std.hash.Wyhash,
+        comptime T: type,
+        val: ?T,
+    ) void {
+        if (val) |v| {
+            hasher.update(&.{1});
+            hasher.update(std.mem.asBytes(&v));
+        } else {
+            hasher.update(&.{0});
+        }
+    }
+
+    fn hashInfobar(
+        hasher: *std.hash.Wyhash,
+        m: tui.infobar.InfobarModel,
+    ) void {
+        hashOptInt(hasher, usize, m.visible_pos);
+        hasher.update(std.mem.asBytes(&m.visible_count));
+        hashBool(hasher, m.is_loading);
+        hasher.update(m.filename);
+        hasher.update(&.{0});
+        hashBool(hasher, m.is_raw_jpeg_pair);
+        hashEnum(hasher, m.classification);
+        hashEnum(hasher, m.view_mode);
+        hasher.update(std.mem.asBytes(&m.image_w));
+        hasher.update(std.mem.asBytes(&m.image_h));
+        hasher.update(std.mem.asBytes(&@as(u32, @bitCast(m.zoom_factor))));
+        hashEnum(hasher, m.fit_mode);
+        hashBool(hasher, m.is_manual_zoom);
+        hashEnum(hasher, m.scale_filter);
+        hasher.update(std.mem.asBytes(&@as(u32, @bitCast(m.rotation_deg))));
+        hashBool(hasher, m.has_edits);
+        hashBool(hasher, m.compare_original);
+        hashBool(hasher, m.slideshow_active);
+        hashBool(hasher, m.slideshow_paused);
+    }
+
+    fn init(
+        layout: ViewportLayout,
+        infobar_pos: InfobarPosition,
+        image: UiImageState,
+        infobar_model: tui.infobar.InfobarModel,
+        app_state: *const AppState,
+        active_overlay: ActiveOverlay,
+    ) UiRenderKey {
+        var hasher = std.hash.Wyhash.init(0);
+        hashInfobar(&hasher, infobar_model);
+
+        switch (active_overlay) {
+            .none => {},
+            .palette => {
+                const pal = &app_state.viewer.ui.palette;
+                if (pal.visibleMode()) |mode| {
+                    hashEnum(&hasher, std.meta.activeTag(mode));
+                    switch (mode) {
+                        .prompt => |kind| {
+                            hashEnum(&hasher, std.meta.activeTag(kind));
+                            switch (kind) {
+                                .edit_param => |param| hashEnum(&hasher, param),
+                                .go_to_image, .slideshow_interval => {},
+                            }
+                        },
+                        .files, .actions, .directory_navigator => {},
+                    }
+                }
+                hasher.update(std.mem.asBytes(&pal.selected_idx));
+                hasher.update(pal.query.items);
+                hasher.update(&.{0});
+                hasher.update(pal.current_nav_dir.items);
+                hasher.update(&.{0});
+                hasher.update(std.mem.asBytes(&pal.matches.items.len));
+                if (pal.matches.items.len <= 32) {
+                    hasher.update(std.mem.sliceAsBytes(pal.matches.items));
+                } else {
+                    const sel = @min(
+                        pal.selected_idx,
+                        pal.matches.items.len - 1,
+                    );
+                    const start = sel -| 16;
+                    const end = @min(start + 32, pal.matches.items.len);
+                    hasher.update(std.mem.sliceAsBytes(
+                        pal.matches.items[start..end],
+                    ));
+                }
+                hasher.update(std.mem.asBytes(&pal.dir_items.items.len));
+                hasher.update(std.mem.asBytes(&pal.current_dir_image_count));
+                const dir_gen = pal.dir_scan_generation.load(.monotonic);
+                const dir_scans = pal.active_dir_scans.load(.monotonic);
+                hasher.update(std.mem.asBytes(&dir_gen));
+                hasher.update(std.mem.asBytes(&dir_scans));
+                hasher.update(std.mem.asBytes(
+                    &app_state.viewer.navigation.items.len,
+                ));
+            },
+            .stats => |s| {
+                hasher.update(s.protocol_label);
+                hasher.update(std.mem.asBytes(&s.viewport_cols));
+                hasher.update(std.mem.asBytes(&s.viewport_rows));
+                hasher.update(std.mem.asBytes(&s.viewport_px_w));
+                hasher.update(std.mem.asBytes(&s.viewport_px_h));
+                hasher.update(std.mem.asBytes(&s.cell_px_w));
+                hasher.update(std.mem.asBytes(&s.cell_px_h));
+                hasher.update(std.mem.asBytes(&@as(
+                    u64,
+                    @bitCast(s.gpu_pass_ms),
+                )));
+                hasher.update(std.mem.asBytes(&@as(u64, @bitCast(s.read_ms))));
+                hasher.update(std.mem.asBytes(&@as(
+                    u64,
+                    @bitCast(s.decode_ms),
+                )));
+                hasher.update(std.mem.asBytes(&@as(
+                    u64,
+                    @bitCast(s.upload_ms),
+                )));
+                hasher.update(std.mem.asBytes(&s.vram_bytes));
+                hasher.update(std.mem.asBytes(&s.cached_entries));
+                hasher.update(std.mem.asBytes(&s.total_images));
+                hashBool(&hasher, s.debug_show_thumb);
+            },
+            .details => |d| {
+                hasher.update(d.filename);
+                hasher.update(&.{0});
+                hasher.update(d.source_path);
+                hasher.update(&.{0});
+                hasher.update(std.mem.asBytes(&d.width));
+                hasher.update(std.mem.asBytes(&d.height));
+                hashOptInt(&hasher, u64, d.file_size_bytes);
+                hashEnum(&hasher, d.classification);
+                hasher.update(std.mem.asBytes(&d.zoom_pct));
+                hasher.update(std.mem.asBytes(&d.rotation_deg));
+                hasher.update(d.filter_name);
+            },
+        }
+
+        return .{
+            .cols = layout.cols,
+            .rows = layout.rows,
+            .infobar_pos = infobar_pos,
+            .image = image,
+            .overlay = std.meta.activeTag(active_overlay),
+            .content_hash = hasher.final(),
+        };
+    }
+
+    fn eql(a: UiRenderKey, b: UiRenderKey) bool {
+        return std.meta.eql(a, b);
+    }
+};
+
 const PresentationState = struct {
     transport: termgfx.TransportMode = .direct,
     last_key: ?RenderKey = null,
+    last_ui_key: ?UiRenderKey = null,
     kitty_image: ?vaxis.Image = null,
     has_kitty_fallback: bool = false,
     halfblocks: CachedHalfblocks = .{},
@@ -1219,11 +1408,10 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             .w = @floatFromInt(render_layout.image_px.w),
             .h = @floatFromInt(render_layout.image_px.h),
         };
-        const root_win = vx.window();
-        root_win.clear();
-        const image_win = render_layout.imageWindow(root_win);
 
-        if (resolveActiveImageQuad(&app_state, render_layout)) |active| {
+        var image_changed = false;
+        const active_quad = resolveActiveImageQuad(&app_state, render_layout);
+        if (active_quad) |active| {
             const key = RenderKey.init(
                 active.tex,
                 render_layout,
@@ -1253,84 +1441,123 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     &pres,
                 );
                 pres.last_key = key;
+                image_changed = true;
             }
-
-            if (pres.kitty_image) |img| {
-                // z < -1_073_741_824 places the image beneath both text and
-                // non-default cell backgrounds (Kitty spec), so modals with
-                // explicit RGB backgrounds render opaque while `.default`
-                // viewport cells let the image show through.
-                try img.draw(image_win, .{
-                    .z_index = -1_073_741_825,
-                    .size = .{
-                        .cols = render_layout.image_cols,
-                        .rows = render_layout.image_rows,
-                    },
-                });
-            } else if (target.protocol == .halfblocks and
-                pres.halfblocks.pixels.len > 0)
-            {
-                tui.canvas.blitHalfblocksToWindow(
-                    image_win,
-                    pres.halfblocks.pixels,
-                    pres.halfblocks.pitch,
-                    pres.halfblocks.dims,
-                );
-            }
-        } else {
+        } else if (pres.last_key != null or pres.kitty_image != null or
+            pres.has_kitty_fallback)
+        {
             pres.clearImage(&vx, tty.writer());
+            image_changed = true;
         }
 
-        if (render_layout.infobarWindow(root_win)) |bar| {
-            tui.infobar.render(bar, buildInfobarModel(&app_state), frame_alloc);
-        }
-
-        const pal_open = app_state.viewer.ui.palette.isAcceptingInput();
-        const details_open = app_state.viewer.ui.overlays.info_panel.visible;
-        const stats_open = app_state.viewer.ui.overlays.stats_panel.visible;
-        const overlay_open = pal_open or details_open or stats_open;
-        if (pal_open) {
-            const nav_slice = app_state.viewer.navigation.items.slice();
-            tui.overlays.renderPalette(
-                image_win,
-                &app_state.viewer.ui.palette,
-                nav_slice.items(.entry),
-                nav_slice.items(.classification),
-                frame_alloc,
-            );
-        } else if (stats_open) {
-            tui.overlays.renderStats(
-                image_win,
-                buildStatsModel(
+        const active_overlay: ActiveOverlay = if (app_state.viewer.ui.palette
+            .isAcceptingInput())
+            .palette
+        else if (app_state.viewer.ui.overlays.stats_panel.visible)
+            .{
+                .stats = buildStatsModel(
                     &app_state,
                     target,
                     render_layout,
                     last_gpu_pass_ms,
                 ),
-                frame_alloc,
-            );
-        } else if (details_open) {
-            tui.overlays.renderDetails(
-                image_win,
-                buildDetailsModel(&app_state),
-                frame_alloc,
-            );
-        }
-        if (!prev_overlay_open and overlay_open) {
-            // Only Kitty fallback (`a=T` at z=0) draws above text cells and
-            // requires clearing before opening a modal. iTerm2 and Sixel cells
-            // outside the modal rect stay visible when vaxis diffs only the
-            // modal cells over them.
-            if (pres.has_kitty_fallback) {
-                emitKittyDeleteFallback(tty.writer(), pres.transport);
-                vx.queueRefresh();
             }
-        } else if (prev_overlay_open and !overlay_open) {
-            pres.post_render.dirty = true;
-        }
-        prev_overlay_open = overlay_open;
+        else if (app_state.viewer.ui.overlays.info_panel.visible)
+            .{ .details = buildDetailsModel(&app_state) }
+        else
+            .none;
+        const overlay_open = active_overlay.isOpen();
+        const ui_image: UiImageState = if (active_quad == null)
+            .none
+        else if (pres.kitty_image) |img|
+            .{ .kitty = img.id }
+        else
+            .other;
 
-        try vx.render(tty.writer());
+        const infobar_model = buildInfobarModel(&app_state);
+        const ui_key = UiRenderKey.init(
+            render_layout,
+            infobar_pos,
+            ui_image,
+            infobar_model,
+            &app_state,
+            active_overlay,
+        );
+        const ui_dirty = resized or image_changed or
+            pres.last_ui_key == null or
+            !pres.last_ui_key.?.eql(ui_key);
+
+        if (ui_dirty) {
+            const root_win = vx.window();
+            root_win.clear();
+            const image_win = render_layout.imageWindow(root_win);
+
+            if (active_quad != null) {
+                if (pres.kitty_image) |img| {
+                    // z < -1_073_741_824 places the image beneath both text
+                    // and non-default cell backgrounds (Kitty spec), so modals
+                    // with explicit RGB backgrounds render opaque while
+                    // `.default` viewport cells let the image show through.
+                    try img.draw(image_win, .{
+                        .z_index = -1_073_741_825,
+                        .size = .{
+                            .cols = render_layout.image_cols,
+                            .rows = render_layout.image_rows,
+                        },
+                    });
+                } else if (target.protocol == .halfblocks and
+                    pres.halfblocks.pixels.len > 0)
+                {
+                    tui.canvas.blitHalfblocksToWindow(
+                        image_win,
+                        pres.halfblocks.pixels,
+                        pres.halfblocks.pitch,
+                        pres.halfblocks.dims,
+                    );
+                }
+            }
+
+            if (render_layout.infobarWindow(root_win)) |bar| {
+                tui.infobar.render(bar, infobar_model, frame_alloc);
+            }
+
+            switch (active_overlay) {
+                .none => {},
+                .palette => {
+                    const nav_slice = app_state.viewer.navigation.items.slice();
+                    tui.overlays.renderPalette(
+                        image_win,
+                        &app_state.viewer.ui.palette,
+                        nav_slice.items(.entry),
+                        nav_slice.items(.classification),
+                        frame_alloc,
+                    );
+                },
+                .stats => |sm| {
+                    tui.overlays.renderStats(image_win, sm, frame_alloc);
+                },
+                .details => |dm| {
+                    tui.overlays.renderDetails(image_win, dm, frame_alloc);
+                },
+            }
+
+            if (!prev_overlay_open and overlay_open) {
+                // Only Kitty fallback (`a=T` at z=0) draws above text cells
+                // and requires clearing before opening a modal. iTerm2 and
+                // Sixel cells outside the modal rect stay visible when vaxis
+                // diffs only the modal cells over them.
+                if (pres.has_kitty_fallback) {
+                    emitKittyDeleteFallback(tty.writer(), pres.transport);
+                    vx.queueRefresh();
+                }
+            } else if (prev_overlay_open and !overlay_open) {
+                pres.post_render.dirty = true;
+            }
+            prev_overlay_open = overlay_open;
+
+            try vx.render(tty.writer());
+            pres.last_ui_key = ui_key;
+        }
 
         if (!overlay_open and pres.post_render.dirty and
             pres.post_render.bytes.items.len > 0)
