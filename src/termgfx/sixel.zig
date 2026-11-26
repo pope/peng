@@ -92,20 +92,128 @@ inline fn rgbToKey(r: u8, g: u8, b: u8) u16 {
         @as(u16, b >> 3);
 }
 
-/// Formats an unsigned integer directly into a tiny stack buffer without
-/// `Writer.print` format-string overhead.
-inline fn writeUintFast(writer: *std.Io.Writer, val: usize) !void {
-    var buf: [20]u8 = undefined;
-    var n = val;
-    var i: usize = buf.len;
-    while (true) {
-        i -= 1;
-        buf[i] = @intCast('0' + (n % 10));
-        n /= 10;
-        if (n == 0) break;
+const DecLutEntry = struct {
+    bytes: [4]u8,
+    len: u8,
+};
+
+const dec_lut: [1024]DecLutEntry = blk: {
+    @setEvalBranchQuota(10000);
+    var lut: [1024]DecLutEntry = undefined;
+    for (0..1024) |n| {
+        var bytes: [4]u8 = .{ 0, 0, 0, 0 };
+        var len: u8 = 0;
+        if (n >= 1000) {
+            bytes[0] = @intCast('0' + (n / 1000));
+            bytes[1] = @intCast('0' + ((n / 100) % 10));
+            bytes[2] = @intCast('0' + ((n / 10) % 10));
+            bytes[3] = @intCast('0' + (n % 10));
+            len = 4;
+        } else if (n >= 100) {
+            bytes[0] = @intCast('0' + (n / 100));
+            bytes[1] = @intCast('0' + ((n / 10) % 10));
+            bytes[2] = @intCast('0' + (n % 10));
+            len = 3;
+        } else if (n >= 10) {
+            bytes[0] = @intCast('0' + (n / 10));
+            bytes[1] = @intCast('0' + (n % 10));
+            len = 2;
+        } else {
+            bytes[0] = @intCast('0' + n);
+            len = 1;
+        }
+        lut[n] = .{ .bytes = bytes, .len = len };
     }
-    try writer.writeAll(buf[i..]);
-}
+    break :blk lut;
+};
+
+/// Local stack-buffered Sixel byte emitter that coalesces millions of 1–4 byte
+/// RLE/header writes into large 16 KiB `writer.writeAll` flushes.
+const BandBuf = struct {
+    writer: *std.Io.Writer,
+    buf: [16384]u8 = undefined,
+    len: usize = 0,
+
+    inline fn flush(self: *BandBuf) !void {
+        if (self.len > 0) {
+            try self.writer.writeAll(self.buf[0..self.len]);
+            self.len = 0;
+        }
+    }
+
+    inline fn ensure(self: *BandBuf, need: usize) !void {
+        if (self.len + need > self.buf.len) {
+            try self.flush();
+        }
+    }
+
+    inline fn appendByte(self: *BandBuf, b: u8) !void {
+        try self.ensure(1);
+        self.buf[self.len] = b;
+        self.len += 1;
+    }
+
+    inline fn appendSlice(self: *BandBuf, bytes: []const u8) !void {
+        if (bytes.len <= self.buf.len) {
+            try self.ensure(bytes.len);
+            @memcpy(self.buf[self.len .. self.len + bytes.len], bytes);
+            self.len += bytes.len;
+        } else {
+            try self.flush();
+            try self.writer.writeAll(bytes);
+        }
+    }
+
+    /// Encodes `val` in ASCII decimal into a fixed 20-byte buffer, returning
+    /// the number of bytes written (`1..20`).
+    inline fn encodeUint(dst: *[20]u8, val: usize) usize {
+        if (val < dec_lut.len) {
+            const e = dec_lut[val];
+            dst[0..4].* = e.bytes;
+            return e.len;
+        }
+        var tmp: [20]u8 = undefined;
+        var i: usize = tmp.len;
+        var n = val;
+        while (n > 0) : (n /= 10) {
+            i -= 1;
+            tmp[i] = @intCast('0' + (n % 10));
+        }
+        const digits = tmp[i..];
+        @memcpy(dst[0..digits.len], digits);
+        return digits.len;
+    }
+
+    /// Encodes one Sixel RLE run into a fixed 22-byte buffer, returning the
+    /// number of bytes written (`0..22`).
+    inline fn encodeRleRun(dst: *[22]u8, ch: u8, count: usize) usize {
+        if (count == 0) return 0;
+        if (count >= 4) {
+            dst[0] = '!';
+            const n = encodeUint(dst[1..21], count);
+            dst[1 + n] = ch;
+            return n + 2;
+        }
+        dst[0..4].* = .{ ch, ch, ch, ch };
+        return count;
+    }
+
+    inline fn reserve(self: *BandBuf, comptime n: usize) !*[n]u8 {
+        comptime std.debug.assert(n <= 16384);
+        try self.ensure(n);
+        return self.buf[self.len..][0..n];
+    }
+
+    inline fn commit(self: *BandBuf, n: usize) void {
+        std.debug.assert(self.len + n <= self.buf.len);
+        self.len += n;
+    }
+
+    inline fn appendUint(self: *BandBuf, val: usize) !void {
+        const dst = try self.reserve(20);
+        self.commit(encodeUint(dst, val));
+    }
+};
 
 /// Premultiplies RGBA32 onto black and populates the 5-bit RGB histogram
 /// using 8-pixel SIMD batches with a fast opaque path.
@@ -500,22 +608,29 @@ fn ditherBayerSimd(
     }
 }
 
-inline fn writeRleRun(writer: *std.Io.Writer, ch: u8, count: usize) !void {
-    if (count == 0) return;
-    if (count >= 4) {
-        try writer.writeByte('!');
-        try writeUintFast(writer, count);
-        try writer.writeByte(ch);
-    } else {
-        const rep = [3]u8{ ch, ch, ch };
-        try writer.writeAll(rep[0..count]);
+inline fn mergeColumnBit(
+    col_colors: *[6]u8,
+    col_masks: *[6]u8,
+    col_len: *usize,
+    ci: u8,
+    comptime bit_mask: u8,
+) void {
+    const n = col_len.*;
+    for (0..n) |j| {
+        if (col_colors[j] == ci) {
+            col_masks[j] |= bit_mask;
+            return;
+        }
     }
+    col_colors[n] = ci;
+    col_masks[n] = bit_mask;
+    col_len.* = n + 1;
 }
 
 /// Emits one 6-row Sixel band using a single-pass sparse column scan and
 /// counting sort (`O(6 * w)`), eliminating per-color full-width rescans.
 fn writeSixelBandSparse(
-    writer: *std.Io.Writer,
+    out: *BandBuf,
     indexed: []const u8,
     w: usize,
     y: usize,
@@ -533,38 +648,86 @@ fn writeSixelBandSparse(
     var color_counts: [max_colors]u32 = @splat(0);
     var raw_len: usize = 0;
 
-    for (0..w) |x| {
-        var col_colors: [6]u8 = undefined;
-        var col_masks: [6]u8 = undefined;
-        var col_len: usize = 0;
-
-        for (0..band_h) |bit| {
-            const ci = row_slices[bit][x];
-            const bit_mask = @as(u8, 1) << @intCast(bit);
-            var merged = false;
-            for (0..col_len) |j| {
-                if (col_colors[j] == ci) {
-                    col_masks[j] |= bit_mask;
-                    merged = true;
-                    break;
-                }
+    if (band_h == 6) {
+        const r0 = row_slices[0];
+        const r1 = row_slices[1];
+        const r2 = row_slices[2];
+        const r3 = row_slices[3];
+        const r4 = row_slices[4];
+        const r5 = row_slices[5];
+        for (0..w) |x| {
+            const c0 = r0[x];
+            const c1 = r1[x];
+            const c2 = r2[x];
+            const c3 = r3[x];
+            const c4 = r4[x];
+            const c5 = r5[x];
+            if (c0 == c1 and c0 == c2 and c0 == c3 and c0 == c4 and c0 == c5) {
+                raw_entries[raw_len] = .{
+                    .x = @intCast(x),
+                    .color = c0,
+                    .mask = 0x3F,
+                };
+                raw_len += 1;
+                color_counts[c0] += 1;
+                continue;
             }
-            if (!merged) {
-                col_colors[col_len] = ci;
-                col_masks[col_len] = bit_mask;
-                col_len += 1;
+            var col_colors: [6]u8 = undefined;
+            var col_masks: [6]u8 = undefined;
+            col_colors[0] = c0;
+            col_masks[0] = 1;
+            var col_len: usize = 1;
+            mergeColumnBit(&col_colors, &col_masks, &col_len, c1, 2);
+            mergeColumnBit(&col_colors, &col_masks, &col_len, c2, 4);
+            mergeColumnBit(&col_colors, &col_masks, &col_len, c3, 8);
+            mergeColumnBit(&col_colors, &col_masks, &col_len, c4, 16);
+            mergeColumnBit(&col_colors, &col_masks, &col_len, c5, 32);
+
+            for (0..col_len) |j| {
+                const ci = col_colors[j];
+                raw_entries[raw_len] = .{
+                    .x = @intCast(x),
+                    .color = ci,
+                    .mask = col_masks[j],
+                };
+                raw_len += 1;
+                color_counts[ci] += 1;
             }
         }
+    } else {
+        for (0..w) |x| {
+            var col_colors: [6]u8 = undefined;
+            var col_masks: [6]u8 = undefined;
+            var col_len: usize = 0;
 
-        for (0..col_len) |j| {
-            const ci = col_colors[j];
-            raw_entries[raw_len] = .{
-                .x = @intCast(x),
-                .color = ci,
-                .mask = col_masks[j],
-            };
-            raw_len += 1;
-            color_counts[ci] += 1;
+            for (0..band_h) |bit| {
+                const ci = row_slices[bit][x];
+                const bit_mask = @as(u8, 1) << @intCast(bit);
+                var merged = false;
+                for (0..col_len) |j| {
+                    if (col_colors[j] == ci) {
+                        col_masks[j] |= bit_mask;
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged) {
+                    col_colors[col_len] = ci;
+                    col_masks[col_len] = bit_mask;
+                    col_len += 1;
+                }
+            }
+
+            for (0..col_len) |j| {
+                const ci = col_colors[j];
+                raw_entries[raw_len] = .{
+                    .x = @intCast(x),
+                    .color = ci,
+                    .mask = col_masks[j],
+                };
+                raw_len += 1;
+                color_counts[ci] += 1;
+            }
         }
     }
 
@@ -589,11 +752,11 @@ fn writeSixelBandSparse(
         if (count == 0) continue;
 
         if (!first_in_band) {
-            try writer.writeByte('$');
+            try out.appendByte('$');
         }
         first_in_band = false;
-        try writer.writeByte('#');
-        try writeUintFast(writer, ci);
+        try out.appendByte('#');
+        try out.appendUint(ci);
 
         const start = offsets[ci];
         const entries = sorted_entries[start .. start + count];
@@ -603,14 +766,19 @@ fn writeSixelBandSparse(
         var run_len: usize = 0;
 
         for (entries) |entry| {
+            // Reserve a fixed 44-byte window (two 22-byte RLE runs max) once
+            // per entry so inner `encodeRleRun` calls write into typed
+            // `*[22]u8` slices without unchecked APIs or error propagation.
+            const slot = try out.reserve(44);
+            var n: usize = 0;
             const cur_x: i32 = entry.x;
             const gap: usize = @intCast(cur_x - prev_x - 1);
             if (gap > 0) {
                 if (run_len > 0) {
-                    try writeRleRun(writer, run_ch, run_len);
+                    n += BandBuf.encodeRleRun(slot[0..22], run_ch, run_len);
                     run_len = 0;
                 }
-                try writeRleRun(writer, '?', gap);
+                n += BandBuf.encodeRleRun(slot[n..][0..22], '?', gap);
             }
 
             const ch: u8 = 63 + entry.mask;
@@ -620,14 +788,16 @@ fn writeSixelBandSparse(
             } else if (ch == run_ch) {
                 run_len += 1;
             } else {
-                try writeRleRun(writer, run_ch, run_len);
+                n += BandBuf.encodeRleRun(slot[0..22], run_ch, run_len);
                 run_ch = ch;
                 run_len = 1;
             }
+            out.commit(n);
             prev_x = cur_x;
         }
         if (run_len > 0) {
-            try writeRleRun(writer, run_ch, run_len);
+            const slot = try out.reserve(22);
+            out.commit(BandBuf.encodeRleRun(slot, run_ch, run_len));
         }
     }
 }
@@ -685,33 +855,35 @@ pub fn writeSixelPreview(
     const sorted_entries = try allocator.alloc(BandEntry, band_cap);
     defer allocator.free(sorted_entries);
 
+    var out: BandBuf = .{ .writer = writer };
+
     // DCS header: P1=0, P2=1 (transparent background for 0 bits), P3=0,
     // plus 1:1 raster attributes ("1;1;w;h).
-    try writer.writeAll("\x1bP0;1;0q\"1;1;");
-    try writeUintFast(writer, w);
-    try writer.writeByte(';');
-    try writeUintFast(writer, h);
+    try out.appendSlice("\x1bP0;1;0q\"1;1;");
+    try out.appendUint(w);
+    try out.appendByte(';');
+    try out.appendUint(h);
 
     // Emit Sixel RGB palette definitions (0..100 scale).
     for (0..pal.len) |pi| {
         const rp: usize = (@as(usize, @intCast(pal.r[pi])) * 100 + 127) / 255;
         const gp: usize = (@as(usize, @intCast(pal.g[pi])) * 100 + 127) / 255;
         const bp: usize = (@as(usize, @intCast(pal.b[pi])) * 100 + 127) / 255;
-        try writer.writeByte('#');
-        try writeUintFast(writer, pi);
-        try writer.writeAll(";2;");
-        try writeUintFast(writer, rp);
-        try writer.writeByte(';');
-        try writeUintFast(writer, gp);
-        try writer.writeByte(';');
-        try writeUintFast(writer, bp);
+        try out.appendByte('#');
+        try out.appendUint(pi);
+        try out.appendSlice(";2;");
+        try out.appendUint(rp);
+        try out.appendByte(';');
+        try out.appendUint(gp);
+        try out.appendByte(';');
+        try out.appendUint(bp);
     }
 
     var y: usize = 0;
     while (y < h) : (y += 6) {
         const band_h = @min(6, h - y);
         try writeSixelBandSparse(
-            writer,
+            &out,
             indexed,
             w,
             y,
@@ -721,11 +893,12 @@ pub fn writeSixelPreview(
             sorted_entries,
         );
         if (y + 6 < h) {
-            try writer.writeByte('-');
+            try out.appendByte('-');
         }
     }
 
-    try writer.writeAll("\x1b\\");
+    try out.appendSlice("\x1b\\");
+    try out.flush();
 }
 
 test "writeSixelPreview encodes solid 20x6 image with RLE" {
