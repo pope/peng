@@ -723,12 +723,11 @@ fn writePostRenderSync(
 
     // Save/restore cursor via DECSC/DECRC so raw post-render graphics never
     // desync vaxis's tracked cursor state.
+    const row_1based: u32 = @as(u32, image_row) + @as(u32, crop.row_off) + 1;
+    const col_1based: u32 = @as(u32, crop.col_off) + 1;
     try tty_writer.print(
         "\x1b7\x1b[{d};{d}H",
-        .{
-            image_row + crop.row_off + 1,
-            crop.col_off + 1,
-        },
+        .{ row_1based, col_1based },
     );
     try tty_writer.writeAll(payload);
     try tty_writer.writeAll("\x1b8");
@@ -1278,19 +1277,7 @@ fn transmitFrame(
                         .png,
                     );
                 } else blk: {
-                    const w_i32 = std.math.cast(i32, readback.dims.w) orelse
-                        return error.InvalidDimensions;
-                    const h_i32 = std.math.cast(i32, readback.dims.h) orelse
-                        return error.InvalidDimensions;
-                    const pitch_i32 = std.math.cast(i32, readback.pitch) orelse
-                        return error.InvalidPitch;
-                    const surf = sdl.Surface.createFrom(
-                        w_i32,
-                        h_i32,
-                        sdl.PixelFormat.rgba32,
-                        @constCast(readback.pixels.ptr),
-                        pitch_i32,
-                    ) orelse return error.SurfaceCreationFailed;
+                    const surf = try wrapReadbackSurface(readback);
                     defer surf.destroy();
 
                     const transfer = try core.preview.writeSurfaceKittyLocal(
@@ -1727,6 +1714,10 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
     var tty = try vaxis.Tty.init(io, &tty_buf);
     defer tty.deinit();
 
+    // Unmute logs strictly after `vx.deinit` exits the alternate screen so
+    // teardown warnings from `app_state`, `loop`, or `vx` never corrupt it.
+    defer tui_log_muted.store(false, .release);
+
     var vx = try vaxis.init(io, gpa, init.environ_map, .{
         .kitty_keyboard_flags = .{ .report_events = true },
     });
@@ -1749,7 +1740,6 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
 
     try vx.enterAltScreen(tty.writer());
     tui_log_muted.store(true, .release);
-    defer tui_log_muted.store(false, .release);
     try vx.queryTerminal(tty.writer(), .fromMilliseconds(250));
     try vx.setMouseMode(tty.writer(), true);
 
