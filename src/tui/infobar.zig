@@ -45,18 +45,6 @@ pub const InfobarModel = struct {
     slideshow_paused: bool = false,
 };
 
-fn filterLabel(mode: TextureScaleMode) []const u8 {
-    return switch (mode) {
-        .nearest => "Nearest",
-        .linear => "Linear",
-        .pixel_art => "PixelAA",
-        .mitchell => "Mitchell",
-        .lanczos3 => "Lanczos3",
-        .fsr => "FSR",
-        .tiny_cnn => "TinyCNN",
-    };
-}
-
 fn scaleLabel(fit_mode: ZoomPreset, is_manual: bool) []const u8 {
     if (is_manual) return "manual";
     return switch (fit_mode) {
@@ -364,7 +352,7 @@ pub fn render(
             .{
                 zoom_pct,
                 scaleLabel(model.fit_mode, model.is_manual_zoom),
-                filterLabel(model.scale_filter),
+                model.scale_filter.shortLabel(),
                 rot_norm,
             },
         ) catch ""
@@ -374,7 +362,7 @@ pub fn render(
             .{
                 zoom_pct,
                 scaleLabel(model.fit_mode, model.is_manual_zoom),
-                filterLabel(model.scale_filter),
+                model.scale_filter.shortLabel(),
             },
         ) catch "";
     center_spans_buf[center_len] = .{ .text = base_str, .fg = fg_subtext };

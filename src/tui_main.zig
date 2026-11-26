@@ -1292,15 +1292,7 @@ fn buildDetailsModel(app_state: *const AppState) tui.overlays.DetailsModel {
         .pair => |p| p.raw_path,
     } else "";
 
-    const filter_name: []const u8 = switch (vp.scale_filter) {
-        .nearest => "Nearest",
-        .linear => "Linear",
-        .pixel_art => "PixelAA",
-        .mitchell => "Mitchell",
-        .lanczos3 => "Lanczos3",
-        .fsr => "FSR",
-        .tiny_cnn => "TinyCNN",
-    };
+    const filter_name = vp.scale_filter.shortLabel();
 
     const zoom_pct: u32 = if (std.math.isFinite(vp.zoom_factor.get()) and
         vp.zoom_factor.get() > 0.0)
