@@ -490,6 +490,60 @@ const CachedPostRenderPayload = struct {
     }
 };
 
+fn writePostRenderSync(
+    tty_writer: *std.Io.Writer,
+    ui_bytes: []const u8,
+    image_row: u16,
+    crop: ImageCellCrop,
+    payload: []const u8,
+) !void {
+    const sync_set = vaxis.ctlseqs.sync_set;
+    const sync_reset = vaxis.ctlseqs.sync_reset;
+    const had_sync = ui_bytes.len >= sync_set.len + sync_reset.len and
+        std.mem.startsWith(u8, ui_bytes, sync_set) and
+        std.mem.endsWith(u8, ui_bytes, sync_reset);
+    const ui_body = if (had_sync)
+        ui_bytes[0 .. ui_bytes.len - sync_reset.len]
+    else
+        ui_bytes;
+
+    // Keep vaxis's UI diff (including any full-screen refresh clear) and the
+    // raw Sixel/iTerm2/Kitty-fallback payload inside one atomic Synchronized
+    // Output frame (BSU..ESU) so terminals never paint a blank intermediate
+    // frame or partial Sixel bands.
+    var sync_open = false;
+    errdefer if (sync_open) {
+        tty_writer.writeAll(sync_reset) catch {};
+        tty_writer.flush() catch {};
+    };
+
+    if (had_sync) {
+        sync_open = true;
+        try tty_writer.writeAll(ui_body);
+    } else {
+        sync_open = true;
+        try tty_writer.writeAll(sync_set);
+        if (ui_body.len > 0) {
+            try tty_writer.writeAll(ui_body);
+        }
+    }
+
+    // Save/restore cursor via DECSC/DECRC so raw post-render graphics never
+    // desync vaxis's tracked cursor state.
+    try tty_writer.print(
+        "\x1b7\x1b[{d};{d}H",
+        .{
+            image_row + crop.row_off + 1,
+            crop.col_off + 1,
+        },
+    );
+    try tty_writer.writeAll(payload);
+    try tty_writer.writeAll("\x1b8");
+    try tty_writer.writeAll(sync_reset);
+    sync_open = false;
+    try tty_writer.flush();
+}
+
 fn emitKittyDeleteFallback(
     tty_writer: *std.Io.Writer,
     transport: termgfx.TransportMode,
@@ -1890,8 +1944,40 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             }
             prev_overlay_open = overlay_open;
 
-            try vx.render(tty.writer());
-            pres.flushPendingKittyFree(&vx, tty.writer());
+            // Do not fuse `tmux_passthrough` inside tmux's DEC 2026 block:
+            // tmux forwards passthrough directly while deferring pane cell
+            // clears until `sync_reset`, which would overwrite the image.
+            const transport_allows_fuse = switch (target.transport) {
+                .direct, .tmux_unicode_placeholders => true,
+                .tmux_passthrough => false,
+            };
+            const fuse_post_render = transport_allows_fuse and
+                switch (pres.content) {
+                    .post_render => |pr| !overlay_open and pr.payload.dirty and
+                        pr.payload.bytes.items.len > 0,
+                    .none, .kitty_vaxis, .halfblocks => false,
+                };
+            if (fuse_post_render) {
+                var ui_buf: std.Io.Writer.Allocating = .init(frame_alloc);
+                defer ui_buf.deinit();
+                try vx.render(&ui_buf.writer);
+                switch (pres.content) {
+                    .post_render => |*pr| {
+                        try writePostRenderSync(
+                            tty.writer(),
+                            ui_buf.written(),
+                            render_layout.image_row,
+                            pr.crop,
+                            pr.payload.bytes.items,
+                        );
+                        pr.payload.dirty = false;
+                    },
+                    .none, .kitty_vaxis, .halfblocks => unreachable,
+                }
+            } else {
+                try vx.render(tty.writer());
+                pres.flushPendingKittyFree(&vx, tty.writer());
+            }
             pres.last_ui_key = ui_key;
         }
 
@@ -1900,18 +1986,13 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 if (!overlay_open and pr.payload.dirty and
                     pr.payload.bytes.items.len > 0)
                 {
-                    // Save/restore cursor via DECSC/DECRC so raw post-render
-                    // graphics never desync vaxis's tracked cursor state.
-                    try tty.writer().print(
-                        "\x1b7\x1b[{d};{d}H",
-                        .{
-                            render_layout.image_row + pr.crop.row_off + 1,
-                            pr.crop.col_off + 1,
-                        },
+                    try writePostRenderSync(
+                        tty.writer(),
+                        "",
+                        render_layout.image_row,
+                        pr.crop,
+                        pr.payload.bytes.items,
                     );
-                    try tty.writer().writeAll(pr.payload.bytes.items);
-                    try tty.writer().writeAll("\x1b8");
-                    try tty.writer().flush();
                     pr.payload.dirty = false;
                 }
             },
