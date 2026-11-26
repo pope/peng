@@ -1156,10 +1156,12 @@ pub fn main(init: std.process.Init) !void {
             );
         }
         if (!prev_overlay_open and overlay_open) {
+            // Only Kitty fallback (`a=T` at z=0) draws above text cells and
+            // requires clearing before opening a modal. iTerm2 and Sixel cells
+            // outside the modal rect stay visible when vaxis diffs only the
+            // modal cells over them.
             if (pres.has_kitty_fallback) {
                 emitKittyDeleteFallback(tty.writer(), pres.transport);
-            }
-            if (pres.post_render.bytes.items.len > 0) {
                 vx.queueRefresh();
             }
         } else if (prev_overlay_open and !overlay_open) {
