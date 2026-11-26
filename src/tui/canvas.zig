@@ -146,6 +146,93 @@ pub const ImageCellCrop = struct {
         return .{ .start = start, .end = end };
     }
 
+    /// Byte range (`start`, `end`) plus pixel dimensions for a zero-copy
+    /// strided RGBA8888 sub-view trimmed inward to exact pixel bounds.
+    pub const TrimmedByteRange = struct {
+        start: usize,
+        end: usize,
+        dims: PositiveDimsU32,
+    };
+
+    /// Trims sub-cell transparent padding inside a `crop`-aligned strided
+    /// RGBA8888 buffer inward to the exact pixel bounds of `visible_rect`
+    /// (in full-viewport pixel space). Returns `null` when no trimming is
+    /// needed or when bounds/arithmetic checks fail.
+    pub fn pixelTrimByteRange(
+        crop: ImageCellCrop,
+        visible_rect: FRect,
+        cell_px: CellPixelSize,
+        buf_dims: PositiveDimsU32,
+        pitch: usize,
+        buf_len: usize,
+    ) ?TrimmedByteRange {
+        if (!std.math.isFinite(visible_rect.x) or
+            !std.math.isFinite(visible_rect.y) or
+            !std.math.isFinite(visible_rect.w) or
+            !std.math.isFinite(visible_rect.h) or
+            visible_rect.w <= 0.0 or visible_rect.h <= 0.0)
+        {
+            return null;
+        }
+        const origin_x: f64 = @floatFromInt(@as(u64, crop.col_off) *
+            @as(u64, cell_px.w));
+        const origin_y: f64 = @floatFromInt(@as(u64, crop.row_off) *
+            @as(u64, cell_px.h));
+        const max_w_f: f64 = @floatFromInt(buf_dims.w);
+        const max_h_f: f64 = @floatFromInt(buf_dims.h);
+        const vx: f64 = visible_rect.x;
+        const vy: f64 = visible_rect.y;
+        const vw: f64 = visible_rect.w;
+        const vh: f64 = visible_rect.h;
+
+        const rel_x0 = std.math.clamp(vx - origin_x, 0.0, max_w_f);
+        const rel_x1 = std.math.clamp(vx + vw - origin_x, 0.0, max_w_f);
+        const rel_y0 = std.math.clamp(vy - origin_y, 0.0, max_h_f);
+        const rel_y1 = std.math.clamp(vy + vh - origin_y, 0.0, max_h_f);
+
+        const x0: u32 = @intFromFloat(@ceil(rel_x0));
+        const x1: u32 = @intFromFloat(@floor(rel_x1));
+        const y0: u32 = @intFromFloat(@ceil(rel_y0));
+        const y1: u32 = @intFromFloat(@floor(rel_y1));
+        if (x1 <= x0 or y1 <= y0) return null;
+
+        const trim_w: u32 = x1 - x0;
+        const trim_h: u32 = y1 - y0;
+        if (x0 == 0 and y0 == 0 and trim_w == buf_dims.w and
+            trim_h == buf_dims.h)
+        {
+            return null;
+        }
+        if (x1 > buf_dims.w or y1 > buf_dims.h) return null;
+
+        const min_pitch = std.math.mul(usize, @as(usize, x1), 4) catch
+            return null;
+        if (pitch < min_pitch) return null;
+        const row_bytes = std.math.mul(usize, @as(usize, trim_w), 4) catch
+            return null;
+        const dx_bytes = std.math.mul(usize, @as(usize, x0), 4) catch
+            return null;
+        const dy_bytes = std.math.mul(usize, @as(usize, y0), pitch) catch
+            return null;
+        const start = std.math.add(usize, dy_bytes, dx_bytes) catch
+            return null;
+        const tail_rows = std.math.mul(
+            usize,
+            @as(usize, trim_h) - 1,
+            pitch,
+        ) catch return null;
+        const span = std.math.add(usize, tail_rows, row_bytes) catch
+            return null;
+        const end = std.math.add(usize, start, span) catch return null;
+        if (end > buf_len) return null;
+
+        return .{
+            .start = start,
+            .end = end,
+            .dims = .{ .w = trim_w, .h = trim_h },
+        };
+    }
+
     /// Returns `true` when two crops have identical cell and pixel bounds.
     pub fn eql(a: ImageCellCrop, b: ImageCellCrop) bool {
         return std.meta.eql(a, b);
@@ -547,6 +634,30 @@ test "ViewportLayout.cropForRect snaps outward, clamps, handles edge cases" {
             pitch,
             total_len,
         ),
+    );
+
+    // Sub-cell pixel trim removes 5px left/right margins inside `crop`.
+    const portrait_rect: FRect = .{
+        .x = 255.0,
+        .y = 0.0,
+        .w = 490.0,
+        .h = 780.0,
+    };
+    const sub_len = range.end - range.start;
+    const trimmed = ImageCellCrop.pixelTrimByteRange(
+        crop,
+        portrait_rect,
+        layout.cell_px,
+        crop.px,
+        pitch,
+        sub_len,
+    ) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(@as(u32, 490), trimmed.dims.w);
+    try std.testing.expectEqual(@as(u32, 780), trimmed.dims.h);
+    try std.testing.expectEqual(@as(usize, 5 * 4), trimmed.start);
+    try std.testing.expectEqual(
+        @as(usize, 5 * 4 + (780 - 1) * pitch + 490 * 4),
+        trimmed.end,
     );
 }
 

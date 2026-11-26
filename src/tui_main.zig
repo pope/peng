@@ -274,6 +274,7 @@ const ActiveImageQuad = struct {
     tex: sdl.gpu.Texture,
     render_crop: ImageCellCrop,
     present_crop: ImageCellCrop,
+    visible_rect: FRect,
 };
 
 fn resolveActiveImageQuad(
@@ -363,6 +364,7 @@ fn resolveActiveImageQuad(
                 .tex = g.gpu_texture,
                 .render_crop = render_crop,
                 .present_crop = present_crop,
+                .visible_rect = visible_rect,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = g.gpu_texture },
@@ -380,6 +382,7 @@ fn resolveActiveImageQuad(
                 .tex = promo.active.gpu_texture,
                 .render_crop = render_crop,
                 .present_crop = present_crop,
+                .visible_rect = visible_rect,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = promo.active.gpu_texture },
@@ -423,6 +426,7 @@ fn resolveActiveImageQuad(
                 .tex = thumb.texture,
                 .render_crop = render_crop,
                 .present_crop = present_crop,
+                .visible_rect = visible_rect,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = thumb.texture },
@@ -700,6 +704,7 @@ const KittyVaxisState = struct {
 const PostRenderState = struct {
     payload: CachedPostRenderPayload = .{},
     crop: ImageCellCrop,
+    pixel_dims: PositiveDimsU32,
     kitty_fallback: ?termgfx.TransportMode = null,
 };
 
@@ -826,19 +831,23 @@ const PresentationState = struct {
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
         crop: ImageCellCrop,
+        pixel_dims: PositiveDimsU32,
         kitty_fallback: ?termgfx.TransportMode,
     ) *CachedPostRenderPayload {
         switch (self.content) {
             .post_render => |*pr| {
-                if (!pr.crop.eql(crop)) {
+                const shrunk = pixel_dims.w < pr.pixel_dims.w or
+                    pixel_dims.h < pr.pixel_dims.h;
+                if (!pr.crop.eql(crop) or shrunk) {
                     // Wipe stale Sixel/iTerm2/Kitty-fallback margins when the
-                    // cropped cell rectangle shifts or shrinks.
+                    // cropped cell rectangle shifts or pixel extents shrink.
                     if (pr.kitty_fallback) |tr| {
                         emitKittyDeleteFallback(tty_writer, tr);
                     }
                     vx.queueRefresh();
                 }
                 pr.crop = crop;
+                pr.pixel_dims = pixel_dims;
                 pr.kitty_fallback = kitty_fallback;
                 pr.payload.clear();
                 return &pr.payload;
@@ -848,6 +857,7 @@ const PresentationState = struct {
                 self.content = .{
                     .post_render = .{
                         .crop = crop,
+                        .pixel_dims = pixel_dims,
                         .kitty_fallback = kitty_fallback,
                     },
                 };
@@ -955,6 +965,26 @@ fn encodeReadbackIterm2(
     return surf.encodePngAlloc(gpa);
 }
 
+fn trimReadbackToVisiblePixels(
+    readback: MappedReadback,
+    crop: ImageCellCrop,
+    visible_rect: FRect,
+    cell_px: termgfx.CellPixelSize,
+) MappedReadback {
+    const trimmed = ImageCellCrop.pixelTrimByteRange(
+        crop,
+        visible_rect,
+        cell_px,
+        readback.dims,
+        readback.pitch,
+        readback.pixels.len,
+    ) orelse return readback;
+    var sub = readback;
+    sub.pixels = readback.pixels[trimmed.start..trimmed.end];
+    sub.dims = trimmed.dims;
+    return sub;
+}
+
 fn transmitFrame(
     gpa: std.mem.Allocator,
     frame_allocator: std.mem.Allocator,
@@ -964,6 +994,7 @@ fn transmitFrame(
     target: ResolvedTarget,
     layout: ViewportLayout,
     crop: ImageCellCrop,
+    visible_rect: FRect,
     readback: MappedReadback,
     pres: *PresentationState,
 ) !void {
@@ -1038,6 +1069,7 @@ fn transmitFrame(
                     vx,
                     tty_writer,
                     crop,
+                    readback.dims,
                     target.transport,
                 );
                 var aw: std.Io.Writer.Allocating = .fromArrayList(
@@ -1099,6 +1131,7 @@ fn transmitFrame(
                 vx,
                 tty_writer,
                 crop,
+                readback.dims,
                 null,
             );
             var aw: std.Io.Writer.Allocating = .fromArrayList(
@@ -1122,16 +1155,25 @@ fn transmitFrame(
             payload.dirty = true;
         },
         .iterm2 => {
+            // Trim sub-cell transparent padding before JPEG encoding so opaque
+            // JPEG frames don't show a thin black border around the image.
+            const trimmed_rb = trimReadbackToVisiblePixels(
+                readback,
+                crop,
+                visible_rect,
+                layout.cell_px,
+            );
             const payload = pres.ensurePostRender(
                 gpa,
                 vx,
                 tty_writer,
                 crop,
+                trimmed_rb.dims,
                 null,
             );
             const img_bytes = try encodeReadbackIterm2(
                 frame_allocator,
-                readback,
+                trimmed_rb,
             );
             defer frame_allocator.free(img_bytes);
             var aw: std.Io.Writer.Allocating = .fromArrayList(
@@ -1144,7 +1186,7 @@ fn transmitFrame(
                 .{
                     .iterm2 = .{
                         .image_bytes = img_bytes,
-                        .dims = readback.dims,
+                        .dims = trimmed_rb.dims,
                     },
                 },
                 .{ .transport = target.transport },
@@ -1737,6 +1779,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     target,
                     render_layout,
                     sliced.crop,
+                    active.visible_rect,
                     sliced.readback,
                     &pres,
                 );
