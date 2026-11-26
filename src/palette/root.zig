@@ -67,6 +67,7 @@ pub const PaletteState = struct {
     active_dir_scans: std.atomic.Value(usize) = .init(0),
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
+    hide_gui_only_actions: bool = false,
 
     /// Initializes a new `PaletteState` instance, reserving initial
     /// capacities for queries, matches, and paths.
@@ -277,7 +278,8 @@ pub const PaletteState = struct {
                 allocator,
                 palette_action_items.len,
             );
-            for (palette_action_items, 0..) |_, idx| {
+            for (palette_action_items, 0..) |item, idx| {
+                if (self.hide_gui_only_actions and item.gui_only) continue;
                 self.matches.appendAssumeCapacity(idx);
             }
             return;
@@ -285,6 +287,7 @@ pub const PaletteState = struct {
 
         var max_h: usize = 0;
         for (palette_action_items) |item| {
+            if (self.hide_gui_only_actions and item.gui_only) continue;
             max_h = @max(max_h, item.name.len);
         }
 
@@ -300,6 +303,7 @@ pub const PaletteState = struct {
         );
 
         for (palette_action_items, 0..) |item, idx| {
+            if (self.hide_gui_only_actions and item.gui_only) continue;
             if (searcher_ptr.score(item.name, query_str)) |score| {
                 self.scored_matches.appendAssumeCapacity(
                     .{ .index = idx, .score = score },
@@ -2689,5 +2693,32 @@ test "PaletteState OOM safety on init, rebuildFileMatches, and loadDir" {
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
         }
+    }
+}
+
+test "PaletteState.rebuildActionMatches excludes gui_only when configured" {
+    const allocator = std.testing.allocator;
+    var pal = try PaletteState.init(allocator);
+    defer pal.deinit(allocator);
+
+    // Default (GUI): includes all palette_action_items.
+    try pal.rebuildActionMatches(allocator);
+    try std.testing.expectEqual(
+        palette_action_items.len,
+        pal.matches.items.len,
+    );
+
+    // TUI mode: excludes every gui_only action in both empty and fuzzy queries.
+    pal.hide_gui_only_actions = true;
+    try pal.rebuildActionMatches(allocator);
+    try std.testing.expect(pal.matches.items.len < palette_action_items.len);
+    for (pal.matches.items) |idx| {
+        try std.testing.expect(!palette_action_items[idx].gui_only);
+    }
+
+    try pal.query.appendSlice(allocator, "blur");
+    try pal.rebuildActionMatches(allocator);
+    for (pal.matches.items) |idx| {
+        try std.testing.expect(!palette_action_items[idx].gui_only);
     }
 }

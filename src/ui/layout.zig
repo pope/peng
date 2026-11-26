@@ -23,7 +23,6 @@ const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const PaletteState = palette_pkg.PaletteState;
-const PhysicalDims = geom.PhysicalDims;
 const renderEditPanel = edit_panel.renderEditPanel;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
 const renderPalette = palette.renderPalette;
@@ -702,37 +701,6 @@ fn formatLoadingText(
     };
 }
 
-fn buildThumbnailUvRect(
-    entry: CacheEntry,
-    thumb_info: state.ThumbnailInfo,
-    auth: PhysicalDims,
-    rotation_angle: f32,
-) UvRect {
-    const pre_oriented = thumb_info.source.isPreOriented();
-    const swapped = pre_oriented and
-        entry.metadata.orientation.isDimensionSwapped();
-    const ref_full: PhysicalDims = if (entry.metadata.full_dims) |fd|
-        (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
-    else
-        .{ .w = 0.0, .h = 0.0 };
-    var uv = view_transform.computeThumbnailUvCrop(
-        ref_full,
-        .{ .w = thumb_info.w, .h = thumb_info.h },
-        thumb_info.dct_snapped,
-    );
-    uv.alpha = 1.0;
-    uv.rotation_angle = if (pre_oriented)
-        @mod(
-            rotation_angle - entry.metadata.orientation.toDegrees() + 360.0,
-            360.0,
-        )
-    else
-        rotation_angle;
-    uv.source_w = if (swapped) auth.h else auth.w;
-    uv.source_h = if (swapped) auth.w else auth.h;
-    return uv;
-}
-
 fn renderImageCanvas(
     list: *UiDrawList,
     ui_model: UiViewModel,
@@ -764,8 +732,7 @@ fn renderImageCanvas(
         switch (entry.resident.thumbnail) {
             .loaded => |thumb| {
                 const thumb_tex = thumb.texture;
-                const thumb_uv = buildThumbnailUvRect(
-                    entry,
+                const thumb_uv = entry.computeThumbnailUvRect(
                     thumb.info,
                     auth,
                     rotation_angle,
@@ -788,8 +755,7 @@ fn renderImageCanvas(
             if (show_thumb) {
                 drew_thumb = true;
                 const thumb_tex = thumb.texture;
-                const uv_crop = buildThumbnailUvRect(
-                    entry,
+                const uv_crop = entry.computeThumbnailUvRect(
                     thumb.info,
                     auth,
                     rotation_angle,
@@ -803,13 +769,8 @@ fn renderImageCanvas(
         .none, .pending, .staged_cpu, .not_available, .unloaded => {},
     }
 
-    if (!drew_thumb) switch (entry.resident.asset) {
-        .loaded_gpu, .promoting_gpu => {
-            const gpu = switch (entry.resident.asset) {
-                .loaded_gpu => |g| g,
-                .promoting_gpu => |promo| promo.active,
-                .loaded_cpu, .none, .failed => unreachable,
-            };
+    if (!drew_thumb) switch (entry.resident.asset.displayView()) {
+        .gpu => |gpu| {
             const tex = gpu.gpu_texture;
             const full_alpha = if (is_image_dissolve)
                 std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0)
@@ -828,7 +789,7 @@ fn renderImageCanvas(
                 .uv = uv,
             });
         },
-        .loaded_cpu => {},
+        .cpu => {},
         .none => {
             if (entry.inflight.startTimeMs()) |start_ms| {
                 const elapsed = ui_model.current_time_ms -| start_ms;
@@ -906,11 +867,7 @@ fn renderDissolvePrevQuad(
         .active => |d| d,
     };
     const prev_entry = dissolve.prev_entry;
-    const gpu = switch (prev_entry.resident.asset) {
-        .loaded_gpu => |g| g,
-        .promoting_gpu => |promo| promo.active,
-        .loaded_cpu, .none, .failed => return,
-    };
+    const gpu = prev_entry.resident.asset.activeGpu() orelse return;
 
     const prev_auth = prev_entry.getAuthoritativeDims();
     const prev_dims = computeDrawDims(
@@ -1212,36 +1169,6 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
     try std.testing.expect(interaction_inst.isPointerOverViewport());
 }
 
-test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
-    const entry = CacheEntry{
-        .metadata = .{
-            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
-            .orientation = .rotate_90,
-        },
-    };
-    const auth = entry.getAuthoritativeDims();
-
-    const embedded_uv = buildThumbnailUvRect(
-        entry,
-        .{ .w = 160.0, .h = 120.0, .source = .embedded_header },
-        auth,
-        90.0,
-    );
-    try std.testing.expectEqual(@as(f32, 90.0), embedded_uv.rotation_angle);
-    try std.testing.expectEqual(@as(f32, 6000.0), embedded_uv.source_w);
-    try std.testing.expectEqual(@as(f32, 4000.0), embedded_uv.source_h);
-
-    const cached_uv = buildThumbnailUvRect(
-        entry,
-        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
-        auth,
-        90.0,
-    );
-    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.rotation_angle);
-    try std.testing.expectEqual(@as(f32, 4000.0), cached_uv.source_w);
-    try std.testing.expectEqual(@as(f32, 6000.0), cached_uv.source_h);
-}
-
 test "renderImageCanvas loading grace period across InFlightState variants" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1376,10 +1303,9 @@ test "renderViewport emits TextureRef commands for dissolve, thumb, and full" {
         .{ .w = 800.0, .h = 600.0 },
         .{ .w = 160.0, .h = 120.0 },
     );
-    const prev_tex = switch (prev_entry.resident.asset) {
-        .loaded_gpu => |g| g.gpu_texture,
-        .promoting_gpu, .loaded_cpu, .none, .failed => unreachable,
-    };
+    const prev_gpu = prev_entry.resident.asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    const prev_tex = prev_gpu.gpu_texture;
     const thumb_tex = switch (entry.resident.thumbnail) {
         .loaded => |t| t.texture,
         .none,
@@ -1387,12 +1313,11 @@ test "renderViewport emits TextureRef commands for dissolve, thumb, and full" {
         .staged_cpu,
         .not_available,
         .unloaded,
-        => unreachable,
+        => return error.TestUnexpectedResult,
     };
-    const full_tex = switch (entry.resident.asset) {
-        .loaded_gpu => |g| g.gpu_texture,
-        .promoting_gpu, .loaded_cpu, .none, .failed => unreachable,
-    };
+    const full_gpu = entry.resident.asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    const full_tex = full_gpu.gpu_texture;
 
     var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit(std.testing.allocator);

@@ -93,6 +93,24 @@ pub fn runUpdatePhase(
     // Execute All Ingested & Generated Intents
     try sysExecuteIntents(ctx);
 
+    // When animations are disabled (e.g., terminal viewer or reduced-motion
+    // mode), settle UI transitions and discrete zoom/pan taps immediately
+    // before cache/upload sync so downstream systems see final viewport state
+    // in a single frame without intermediate interpolation ticks.
+    if (!app_state.viewer.defaults.animations.isEnabled()) {
+        app_state.viewer.animations.settleAll();
+        if (app_state.viewer.pan_controller.settleTap()) |pan| {
+            app_state.viewer.viewport.panBy(pan.dx, pan.dy);
+        }
+        if (app_state.viewer.zoom_controller.settleTap()) |z| {
+            app_state.viewer.viewport.zoomBy(z.ratio, z.snap_zoom);
+        }
+        switch (app_state.viewer.ui.palette.lifecycle) {
+            .closing => app_state.viewer.ui.palette.reset(),
+            .open, .closed => {},
+        }
+    }
+
     const sync_start = std.Io.Clock.awake.now(app_state.io);
 
     // Window Management System (synchronizes window title and display)

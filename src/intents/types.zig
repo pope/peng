@@ -49,6 +49,20 @@ pub const TextureScaleMode = enum {
     lanczos3,
     fsr,
     tiny_cnn,
+
+    /// Returns a concise display label suitable for compact UI bars and
+    /// details panels.
+    pub fn shortLabel(self: TextureScaleMode) []const u8 {
+        return switch (self) {
+            .nearest => "Nearest",
+            .linear => "Linear",
+            .pixel_art => "PixelAA",
+            .mitchell => "Mitchell",
+            .lanczos3 => "Lanczos3",
+            .fsr => "FSR",
+            .tiny_cnn => "TinyCNN",
+        };
+    }
 };
 
 /// Comptime-generated comma-separated list of all valid ZoomPreset names

@@ -20,6 +20,7 @@ const CacheEntry = cache.CacheEntry;
 const DecodeMode = workers_mod.DecodeMode;
 const DecodeTelemetry = state_pkg.DecodeTelemetry;
 const DisplayState = core.display.DisplayState;
+const EventWaker = workers_mod.EventWaker;
 const FrameMetrics = state_pkg.FrameMetrics;
 const ImageCache = cache.ImageCache;
 const ImageCacheKey = cache.ImageCacheKey;
@@ -28,6 +29,7 @@ const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const MipmapTelemetry = state_pkg.MipmapTelemetry;
+const NavigationState = state_pkg.NavigationState;
 const OpenPathTarget = intents.OpenPathTarget;
 const PairStreamTarget = vfs.PairStreamTarget;
 const PhysicalDims = geom.PhysicalDims;
@@ -39,8 +41,10 @@ const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 const ThumbTier = thumbcache.ThumbTier;
+const UiState = state_pkg.UiState;
 const UploadMode = state_pkg.UploadMode;
 const UploadStagingBuffer = gpu.UploadStagingBuffer;
+const ViewerDefaults = state_pkg.ViewerDefaults;
 const ViewerState = state_pkg.ViewerState;
 const ViewerStats = state_pkg.ViewerStats;
 const view_transform = state_pkg.view_transform;
@@ -135,24 +139,136 @@ pub const AppState = struct {
     pending_wait_load_streams: std.ArrayList(std.Io.net.Stream) = .empty,
     pending_intents: std.ArrayList(AppIntent) = .empty,
 
-    /// Initializes top-level `AppState` in headless mode without creating an SDL
-    /// window, suitable for tests.
-    pub fn initHeadless(allocator: std.mem.Allocator, io: std.Io) !AppState {
-        var state = AppState{
-            .viewer = try ViewerState.initHeadless(allocator),
+    /// GPU startup configuration for `AppState.initInPlace`.
+    pub const GpuInit = union(enum) {
+        /// Headless/CPU mode with GPU uploads disabled (unit tests).
+        disabled,
+        /// GPU uploads enabled; device will be attached after window/GPU init.
+        deferred,
+        /// GPU uploads enabled with an already-created `sdl.gpu.Device`.
+        ready: sdl.gpu.Device,
+    };
+
+    /// Resident IPC server lifecycle configuration for `AppState.initInPlace`.
+    pub const ServerInit = union(enum) {
+        disabled,
+        resident: struct {
+            idle_timeout_ms: u64 = 0,
+        },
+    };
+
+    /// Initial visibility of the headless bootstrap display before a window is
+    /// claimed.
+    pub const InitialVisibility = enum {
+        visible,
+        hidden,
+    };
+
+    /// Options for in-place `AppState` initialization shared across GUI and
+    /// TUI frontends.
+    pub const InitOptions = struct {
+        defaults: ViewerDefaults = .{},
+        visibility: InitialVisibility = .visible,
+        gpu: GpuInit = .deferred,
+        waker: EventWaker = .none,
+        server: ServerInit = .disabled,
+    };
+
+    /// Initializes `self` in-place at its pinned memory address, resetting
+    /// viewer state to `opts.defaults` and pre-allocating queue capacities.
+    pub fn initInPlace(
+        self: *AppState,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        opts: InitOptions,
+    ) !void {
+        const server_mode = switch (opts.server) {
+            .disabled => false,
+            .resident => true,
+        };
+        const server_idle_timeout_ms: u64 = switch (opts.server) {
+            .disabled => 0,
+            .resident => |r| r.idle_timeout_ms,
+        };
+        const gpu_device: ?sdl.gpu.Device = switch (opts.gpu) {
+            .disabled, .deferred => null,
+            .ready => |dev| dev,
+        };
+        const gpu_enabled = switch (opts.gpu) {
+            .disabled => false,
+            .deferred, .ready => true,
+        };
+        const display: DisplayState = switch (opts.visibility) {
+            .visible => .{ .visible = .headless },
+            .hidden => .{ .hidden = .headless },
+        };
+
+        const viewer = viewer_blk: {
+            var nav = try NavigationState.init(allocator);
+            errdefer nav.deinit(allocator);
+            const ui_state = try UiState.init(allocator);
+            break :viewer_blk ViewerState{
+                .defaults = opts.defaults,
+                .navigation = nav,
+                .ui = ui_state,
+                .animations = .{},
+                .rotation_map = .empty,
+                .server_mode = server_mode,
+                .running = true,
+            };
+        };
+
+        self.* = .{
+            .viewer = viewer,
+            .display = display,
+            .gpu_device = gpu_device,
+            .gpu_enabled = gpu_enabled,
+            .unpack_compute_pipeline = null,
             .cache = .{},
-            .workers = .init(.none),
+            .workers = .init(opts.waker),
+            .server_idle_timeout_ms = server_idle_timeout_ms,
             .allocator = allocator,
             .io = io,
-            .gpu_enabled = false,
         };
-        errdefer state.viewer.deinit(allocator, io);
-        try state.ensureInitialCapacities();
+        self.viewer.resetToDefaults();
+        errdefer {
+            self.gpu_device = null;
+            self.deinit();
+        }
+        try self.ensureInitialCapacities();
+    }
+
+    /// Initializes top-level `AppState` in headless mode without creating an
+    /// SDL window, suitable for tests.
+    pub fn initHeadless(allocator: std.mem.Allocator, io: std.Io) !AppState {
+        var state: AppState = undefined;
+        try state.initInPlace(allocator, io, .{ .gpu = .disabled });
         return state;
     }
 
-    /// Pre-allocates initial buffer capacities for intent, event, and IPC command queues.
-    pub fn ensureInitialCapacities(self: *AppState) !void {
+    /// Opens `path` if provided, or spawns the piped stdin reader when
+    /// `path == null` and the application is not running in resident
+    /// `server_mode`.
+    pub fn openInitialTarget(
+        self: *AppState,
+        path: ?[]const u8,
+        now_ms: u64,
+    ) !void {
+        if (path) |p| {
+            try self.openPath(p, now_ms);
+        } else if (!self.viewer.server_mode) {
+            try workers_mod.readPipedStdin(
+                &self.workers,
+                &self.viewer.navigation.active_file_scans,
+                self.io,
+                self.allocator,
+            );
+        }
+    }
+
+    /// Pre-allocates initial buffer capacities for intent, event, and IPC
+    /// command queues.
+    fn ensureInitialCapacities(self: *AppState) !void {
         if (self.workers.cached_cpu_count == 0) {
             self.workers.cached_cpu_count = std.Thread.getCpuCount() catch |err| blk: {
                 std.log.warn("Failed to query CPU core count: {}, defaulting to 4", .{err});
@@ -162,20 +278,32 @@ pub const AppState = struct {
         // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette,
         // and slideshow intents in a single tick
         try self.pending_intents.ensureTotalCapacity(self.allocator, 16);
-        errdefer self.pending_intents.deinit(self.allocator);
+        errdefer {
+            self.pending_intents.deinit(self.allocator);
+            self.pending_intents = .empty;
+        }
         // 16 events: accommodates concurrent worker background events
         // (decodes, EXIF, path scans) processed per tick
         try self.event_batch.ensureTotalCapacity(self.allocator, 16);
-        errdefer self.event_batch.deinit(self.allocator);
+        errdefer {
+            self.event_batch.deinit(self.allocator);
+            self.event_batch = .empty;
+        }
         // 8 commands: accommodates queued socket IPC command buffers
         try self.pending_ipc_commands.ensureTotalCapacity(self.allocator, 8);
-        errdefer self.pending_ipc_commands.deinit(self.allocator);
+        errdefer {
+            self.pending_ipc_commands.deinit(self.allocator);
+            self.pending_ipc_commands = .empty;
+        }
         // 4 streams: accommodates concurrent IPC barrier/query streams
         try self.pending_selection_streams.ensureTotalCapacity(
             self.allocator,
             4,
         );
-        errdefer self.pending_selection_streams.deinit(self.allocator);
+        errdefer {
+            self.pending_selection_streams.deinit(self.allocator);
+            self.pending_selection_streams = .empty;
+        }
         try self.pending_wait_load_streams.ensureTotalCapacity(
             self.allocator,
             4,
@@ -692,7 +820,13 @@ pub const AppState = struct {
         var scale_x: f32 = 1.0;
 
         switch (self.display.backend()) {
-            .headless => {},
+            .headless => {
+                const phys = self.viewer.last_win_dims.toPhysical(.{});
+                if (phys.asPositive()) |d| {
+                    win_w = d.w;
+                    win_h = d.h;
+                }
+            },
             .windowed => |win| {
                 const win_size = win.handle.getSize();
                 const pix_size = win.handle.getSizeInPixels();
@@ -2489,4 +2623,95 @@ test "AppState server idle auto-shutdown waits and exits when expired" {
     try std.testing.expect(state.viewer.running);
     state.updateServerIdleShutdown(2_300_000, false);
     try std.testing.expect(!state.viewer.running);
+}
+
+test "AppState.getViewportPixelDims uses last_win_dims in headless mode" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Default fallback when last_win_dims is unset (0x0).
+    state.viewer.last_win_dims = .{ .w = 0.0, .h = 0.0 };
+    const default_dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1024.0), default_dims.w);
+    try std.testing.expectEqual(@as(f32, 768.0), default_dims.h);
+
+    // Headless frontend (e.g. peng-tui) reports actual viewport dimensions.
+    state.viewer.last_win_dims = .{ .w = 1920.0, .h = 1040.0 };
+    const custom_dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1920.0), custom_dims.w);
+    try std.testing.expectEqual(@as(f32, 1040.0), custom_dims.h);
+
+    // Non-finite or non-positive axes safely fall back to 1024x768.
+    state.viewer.last_win_dims = .{ .w = std.math.nan(f32), .h = 1040.0 };
+    const nan_dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1024.0), nan_dims.w);
+    try std.testing.expectEqual(@as(f32, 768.0), nan_dims.h);
+}
+
+test "AppState.initInPlace applies defaults and is OOM-safe" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const Runner = struct {
+        fn run(allocator: std.mem.Allocator, run_io: std.Io) !void {
+            var state: AppState = undefined;
+            try state.initInPlace(allocator, run_io, .{
+                .defaults = .{
+                    .default_scale = .crop,
+                    .animations = .disabled,
+                    .snackbar_enabled = false,
+                    .auto_title = false,
+                    .stack_raw_jpeg = false,
+                },
+                .visibility = .hidden,
+                .gpu = .disabled,
+                .server = .{ .resident = .{ .idle_timeout_ms = 5_000 } },
+            });
+            defer state.deinit();
+
+            try std.testing.expect(state.display.isHidden());
+            try std.testing.expect(!state.gpu_enabled);
+            try std.testing.expect(state.gpu_device == null);
+            try std.testing.expectEqual(
+                intents.ZoomPreset.crop,
+                state.viewer.viewport.fit_mode,
+            );
+            try std.testing.expect(state.viewer.server_mode);
+            try std.testing.expectEqual(
+                @as(u64, 5_000),
+                state.server_idle_timeout_ms,
+            );
+            try std.testing.expect(!state.viewer.defaults.stack_raw_jpeg);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        Runner.run,
+        .{io},
+    );
+}
+
+test "AppState.openInitialTarget skips stdin in server_mode and opens path" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state: AppState = undefined;
+    try state.initInPlace(allocator, io, .{
+        .gpu = .disabled,
+        .server = .{ .resident = .{} },
+    });
+    defer state.deinit();
+
+    // Null path in resident server_mode is a no-op (no stdin worker spawned).
+    try state.openInitialTarget(null, 100);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.navigation.active_file_scans.load(.acquire),
+    );
+
+    // Explicit path delegates to openPath using a committed test fixture.
+    try state.openInitialTarget("testfiles/images/001_1_1024x682.jpg", 100);
+    try state.workers.group.await(io);
+    try std.testing.expect(state.workers.event_queue.hasPending());
 }

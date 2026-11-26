@@ -26,6 +26,7 @@ pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
 pub const PreviewWorkerArgs = preview.PreviewWorkerArgs;
 pub const StdinArgs = stdin.StdinArgs;
+pub const WakeCallback = context.WakeCallback;
 pub const WorkerManager = manager.WorkerManager;
 
 pub const spawnDecode = decode.spawnDecode;

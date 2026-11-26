@@ -24,6 +24,7 @@ pub const ActiveScreenshot = types.ActiveScreenshot;
 pub const ActiveSnackbar = types.ActiveSnackbar;
 pub const ActiveZoomTap = viewport.ActiveZoomTap;
 pub const AnimationChannel = animation_state.AnimationChannel;
+pub const AnimationMode = viewer_state.AnimationMode;
 pub const AnimationState = animation_state.AnimationState;
 pub const ArchiveTelemetry = telemetry.ArchiveTelemetry;
 pub const clampZoomFactor = view_transform.clampZoomFactor;

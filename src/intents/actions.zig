@@ -90,6 +90,7 @@ pub const ActionMetadata = struct {
     name: []const u8,
     shortcut_text: []const u8,
     show_in_palette: bool,
+    gui_only: bool = false,
     shortcuts: []const KeyboardShortcut,
     intent: AppIntent,
 };
@@ -222,6 +223,7 @@ pub const ActionDef = struct {
     shortcut_text: []const u8 = "",
     description: []const u8 = "",
     show_in_palette: bool = true,
+    gui_only: bool = false,
     shortcuts: []const KeyboardShortcut = &.{},
     intent: ?AppIntent = null,
     cli: []const CliOption = &.{},
@@ -301,6 +303,7 @@ pub const actions = [_]ActionDef{
         .shortcut_text = "F / F11",
         .description = "Toggle borderless fullscreen mode",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{ .{ .key = .char_f }, .{ .key = .f11 } },
         .intent = .toggle_fullscreen,
     },
@@ -541,6 +544,7 @@ pub const actions = [_]ActionDef{
         .shortcut_text = "E",
         .description = "Open or close image adjustments side panel",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{.{ .key = .char_e }},
         .intent = .toggle_edit_panel,
         .ipc = .{
@@ -877,6 +881,7 @@ pub const actions = [_]ActionDef{
         .title = "Toggle Background Blur",
         .description = "Enable or disable glassmorphism background blur behind overlays",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{},
         .intent = .toggle_blur,
         .cli = &.{
@@ -925,6 +930,7 @@ pub const actions = [_]ActionDef{
         .shortcut_text = "",
         .description = "Toggle visual notification confirmations for app actions",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{},
         .intent = .toggle_snackbar,
         .ipc = .{
@@ -939,6 +945,7 @@ pub const actions = [_]ActionDef{
         .shortcut_text = "",
         .description = "Toggle smooth dissolve transitions during image navigation",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{},
         .intent = .toggle_crossfade,
         .ipc = .{
@@ -993,6 +1000,7 @@ pub const actions = [_]ActionDef{
         .title = "Toggle Windowless Mode (Borderless)",
         .description = "Toggle window borders and decorations",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{},
         .intent = .toggle_windowless,
         .cli = &.{.{
@@ -1108,6 +1116,7 @@ pub const actions = [_]ActionDef{
         .shortcut_text = "Shift+A",
         .description = "Toggle live GPU font atlas and shelf metrics",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{.{ .key = .char_a, .mod = .{ .shift = true } }},
         .intent = .toggle_atlas,
     },
@@ -1117,6 +1126,7 @@ pub const actions = [_]ActionDef{
         .shortcut_text = "Ctrl+Q",
         .description = "Terminate Peng and stop any resident server",
         .show_in_palette = true,
+        .gui_only = true,
         .shortcuts = &.{.{ .key = .char_q, .mod = .{ .ctrl = true } }},
         .intent = .quit_server,
     },
@@ -1356,6 +1366,7 @@ pub const palette_action_items = blk: {
                     .name = a.title,
                     .shortcut_text = a.shortcut_text,
                     .show_in_palette = a.show_in_palette,
+                    .gui_only = a.gui_only,
                     .shortcuts = a.shortcuts,
                     .intent = intent,
                 };

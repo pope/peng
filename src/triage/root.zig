@@ -592,7 +592,7 @@ pub const TriageMap = struct {
         var map = TriageMap{
             .classification_arena = std.heap.ArenaAllocator.init(allocator),
         };
-        errdefer map.classification_arena.deinit();
+        errdefer map.deinit(allocator);
         try map.path_classifications.ensureTotalCapacity(allocator, 64);
         return map;
     }

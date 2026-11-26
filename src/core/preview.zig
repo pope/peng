@@ -608,6 +608,19 @@ fn validateSurfacePitch(
     return pitch_usize;
 }
 
+fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+        const rc = std.c.write(fd, bytes.ptr + written, bytes.len - written);
+        if (rc > 0) {
+            written += @intCast(rc);
+            continue;
+        }
+        if (rc < 0 and std.posix.errno(rc) == .INTR) continue;
+        return error.ShmWriteFailed;
+    }
+}
+
 fn writeRgbaToShm(
     io: std.Io,
     final_surf: sdl.Surface,
@@ -665,31 +678,48 @@ fn writeRgbaToShm(
     errdefer unlinkShmName(res.name());
     defer _ = std.c.close(fd);
 
-    if (std.c.ftruncate(fd, shm_len) != 0) {
-        return error.ShmTruncateFailed;
-    }
-
-    const mapped = try std.posix.mmap(
-        null,
-        total_bytes,
-        .{ .READ = true, .WRITE = true },
-        .{ .TYPE = .SHARED },
-        fd,
-        0,
-    );
-    defer std.posix.munmap(mapped);
-
     const base_ptr = final_surf.pixels();
-    if (pitch_usize == row_bytes) {
-        @memcpy(mapped[0..total_bytes], base_ptr[0..total_bytes]);
+    if (comptime builtin.os.tag == .linux) {
+        // On Linux, `shm_open` returns a tmpfs fd where `write(2)` copies
+        // directly into page cache without user-space `mmap` minor page faults
+        // or `munmap` TLB shootdowns.
+        if (pitch_usize == row_bytes) {
+            try writeAllFd(fd, base_ptr[0..total_bytes]);
+        } else {
+            for (0..h_usize) |row| {
+                const src_start = row * pitch_usize;
+                try writeAllFd(
+                    fd,
+                    base_ptr[src_start .. src_start + row_bytes],
+                );
+            }
+        }
     } else {
-        for (0..h_usize) |row| {
-            const src_start = row * pitch_usize;
-            const dst_start = row * row_bytes;
-            @memcpy(
-                mapped[dst_start .. dst_start + row_bytes],
-                base_ptr[src_start .. src_start + row_bytes],
-            );
+        if (std.c.ftruncate(fd, shm_len) != 0) {
+            return error.ShmTruncateFailed;
+        }
+
+        const mapped = try std.posix.mmap(
+            null,
+            total_bytes,
+            .{ .READ = true, .WRITE = true },
+            .{ .TYPE = .SHARED },
+            fd,
+            0,
+        );
+        defer std.posix.munmap(mapped);
+
+        if (pitch_usize == row_bytes) {
+            @memcpy(mapped[0..total_bytes], base_ptr[0..total_bytes]);
+        } else {
+            for (0..h_usize) |row| {
+                const src_start = row * pitch_usize;
+                const dst_start = row * row_bytes;
+                @memcpy(
+                    mapped[dst_start .. dst_start + row_bytes],
+                    base_ptr[src_start .. src_start + row_bytes],
+                );
+            }
         }
     }
     return res;
@@ -734,6 +764,32 @@ fn writeSurfaceRgbaToTempFile(
     return res;
 }
 
+/// Writes an already-rendered RGBA32 `sdl.Surface` (`dims`) to POSIX shared
+/// memory (`t=s`) when available, falling back to a temporary file (`t=t`) if
+/// `shm_open` is unavailable.
+pub fn writeSurfaceKittyLocal(
+    io: std.Io,
+    surface: sdl.Surface,
+    dims: PositiveDimsU32,
+) !KittyTransferResult {
+    if (writeRgbaToShm(io, surface, dims)) |shm_res| {
+        return shm_res;
+    } else |err| {
+        std.log.debug(
+            "POSIX shm preview unavailable ({s}); falling back to temp file",
+            .{@errorName(err)},
+        );
+    }
+
+    const tmp_res = try writeSurfaceRgbaToTempFile(io, surface, dims);
+    return .{
+        .kind = .temp_file,
+        .name_buf = tmp_res.path_buf,
+        .name_len = tmp_res.path_len,
+        .dims = tmp_res.dims,
+    };
+}
+
 /// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
 /// raw packed RGBA32 bytes to POSIX shared memory (`t=s`) when available,
 /// falling back to a temporary file (`t=t`) if `shm_open` is unavailable.
@@ -755,30 +811,7 @@ pub fn renderPreviewKittyLocal(
     );
     defer preview.deinit();
 
-    if (writeRgbaToShm(io, preview.surface, preview.dims)) |shm_res| {
-        if (cancel.isCanceled()) {
-            shm_res.cleanup(io);
-            return error.Canceled;
-        }
-        return shm_res;
-    } else |err| {
-        std.log.debug(
-            "POSIX shm preview unavailable ({s}); falling back to temp file",
-            .{@errorName(err)},
-        );
-    }
-
-    const tmp_res = try writeSurfaceRgbaToTempFile(
-        io,
-        preview.surface,
-        preview.dims,
-    );
-    const res = KittyTransferResult{
-        .kind = .temp_file,
-        .name_buf = tmp_res.path_buf,
-        .name_len = tmp_res.path_len,
-        .dims = tmp_res.dims,
-    };
+    const res = try writeSurfaceKittyLocal(io, preview.surface, preview.dims);
     if (cancel.isCanceled()) {
         res.cleanup(io);
         return error.Canceled;
@@ -876,5 +909,22 @@ test "renderPreviewKittyLocal writes RGBA32 to POSIX shm and cleans up" {
         try std.testing.expectEqual(KittyTransferKind.shared_memory, res.kind);
         try std.testing.expect(std.mem.startsWith(u8, res.name(), "/peng-"));
         try std.testing.expect(res.name().len <= 30);
+        if (comptime builtin.os.tag == .linux) {
+            var path_buf: [64]u8 = undefined;
+            const shm_path = try std.mem.print(
+                &path_buf,
+                "/dev/shm{s}",
+                .{res.name()},
+            );
+            const stat = try std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                io,
+                shm_path,
+                .{},
+            );
+            const expected: u64 = @as(u64, res.dims.w) *
+                @as(u64, res.dims.h) * 4;
+            try std.testing.expectEqual(expected, stat.size);
+        }
     }
 }

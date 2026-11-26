@@ -25,6 +25,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const vaxis_dep = b.dependency("vaxis", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const vaxis_mod = vaxis_dep.module("vaxis");
+
     const fuzzig_dep = b.dependency("fuzzig", .{
         .target = target,
         .optimize = optimize,
@@ -308,6 +314,23 @@ pub fn build(b: *std.Build) void {
             .{ .name = "vfs", .module = vfs_module },
         },
     );
+    const tui_module = createInternalModule(
+        b,
+        target,
+        optimize,
+        "src/tui/root.zig",
+        &.{
+            .{ .name = "geom", .module = geom_module },
+            .{ .name = "intents", .module = intents_module },
+            .{ .name = "palette", .module = palette_module },
+            .{ .name = "state", .module = state_module },
+            .{ .name = "termgfx", .module = termgfx_module },
+            .{ .name = "thumbcache", .module = thumbcache_module },
+            .{ .name = "triage", .module = triage_module },
+            .{ .name = "vaxis", .module = vaxis_mod },
+            .{ .name = "vfs", .module = vfs_module },
+        },
+    );
     const app_module = createInternalModule(
         b,
         target,
@@ -445,6 +468,37 @@ pub fn build(b: *std.Build) void {
     const run_preview_cmd = b.addRunArtifact(preview_exe);
     run_preview_step.dependOn(&run_preview_cmd.step);
     run_preview_cmd.addPassthruArgs();
+
+    const tui_exe = b.addExecutable(.{
+        .name = "peng-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tui_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "app", .module = app_module },
+                .{ .name = "cache", .module = cache_module },
+                .{ .name = "core", .module = core_module },
+                .{ .name = "geom", .module = geom_module },
+                .{ .name = "gpu", .module = gpu_module },
+                .{ .name = "sdl", .module = sdl_module },
+                .{ .name = "state", .module = state_module },
+                .{ .name = "termgfx", .module = termgfx_module },
+                .{ .name = "tui", .module = tui_module },
+                .{ .name = "vaxis", .module = vaxis_mod },
+            },
+        }),
+    });
+    tui_exe.dead_strip_dylibs = is_darwin;
+    tui_exe.force_load_objc = is_darwin and static_sdl;
+    tui_exe.step.dependOn(compile_shaders);
+    b.installArtifact(tui_exe);
+
+    const run_tui_step = b.step("run-tui", "Run peng-tui");
+    const run_tui_cmd = b.addRunArtifact(tui_exe);
+    run_tui_step.dependOn(&run_tui_cmd.step);
+    run_tui_cmd.addPassthruArgs();
 
     const precache_exe = b.addExecutable(.{
         .name = "peng-precache",
@@ -599,6 +653,11 @@ pub fn build(b: *std.Build) void {
             .module = termgfx_module,
             .step_name = "test-termgfx",
             .step_desc = "Run termgfx tests",
+        },
+        .{
+            .module = tui_module,
+            .step_name = "test-tui",
+            .step_desc = "Run tui tests",
         },
     };
 

@@ -53,6 +53,10 @@
             .url = "git+https://codeberg.org/fjebaker/fuzzig#97ed5ef57c2a11cbc21db061a2ea093c3df64de2",
             .hash = "fuzzig-0.1.3-Ji0xit9oAQAxavWq4UDsI9S0nsUVOsqZbxUbZUzlKu4x",
         },
+        .vaxis = .{
+            .url = "git+https://github.com/rockorager/libvaxis.git#25b4bd7371cc3c32049e103ab292a525a1ecb7a7",
+            .hash = "vaxis-0.6.0-BWNV_G8gDgCNWI48cFKWal2NROjTRQXumw3ssMDeD6jt",
+        },
     },
     .paths = .{
         "build.zig",

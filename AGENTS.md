@@ -7,14 +7,14 @@ ______________________________________________________________________
 
 ## 1. Build, Test & Formatting Commands
 
-- `zig build` — Build `peng`, `peng-msg`, `peng-preview`, `peng-precache`, and
-  `peng-test-runner`.
-- `zig build test-unit` — Fast unit suite across all 18 modules (`geom`, `probe`,
+- `zig build` — Build `peng`, `peng-tui`, `peng-msg`, `peng-preview`,
+  `peng-precache`, and `peng-test-runner`.
+- `zig build test-unit` — Fast unit suite across all 19 modules (`geom`, `probe`,
   `vfs`, `triage`, `palette`, `sdl`, `gpu`, `state`, `cache`, `core`, `app`,
-  `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`, `termgfx`).
+  `ui`, `tui`, `intents`, `config`, `input`, `ipc`, `thumbcache`, `termgfx`).
 - `zig build test-<mod>` — Isolated module tests (`geom`, `probe`, `vfs`,
-  `triage`, `palette`, `thumbcache`, `termgfx`, `cache`, `core`, `state`, `gpu`,
-  `ui`, `ipc`).
+  `triage`, `palette`, `thumbcache`, `termgfx`, `tui`, `cache`, `core`, `state`,
+  `gpu`, `ui`, `ipc`).
 - `zig build test-integration` — Headless integration & golden screenshot suite.
 - `zig build test` — Full unit + headless integration suite.
 - `zig build -Dhot_reload=true` — Verify shared-library (`libviewer`) build
@@ -66,14 +66,19 @@ ______________________________________________________________________
     EXIF, RAW headers), `vfs` (dir scan, CBZ seek, RAW+JPEG pairs), `triage`
     (picks/rejects, 256-bit SIMD filter), `palette` (unmanaged fuzzy/nav state),
     `thumbcache` (Freedesktop MD5/PNG `tEXt`, DPI-mapped `ThumbTier` selection,
-    precache scheduling), `termgfx` (Kitty Graphics Protocol `t=t` encoder),
-    `intents` (`AppIntent`, `actions.zig`), `ipc` (UDS JSON protocol), `state`
+    precache scheduling), `termgfx` (Kitty `t=s`/`t=t`/`t=d`/`U=1`, iTerm2,
+    Sixel, and Halfblocks terminal encoders + protocol detection), `intents`
+    (`AppIntent`, `actions.zig`), `ipc` (UDS JSON protocol), `state`
     (`ViewerState`, `UiState`, `InteractionState`, `AnimationState`, motion
     controllers), `config` (CLI).
   - `ui`: Immediate-mode `RectCut` layouts, `UiViewModel`, `UiDrawList` & 2-pass
     `RenderPacket` builder. **Zero `@import("sdl")`, zero `@import("core")`**
     (imports `cache`, `geom`, `gpu`, `intents`, `palette`, `state`, `triage`,
     `vfs`).
+  - `tui`: `libvaxis`-backed terminal input adapter, `ViewportLayout` /
+    `ImageCellCrop`, infobar, overlays, and CLI. **Zero `@import("sdl")`, zero
+    `@import("app")`** (imports `geom`, `intents`, `palette`, `state`,
+    `termgfx`, `thumbcache`, `triage`, `vaxis`, `vfs`).
 - **Engine & Hardware Packages**:
   - `sdl` (sole C wrapper via private `src/sdl/c.zig`, plus `libturbojpeg` on
     non-Windows), `core` (`display`, `mpsc_queue`, `preview`, `thumbcache`),
@@ -81,9 +86,11 @@ ______________________________________________________________________
     polling & shortcuts), `gpu` (pipelines, shaders, `TextCache`,
     `UploadStagingBuffer`, `pass.zig`), `app` (`state.zig`, `events.zig`,
     `systems/`, `workers/` — **zero `@import("ui")`**).
-  - `src/viewer.zig`: Composition root bridging `app` and `ui` via
+  - `src/viewer.zig`: GUI composition root bridging `app` and `ui` via
     `buildUiViewModel(*const AppState, *const RenderResources, now_ms)`
     (static or `-Dhot_reload=true`).
+  - `src/tui_main.zig`: TUI composition root bridging `app`, headless `gpu`
+    (`executeOffscreenReadback`), `core`, `termgfx`, `tui`, and `vaxis`.
 - **Boundary Rules**: Pure/engine packages MUST NOT import `app`. Never import
   across modules by relative file path (use `@import("<mod>")`), and never add
   cross-module `pub const` proxy re-exports or `OldName = NewName` aliases.
@@ -112,10 +119,12 @@ ______________________________________________________________________
   - `switch` on domain enums and tagged unions (`ActivePaletteMode`,
     `PaletteLifecycle`, `PaletteMode`, `PromptKind`, `EditParam`, `AppIntent`,
     `AdjustIntent`, `IpcCommand`, `ZoomPreset`, `TextureScaleMode`,
-    `DecodeMode`, `DecodePriority`, `ScrollCadence`, `PresentCadence`,
-    `SlideshowMode`, `SlideshowClock`, `PanTap`, `ZoomPhase`, `ZoomDirection`,
-    `ResidentAsset`, `InFlightState`, `ThumbnailState`, `AsyncGpuUploadSlot`,
-    `ThumbTier`, `DisplayState`, `DragState`, `MediaEntry`, `BackgroundEvent`)
+    `AnimationMode`, `DecodeMode`, `DecodePriority`, `ScrollCadence`,
+    `PresentCadence`, `SlideshowMode`, `SlideshowClock`, `PanTap`, `ZoomPhase`,
+    `ZoomDirection`, `ResidentAsset`, `InFlightState`, `ThumbnailState`,
+    `AsyncGpuUploadSlot`, `ThumbTier`, `DisplayState`, `DragState`,
+    `MediaEntry`, `BackgroundEvent`, `InfobarPosition`, `Protocol`,
+    `ProtocolMode`, `TransportMode`, `PreviewSize`)
     **MUST** list every variant without `else =>` wildcards or `if (x == .a)` chains. Use `intents.getSpec`
     for `EditParam` metadata.
   - Default declarations to private; delete dead/write-only zombie symbols and

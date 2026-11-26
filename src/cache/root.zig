@@ -15,6 +15,7 @@ const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const RawMetadata = probe.RawMetadata;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
+const UvRect = geom.UvRect;
 const VisibleNeighbors = triage.VisibleNeighbors;
 
 /// Decoded CPU software surface stored in host RAM.
@@ -69,9 +70,18 @@ pub const PendingThumbSurface = struct {
     }
 };
 
+/// Nominal monotonic identifier stamped on every uploaded GPU texture
+/// (primary assets and thumbnails) by `ImageCache.nextUploadId`. `.none` is
+/// reserved for synthetic unit-test stubs.
+pub const TextureUploadId = enum(u64) {
+    none = 0,
+    _,
+};
+
 /// Resident GPU texture allocation and VRAM memory footprint metadata.
 pub const GpuTextureComponent = struct {
     gpu_texture: sdl.gpu.Texture,
+    upload_id: TextureUploadId,
     w: f32,
     h: f32,
     size_bytes: u64,
@@ -134,6 +144,62 @@ pub const ResidentAsset = union(enum) {
         return switch (self) {
             .failed => true,
             .none, .loaded_cpu, .loaded_gpu, .promoting_gpu => false,
+        };
+    }
+
+    /// Read-only projection of `ResidentAsset` for display and telemetry
+    /// consumers where `.loaded_gpu` and `.promoting_gpu` expose the same
+    /// active `GpuTextureComponent` payload.
+    pub const DisplayView = union(enum) {
+        none,
+        cpu: CpuAsset,
+        gpu: GpuTextureComponent,
+        failed,
+    };
+
+    /// Projects this asset into a 4-variant `DisplayView`, unifying
+    /// `.loaded_gpu` and `.promoting_gpu` into `.gpu` at the type level.
+    pub inline fn displayView(self: ResidentAsset) DisplayView {
+        return switch (self) {
+            .none => .none,
+            .loaded_cpu => |asset| .{ .cpu = asset },
+            .loaded_gpu => |gpu| .{ .gpu = gpu },
+            .promoting_gpu => |promo| .{ .gpu = promo.active },
+            .failed => .failed,
+        };
+    }
+
+    /// Returns the active GPU texture component when `.loaded_gpu` or
+    /// `.promoting_gpu`, or `null` otherwise.
+    pub inline fn activeGpu(self: ResidentAsset) ?GpuTextureComponent {
+        return switch (self) {
+            .loaded_gpu => |gpu| gpu,
+            .promoting_gpu => |promo| promo.active,
+            .none, .loaded_cpu, .failed => null,
+        };
+    }
+
+    /// Returns the source file byte size for any decoded resident asset
+    /// (`.loaded_cpu`, `.loaded_gpu`, or `.promoting_gpu`), or `null` when
+    /// unloaded or failed.
+    pub inline fn diskSizeBytes(self: ResidentAsset) ?u64 {
+        return switch (self) {
+            .loaded_gpu => |gpu| gpu.size_bytes,
+            .promoting_gpu => |promo| promo.active.size_bytes,
+            .loaded_cpu => |asset| asset.cpu.size_bytes,
+            .none, .failed => null,
+        };
+    }
+
+    /// Returns decode timing telemetry for any decoded resident asset
+    /// (`.loaded_cpu`, `.loaded_gpu`, or `.promoting_gpu`), or `null` when
+    /// unloaded or failed.
+    pub inline fn decodeTelemetry(self: ResidentAsset) ?DecodeTelemetry {
+        return switch (self) {
+            .loaded_gpu => |gpu| gpu.decode,
+            .promoting_gpu => |promo| promo.active.decode,
+            .loaded_cpu => |asset| asset.cpu.decode,
+            .none, .failed => null,
         };
     }
 
@@ -239,6 +305,7 @@ pub const ThumbnailState = union(enum) {
     unloaded: ThumbnailInfo,
     loaded: struct {
         texture: sdl.gpu.Texture,
+        upload_id: TextureUploadId,
         info: ThumbnailInfo,
     },
 
@@ -371,6 +438,7 @@ pub const CacheEntry = struct {
             .{
                 .loaded = .{
                     .texture = dummy_tex,
+                    .upload_id = .none,
                     .info = .{
                         .w = thumb_dims.w,
                         .h = thumb_dims.h,
@@ -385,6 +453,7 @@ pub const CacheEntry = struct {
                 .asset = .{
                     .loaded_gpu = .{
                         .gpu_texture = dummy_tex,
+                        .upload_id = .none,
                         .w = full_dims.w,
                         .h = full_dims.h,
                         .size_bytes = 1000,
@@ -516,6 +585,40 @@ pub const CacheEntry = struct {
         return .{ .w = 0.0, .h = 0.0 };
     }
 
+    /// Computes the GPU UV crop, effective rotation angle, and source
+    /// dimensions for rendering `thumb_info` of this entry at
+    /// `rotation_angle`, compensating for pre-oriented cached thumbnails.
+    pub fn computeThumbnailUvRect(
+        self: CacheEntry,
+        thumb_info: ThumbnailInfo,
+        auth: PhysicalDims,
+        rotation_angle: f32,
+    ) UvRect {
+        const pre_oriented = thumb_info.source.isPreOriented();
+        const swapped = pre_oriented and
+            self.metadata.orientation.isDimensionSwapped();
+        const ref_full: PhysicalDims = if (self.metadata.full_dims) |fd|
+            (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
+        else
+            .{ .w = 0.0, .h = 0.0 };
+        var uv = state_pkg.view_transform.computeThumbnailUvCrop(
+            ref_full,
+            .{ .w = thumb_info.w, .h = thumb_info.h },
+            thumb_info.dct_snapped,
+        );
+        uv.alpha = 1.0;
+        uv.rotation_angle = if (pre_oriented)
+            @mod(
+                rotation_angle - self.metadata.orientation.toDegrees() + 360.0,
+                360.0,
+            )
+        else
+            rotation_angle;
+        uv.source_w = if (swapped) auth.h else auth.w;
+        uv.source_h = if (swapped) auth.w else auth.h;
+        return uv;
+    }
+
     /// Releases resident thumbnail, primary assets, and in-flight state.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         self.resident.deinit(gpu_device);
@@ -573,11 +676,23 @@ pub const ImageCache = struct {
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
     current_image_cache_hit: bool = false,
+    /// Monotonic main-thread counter stamping every GPU texture upload
+    /// (primary assets and thumbnails) to prevent pointer-reuse ABA bugs.
+    next_texture_upload_id: u64 = 1,
 
     /// Pinned array of atomic job epochs for zero-allocation cancellation.
     job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32) = @splat(.init(1)),
     /// Bitmask tracking active job IDs (0..15).
     job_alloc_mask: u16 = 0,
+
+    /// Allocates a strictly increasing non-`.none` upload ID for a newly
+    /// uploaded GPU texture (primary asset or thumbnail). Main-thread only.
+    pub fn nextUploadId(self: *ImageCache) TextureUploadId {
+        const id = self.next_texture_upload_id;
+        const next = id +% 1;
+        self.next_texture_upload_id = if (next == 0) 1 else next;
+        return @fromBackingInt(id);
+    }
 
     /// Allocates an unused job slot and returns its JobTicket.
     pub fn allocJob(self: *ImageCache) ?JobTicket {
@@ -1209,6 +1324,7 @@ test "enforceVramBudget - eviction, circular distance, neighbor protection" {
                     .asset = .{
                         .loaded_gpu = .{
                             .gpu_texture = undefined,
+                            .upload_id = .none,
                             .w = 100,
                             .h = 100,
                             .size_bytes = size,
@@ -1366,6 +1482,7 @@ test "hasUnreadyPrefetchSlots" {
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 100,
@@ -1748,6 +1865,7 @@ test "CacheEntry - getAuthoritativeDims priority resolution" {
     entry.resident.thumbnail = .{
         .loaded = .{
             .texture = undefined,
+            .upload_id = .none,
             .info = .{ .w = 160.0, .h = 120.0 },
         },
     };
@@ -1840,10 +1958,8 @@ test "ImageCache - promoting_gpu and staged_cpu readiness and deinit" {
         .{ .w = 100.0, .h = 100.0 },
         .{ .w = 0.0, .h = 0.0 },
     );
-    const active_gpu = switch (stub.resident.asset) {
-        .loaded_gpu => |g| g,
-        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
-    };
+    const active_gpu = stub.resident.asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
     const key0 = try cache.appendSlot(allocator, id0, stub);
     try std.testing.expect(!cache.hasPendingCpuUploads(true));
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
@@ -1933,4 +2049,206 @@ test "ImageCache resets current_image_cache_hit across lifecycle methods" {
     cache.current_image_cache_hit = true;
     cache.deinit(allocator, null);
     try std.testing.expect(!cache.current_image_cache_hit);
+}
+
+test "CacheEntry.computeThumbnailUvRect handles pre-oriented cached thumbs" {
+    const entry = CacheEntry{
+        .metadata = .{
+            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
+            .orientation = .rotate_90,
+        },
+    };
+    const auth = entry.getAuthoritativeDims();
+
+    // 3:2 full image in 4:3 embedded thumb gets letterbox UV crop; not swapped
+    const embedded_uv = entry.computeThumbnailUvRect(
+        .{
+            .w = 160.0,
+            .h = 120.0,
+            .source = .embedded_header,
+            .dct_snapped = true,
+        },
+        auth,
+        90.0,
+    );
+    try std.testing.expectEqual(@as(f32, 1.0), embedded_uv.alpha);
+    try std.testing.expectEqual(@as(f32, 90.0), embedded_uv.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 6000.0), embedded_uv.source_w);
+    try std.testing.expectEqual(@as(f32, 4000.0), embedded_uv.source_h);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 8.0 / 120.0),
+        embedded_uv.v_min,
+        0.001,
+    );
+
+    // Pre-oriented cached thumb swaps ref_full (4000x6000) -> no crop, 0 deg
+    const cached_uv = entry.computeThumbnailUvRect(
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        auth,
+        90.0,
+    );
+    try std.testing.expectEqual(@as(f32, 1.0), cached_uv.alpha);
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 4000.0), cached_uv.source_w);
+    try std.testing.expectEqual(@as(f32, 6000.0), cached_uv.source_h);
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.u_min);
+    try std.testing.expectEqual(@as(f32, 1.0), cached_uv.u_max);
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.v_min);
+    try std.testing.expectEqual(@as(f32, 1.0), cached_uv.v_max);
+
+    // Negative rotation difference wraps cleanly via Euclidean @mod
+    const wrapped_uv = entry.computeThumbnailUvRect(
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        auth,
+        0.0,
+    );
+    try std.testing.expectEqual(@as(f32, 270.0), wrapped_uv.rotation_angle);
+
+    // 180-deg pre-oriented thumb compensates angle without swapping dims
+    const entry_180 = CacheEntry{
+        .metadata = .{
+            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
+            .orientation = .rotate_180,
+        },
+    };
+    const uv_180 = entry_180.computeThumbnailUvRect(
+        .{ .w = 256.0, .h = 170.0, .source = .freedesktop_cache },
+        .{ .w = 6000.0, .h = 4000.0 },
+        180.0,
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), uv_180.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 6000.0), uv_180.source_w);
+    try std.testing.expectEqual(@as(f32, 4000.0), uv_180.source_h);
+
+    // Missing full_dims yields uncropped 0..1 UVs while still swapping auth
+    const entry_no_full = CacheEntry{
+        .metadata = .{ .orientation = .rotate_270 },
+    };
+    const uv_no_full = entry_no_full.computeThumbnailUvRect(
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        .{ .w = 6000.0, .h = 4000.0 },
+        0.0,
+    );
+    try std.testing.expectEqual(@as(f32, 90.0), uv_no_full.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 4000.0), uv_no_full.source_w);
+    try std.testing.expectEqual(@as(f32, 6000.0), uv_no_full.source_h);
+    try std.testing.expectEqual(@as(f32, 0.0), uv_no_full.u_min);
+    try std.testing.expectEqual(@as(f32, 1.0), uv_no_full.v_max);
+}
+
+test "ResidentAsset accessors across all variants" {
+    const none_asset: ResidentAsset = .none;
+    try std.testing.expectEqual(
+        ResidentAsset.DisplayView.none,
+        none_asset.displayView(),
+    );
+    try std.testing.expect(none_asset.activeGpu() == null);
+    try std.testing.expect(none_asset.diskSizeBytes() == null);
+    try std.testing.expect(none_asset.decodeTelemetry() == null);
+
+    const failed_asset: ResidentAsset = .failed;
+    try std.testing.expectEqual(
+        ResidentAsset.DisplayView.failed,
+        failed_asset.displayView(),
+    );
+    try std.testing.expect(failed_asset.activeGpu() == null);
+    try std.testing.expect(failed_asset.diskSizeBytes() == null);
+    try std.testing.expect(failed_asset.decodeTelemetry() == null);
+
+    const surf = sdl.Surface.create(2, 2, sdl.PixelFormat.rgba32) orelse
+        return error.OutOfMemory;
+    defer surf.destroy();
+    const cpu_decode: DecodeTelemetry = .{
+        .read_time_ms = 1.5,
+        .decode_time_ms = 2.5,
+    };
+    const cpu_asset: ResidentAsset = .{
+        .loaded_cpu = .{
+            .cpu = .{
+                .surface = surf,
+                .w = 2.0,
+                .h = 2.0,
+                .size_bytes = 1234,
+                .decode = cpu_decode,
+            },
+        },
+    };
+    switch (cpu_asset.displayView()) {
+        .cpu => |c| try std.testing.expectEqual(
+            @as(u64, 1234),
+            c.cpu.size_bytes,
+        ),
+        .none, .gpu, .failed => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(cpu_asset.activeGpu() == null);
+    try std.testing.expectEqual(@as(?u64, 1234), cpu_asset.diskSizeBytes());
+    try std.testing.expectEqual(
+        @as(?DecodeTelemetry, cpu_decode),
+        cpu_asset.decodeTelemetry(),
+    );
+
+    const gpu_decode: DecodeTelemetry = .{
+        .read_time_ms = 3.0,
+        .decode_time_ms = 4.0,
+    };
+    const stub_gpu = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 100.0, .h = 50.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    ).resident.asset.activeGpu() orelse return error.TestUnexpectedResult;
+    const stub_tex = stub_gpu.gpu_texture;
+    const gpu_comp = GpuTextureComponent{
+        .gpu_texture = stub_tex,
+        .upload_id = .none,
+        .w = 100.0,
+        .h = 50.0,
+        .size_bytes = 5678,
+        .decode = gpu_decode,
+        .ingest = .{ .upload_time_ms = 0.75, .memory_size_bytes = 20000 },
+    };
+    const gpu_asset: ResidentAsset = .{ .loaded_gpu = gpu_comp };
+    switch (gpu_asset.displayView()) {
+        .gpu => |g| try std.testing.expectEqual(
+            stub_tex.ptr,
+            g.gpu_texture.ptr,
+        ),
+        .none, .cpu, .failed => return error.TestUnexpectedResult,
+    }
+    const active_from_gpu = gpu_asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(stub_tex.ptr, active_from_gpu.gpu_texture.ptr);
+    try std.testing.expectEqual(@as(?u64, 5678), gpu_asset.diskSizeBytes());
+    try std.testing.expectEqual(
+        @as(?DecodeTelemetry, gpu_decode),
+        gpu_asset.decodeTelemetry(),
+    );
+
+    const promo_asset: ResidentAsset = .{
+        .promoting_gpu = .{
+            .active = gpu_comp,
+            .staged = .{
+                .cpu = .{
+                    .surface = surf,
+                    .w = 2.0,
+                    .h = 2.0,
+                    .size_bytes = 9999,
+                    .decode = .{ .read_time_ms = 9.0, .decode_time_ms = 8.0 },
+                },
+            },
+        },
+    };
+    switch (promo_asset.displayView()) {
+        .gpu => |g| try std.testing.expectEqual(@as(u64, 5678), g.size_bytes),
+        .none, .cpu, .failed => return error.TestUnexpectedResult,
+    }
+    const active_from_promo = promo_asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        stub_tex.ptr,
+        active_from_promo.gpu_texture.ptr,
+    );
+    try std.testing.expectEqual(@as(?u64, 5678), promo_asset.diskSizeBytes());
+    try std.testing.expectEqual(
+        @as(?DecodeTelemetry, gpu_decode),
+        promo_asset.decodeTelemetry(),
+    );
 }

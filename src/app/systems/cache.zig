@@ -463,6 +463,7 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 1000,
@@ -779,6 +780,7 @@ test "sysUpdateCache - caps prefetch radius when window exceeds VRAM budget" {
                 .asset = .{
                     .loaded_gpu = .{
                         .gpu_texture = undefined,
+                        .upload_id = .none,
                         .w = 8000,
                         .h = 6000,
                         .size_bytes = 10_000_000,
@@ -872,6 +874,7 @@ test "sysUpdateCache - respects ViewMode visibility filtering" {
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 100,
@@ -885,6 +888,7 @@ test "sysUpdateCache - respects ViewMode visibility filtering" {
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 100,
@@ -906,6 +910,7 @@ test "sysUpdateCache - respects ViewMode visibility filtering" {
     state.cache.setResidentAsset(state.cache.activeKey(id4), .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
+            .upload_id = .none,
             .w = 100,
             .h = 100,
             .size_bytes = 100,
@@ -982,6 +987,7 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
     entry0.resident.asset = .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
+            .upload_id = .none,
             .w = 100,
             .h = 100,
             .size_bytes = 100,

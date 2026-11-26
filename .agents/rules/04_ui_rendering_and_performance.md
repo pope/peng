@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: '**/src/ui/**, **/src/gpu/**, **/src/state/**, **/src/geom/**, **/src/viewer.zig, **/src/main.zig'
+globs: '**/src/ui/**, **/src/tui/**, **/src/gpu/**, **/src/state/**, **/src/geom/**, **/src/viewer.zig, **/src/main.zig, **/src/tui_main.zig'
 description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/zoom math, frame wait sleeping, crossfades, progressive aspect stability, and shader invariants.
 ---
 
@@ -24,6 +24,10 @@ description: 2-pass RenderPacket & Dual Kawase blur, GlyphCacheKey atlas, HiDPI/
     (`src/gpu/render_image.zig`) pass non-null `gpu.TextureRef` handles
     (`src/gpu/root.zig`) without `*anyopaque` erasure or `@import("sdl")` in
     `src/ui/`.
+  - Offscreen readbacks (`executeOffscreenReadback` with `clear_color.a == 0.0`)
+    select lazy blend-disabled replace pipelines (`image_pipeline_replace` /
+    `blit_pipeline_replace`) so semi-transparent source pixels preserve straight
+    alpha without double-premultiplication.
 - **Tight Ink-Box `1024x1024` `R8_UNORM` Glyph Atlas (`src/gpu/text_cache.zig`)**:
   - Reserve top-left `4x4` opaque coverage (`255`) block at `uv = (0, 0)` on the
     `R8_UNORM` atlas (`glyph.frag.glsl`); draw rounded/shadowed UI chrome via

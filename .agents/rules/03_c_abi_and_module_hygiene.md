@@ -49,9 +49,10 @@ description: SDL3 C-ABI encapsulation, hot-reload extern boundaries, IPC JSON co
 
 - **No `refAllDecls` in Executable/Hot-Reload Roots**:
   - Never call `refAllDecls` or `refAllDeclsRecursive` in `src/main.zig`,
-    `src/msg_main.zig`, `src/preview_main.zig`, `src/precache_main.zig`,
-    `src/test_runner_main.zig`, or `src/viewer.zig`; wire submodule tests from
-    each standalone package's own `root.zig` `test` block.
+    `src/tui_main.zig`, `src/msg_main.zig`, `src/preview_main.zig`,
+    `src/precache_main.zig`, `src/test_runner_main.zig`, or `src/viewer.zig`;
+    wire submodule tests from each standalone package's own `root.zig` `test`
+    block.
 - **No Fake Opaque Pointers (`@ptrFromInt`)**:
   - Never forge non-null C/GPU handle pointers via `@ptrFromInt(0x1000)` in
     tests; use real headless/GPU handles (`sdl.Surface.create`,

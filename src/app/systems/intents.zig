@@ -212,23 +212,7 @@ fn executeIntent(
             vp.pan_x *= ratio;
             vp.pan_y *= ratio;
         },
-        .zoom_by => |zb| {
-            if (zb.ratio <= 0.0 or !std.math.isFinite(zb.ratio)) return;
-            if (zb.snap_zoom) |snap| {
-                if (snap <= 0.0 or !std.math.isFinite(snap)) return;
-            }
-            vp.mode = .manual;
-            const old_zoom = vp.zoom_factor.get();
-            const target = zb.snap_zoom orelse @max(
-                state.ZoomFactor.MIN,
-                old_zoom * zb.ratio,
-            );
-            const new_zoom = state.clampZoomFactor(target).get();
-            vp.zoom_factor = state.ZoomFactor.init(new_zoom);
-            const ratio = new_zoom / old_zoom;
-            vp.pan_x *= ratio;
-            vp.pan_y *= ratio;
-        },
+        .zoom_by => |zb| vp.zoomBy(zb.ratio, zb.snap_zoom),
         .zoom_in => {
             vp.mode = .manual;
             const old_zoom = vp.zoom_factor;
@@ -761,8 +745,17 @@ fn executeIntent(
             self.viewer.image_transition = .none;
             self.viewer.animations.setImmediate(.image_crossfade, 1.0);
         },
-        .toggle_crossfade => nav.crossfade = !nav.crossfade,
-        .set_crossfade => |val| nav.crossfade = val,
+        .toggle_crossfade => {
+            if (self.viewer.defaults.animations.isEnabled()) {
+                nav.crossfade = !nav.crossfade;
+            } else {
+                nav.crossfade = false;
+            }
+        },
+        .set_crossfade => |val| {
+            nav.crossfade = val and
+                self.viewer.defaults.animations.isEnabled();
+        },
         .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
         .set_manga_mode => |val| nav.manga_mode = val,
         .quit => {
@@ -1324,6 +1317,7 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 1000,
@@ -1746,6 +1740,7 @@ test "togglePairStream - requires loaded status before requesting target" {
     entry0.resident.asset = .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
+            .upload_id = .none,
             .w = 1616,
             .h = 1080,
             .size_bytes = 500_000,
