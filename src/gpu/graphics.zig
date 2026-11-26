@@ -650,7 +650,9 @@ pub const RenderResources = struct {
     device: sdl.gpu.Device,
     swapchain_format: sdl.gpu.TextureFormat = .rgba8_unorm,
     image_pipeline: LazyPipeline(sdl.gpu.Pipeline) = .uninitialized,
+    image_pipeline_replace: LazyPipeline(sdl.gpu.Pipeline) = .uninitialized,
     blit_pipeline: sdl.gpu.Pipeline,
+    blit_pipeline_replace: LazyPipeline(sdl.gpu.Pipeline) = .uninitialized,
     glyph_pipeline: sdl.gpu.Pipeline,
     sdf_pipeline: sdl.gpu.Pipeline,
     fullscreen_vertex_buffer: sdl.gpu.Buffer,
@@ -692,10 +694,12 @@ pub const RenderResources = struct {
         }
     }
 
-    /// Lazily compiles and caches the full color-grading / resampling image
-    /// pipeline on first demand. Latches `.failed` to avoid retry churn.
-    pub fn ensureImagePipeline(self: *RenderResources) ?sdl.gpu.Pipeline {
-        switch (self.image_pipeline) {
+    fn compileImagePipeline(
+        self: *RenderResources,
+        slot: *LazyPipeline(sdl.gpu.Pipeline),
+        enable_blend: bool,
+    ) ?sdl.gpu.Pipeline {
+        switch (slot.*) {
             .ready => |pipe| return pipe,
             .failed => return null,
             .uninitialized => {},
@@ -717,7 +721,7 @@ pub const RenderResources = struct {
             0,
             0,
         ) catch {
-            self.image_pipeline = .failed;
+            slot.* = .failed;
             return null;
         };
         defer dev.releaseShader(vert_shader);
@@ -731,12 +735,15 @@ pub const RenderResources = struct {
             1,
             1,
         ) catch {
-            self.image_pipeline = .failed;
+            slot.* = .failed;
             return null;
         };
         defer dev.releaseShader(image_frag_shader);
 
-        const color_targets = makeAlphaBlendColorTargets(self.swapchain_format);
+        const color_targets = if (enable_blend)
+            makeAlphaBlendColorTargets(self.swapchain_format)
+        else
+            makeReplaceColorTargets(self.swapchain_format);
         const pipeline_info = makeQuadPipelineInfo(
             vert_shader,
             image_frag_shader,
@@ -747,10 +754,82 @@ pub const RenderResources = struct {
                 "Failed to create image graphics pipeline: {s}",
                 .{sdl.getError()},
             );
-            self.image_pipeline = .failed;
+            slot.* = .failed;
             return null;
         };
-        self.image_pipeline = .{ .ready = pipe };
+        slot.* = .{ .ready = pipe };
+        return pipe;
+    }
+
+    /// Lazily compiles and caches the full color-grading / resampling image
+    /// pipeline on first demand. Latches `.failed` to avoid retry churn.
+    pub fn ensureImagePipeline(self: *RenderResources) ?sdl.gpu.Pipeline {
+        return self.compileImagePipeline(&self.image_pipeline, true);
+    }
+
+    /// Lazily compiles and caches the blend-disabled image pipeline used by
+    /// offscreen straight-RGBA readbacks so semi-transparent images are not
+    /// premultiplied against the transparent clear color.
+    pub fn ensureImagePipelineReplace(
+        self: *RenderResources,
+    ) ?sdl.gpu.Pipeline {
+        return self.compileImagePipeline(&self.image_pipeline_replace, false);
+    }
+
+    /// Lazily compiles and caches the blend-disabled textured-quad blit
+    /// pipeline used by offscreen straight-RGBA readbacks.
+    pub fn ensureBlitPipelineReplace(self: *RenderResources) ?sdl.gpu.Pipeline {
+        switch (self.blit_pipeline_replace) {
+            .ready => |pipe| return pipe,
+            .failed => return null,
+            .uninitialized => {},
+        }
+
+        const dev = self.device;
+        const shader_formats = dev.getShaderFormats();
+        const vert_shader = createShaderFromFormat(
+            dev,
+            shader_formats,
+            .vertex,
+            @embedFile("shaders/vert.spv"),
+            @embedFile("shaders/vert.msl"),
+            0,
+            0,
+        ) catch {
+            self.blit_pipeline_replace = .failed;
+            return null;
+        };
+        defer dev.releaseShader(vert_shader);
+
+        const blit_frag = createShaderFromFormat(
+            dev,
+            shader_formats,
+            .fragment,
+            @embedFile("shaders/blit.frag.spv"),
+            @embedFile("shaders/blit.frag.msl"),
+            1,
+            0,
+        ) catch {
+            self.blit_pipeline_replace = .failed;
+            return null;
+        };
+        defer dev.releaseShader(blit_frag);
+
+        const color_targets = makeReplaceColorTargets(self.swapchain_format);
+        const pipeline_info = makeQuadPipelineInfo(
+            vert_shader,
+            blit_frag,
+            &color_targets,
+        );
+        const pipe = dev.createPipeline(&pipeline_info) orelse {
+            std.log.err(
+                "Failed to create replace blit pipeline: {s}",
+                .{sdl.getError()},
+            );
+            self.blit_pipeline_replace = .failed;
+            return null;
+        };
+        self.blit_pipeline_replace = .{ .ready = pipe };
         return pipe;
     }
 
@@ -983,7 +1062,13 @@ pub const RenderResources = struct {
         if (self.image_pipeline.get()) |pipe| {
             self.device.releasePipeline(pipe);
         }
+        if (self.image_pipeline_replace.get()) |pipe| {
+            self.device.releasePipeline(pipe);
+        }
         self.device.releasePipeline(self.blit_pipeline);
+        if (self.blit_pipeline_replace.get()) |pipe| {
+            self.device.releasePipeline(pipe);
+        }
         self.device.releasePipeline(self.glyph_pipeline);
         self.device.releasePipeline(self.sdf_pipeline);
         if (self.unpack_compute_pipeline.get()) |pipe| {
@@ -1176,6 +1261,28 @@ fn createShaderFromFormat(
         );
         return error.ShaderCreationFailed;
     };
+}
+
+fn makeReplaceColorTargets(
+    target_format: sdl.gpu.TextureFormat,
+) [1]sdl.gpu.ColorTargetDescription {
+    return .{.{
+        .format = target_format,
+        .blend_state = .{
+            .src_color_blendfactor = .one,
+            .dst_color_blendfactor = .zero,
+            .color_blend_op = .add,
+            .src_alpha_blendfactor = .one,
+            .dst_alpha_blendfactor = .zero,
+            .alpha_blend_op = .add,
+            .color_write_mask = sdl.gpu.ColorComponent.r |
+                sdl.gpu.ColorComponent.g |
+                sdl.gpu.ColorComponent.b |
+                sdl.gpu.ColorComponent.a,
+            .enable_blend = false,
+            .enable_color_write_mask = true,
+        },
+    }};
 }
 
 fn makeAlphaBlendColorTargets(

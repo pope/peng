@@ -571,6 +571,7 @@ fn drawBatches(
     batches: []const BatchItem,
     geom_buf: FrameGeometryBuffer,
     target_dims: PositiveDimsU32,
+    straight_alpha_replace: bool,
 ) void {
     const BufferBindingKind = enum {
         vertices,
@@ -653,7 +654,12 @@ fn drawBatches(
             (apply_adj or scale_mode != 1);
 
         const active_image_pipe = if (is_image)
-            (if (needs_full_image_shader)
+            (if (straight_alpha_replace)
+                (if (needs_full_image_shader)
+                    gpu.ensureImagePipelineReplace()
+                else
+                    gpu.image_pipeline_replace.get())
+            else if (needs_full_image_shader)
                 gpu.ensureImagePipeline()
             else
                 gpu.image_pipeline.get())
@@ -662,7 +668,10 @@ fn drawBatches(
         const use_image_pipeline = (active_image_pipe != null);
         const pipeline = active_image_pipe orelse switch (batch_kind) {
             .glyph => gpu.glyph_pipeline,
-            .image, .blit => gpu.blit_pipeline,
+            .image, .blit => if (straight_alpha_replace)
+                gpu.ensureBlitPipelineReplace() orelse gpu.blit_pipeline
+            else
+                gpu.blit_pipeline,
         };
 
         if (last_pipeline == null or last_pipeline.?.ptr != pipeline.ptr) {
@@ -783,10 +792,11 @@ fn renderBatchPass(
     batches: []const BatchItem,
     geom_buf: ?FrameGeometryBuffer,
     target_dims: PositiveDimsU32,
+    clear_color: sdl.gpu.FColor,
 ) bool {
     const color_target = sdl.gpu.ColorTargetAttachment{
         .texture = target_tex,
-        .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+        .clear_color = clear_color,
         .load_op = .clear,
         .store_op = .store,
         .cycle = false,
@@ -807,6 +817,7 @@ fn renderBatchPass(
             batches,
             gb,
             target_dims,
+            clear_color.a == 0.0,
         );
     }
     return true;
@@ -869,6 +880,7 @@ fn executeRenderPass(
     batches: []const BatchItem,
     geom_buf: ?FrameGeometryBuffer,
     target_dims: PositiveDimsU32,
+    clear_color: sdl.gpu.FColor,
 ) void {
     const split = findBlurSplit(batches, gpu.blur) orelse {
         _ = renderBatchPass(
@@ -879,6 +891,7 @@ fn executeRenderPass(
             batches,
             geom_buf,
             target_dims,
+            clear_color,
         );
         return;
     };
@@ -897,6 +910,7 @@ fn executeRenderPass(
         batches[0..idx],
         geom_buf,
         tex.target_dims,
+        clear_color,
     )) {
         return;
     }
@@ -948,8 +962,8 @@ fn executeRenderPass(
     {
         const final_target = sdl.gpu.ColorTargetAttachment{
             .texture = swap_tex,
-            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-            .load_op = .dont_care,
+            .clear_color = clear_color,
+            .load_op = if (clear_color.a < 1.0) .clear else .dont_care,
             .store_op = .store,
             .cycle = false,
         };
@@ -990,6 +1004,7 @@ fn executeRenderPass(
                 batches[idx..],
                 gb,
                 target_dims,
+                false,
             );
         }
     }
@@ -1005,6 +1020,7 @@ fn executeRenderPacket(
     frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     target_dims: PositiveDimsU32,
+    clear_color: sdl.gpu.FColor,
 ) !void {
     const frame_idx = gpu_res.frame_index % 2;
 
@@ -1029,6 +1045,7 @@ fn executeRenderPacket(
         packet.batches.items,
         geom_buf,
         target_dims,
+        clear_color,
     );
 }
 
@@ -1234,6 +1251,11 @@ fn executeFrameImpl(
         const vertex_count = packet.vertices.items.len;
         const batch_count = packet.batches.items.len;
 
+        const clear_color: sdl.gpu.FColor = switch (capture) {
+            .readback => .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 },
+            .none, .png_file => .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+        };
+
         try executeRenderPacket(
             view_params,
             gpu_res,
@@ -1244,6 +1266,7 @@ fn executeFrameImpl(
             frame_allocator,
             &temp_buffers,
             target_dims,
+            clear_color,
         );
         copy_pass_ended = true;
 
@@ -1639,14 +1662,17 @@ test "executeOffscreenReadback renders quad directly to MappedReadback" {
             var packet: RenderPacket = .{};
             errdefer packet.deinit(build_ctx.frame_allocator);
 
-            // Solid blue (R=0, G=0, B=255, A=255) in 0xAABBGGRR.
-            const blue: u32 = 0xFFFF0000;
+            // Semi-transparent blue (R=0, G=0, B=255, A=128) in 0xAABBGGRR
+            // covering only the left half (NDC x in [-1, 0]) so the test
+            // verifies both straight-RGBA output (not premultiplied) and
+            // transparent readback clear color (0, 0, 0, 0).
+            const blue: u32 = 0x80FF0000;
             const verts = [_]Vertex{
                 .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = blue },
-                .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = blue },
-                .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = blue },
+                .{ .x = 0.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = blue },
+                .{ .x = 0.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = blue },
                 .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = blue },
-                .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = blue },
+                .{ .x = 0.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = blue },
                 .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = blue },
             };
             try packet.vertices.appendSlice(build_ctx.frame_allocator, &verts);
@@ -1688,7 +1714,12 @@ test "executeOffscreenReadback renders quad directly to MappedReadback" {
     try std.testing.expectEqual(@as(usize, 64), res.readback.pixels.len);
     try std.testing.expectEqualSlices(
         u8,
-        &.{ 0, 0, 255, 255 },
+        &.{ 0, 0, 255, 128 },
         res.readback.pixels[0..4],
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        &.{ 0, 0, 0, 0 },
+        res.readback.pixels[8..12],
     );
 }
