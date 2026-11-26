@@ -1749,6 +1749,15 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             pres.markPostRenderDirty();
         }
 
+        if (winsize.cols == 0 or winsize.rows == 0) {
+            if (pres.last_key != null or pres.hasActiveContent()) {
+                pres.clearImage(gpa, &vx, tty.writer());
+                tty.writer().flush() catch {};
+            }
+            pres.last_ui_key = null;
+            continue;
+        }
+
         const render_layout = ViewportLayout.compute(winsize, infobar_pos);
         app_state.viewer.last_win_dims = .{
             .w = @floatFromInt(render_layout.image_px.w),
