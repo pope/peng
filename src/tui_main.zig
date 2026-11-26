@@ -848,24 +848,40 @@ const PresentationState = struct {
     }
 };
 
-fn encodeReadbackPng(
-    gpa: std.mem.Allocator,
-    readback: MappedReadback,
-) ![]u8 {
+fn wrapReadbackSurface(readback: MappedReadback) !sdl.Surface {
     const w_i32 = std.math.cast(i32, readback.dims.w) orelse
         return error.InvalidDimensions;
     const h_i32 = std.math.cast(i32, readback.dims.h) orelse
         return error.InvalidDimensions;
     const pitch_i32 = std.math.cast(i32, readback.pitch) orelse
         return error.InvalidPitch;
-    const surf = sdl.Surface.createFrom(
+    return sdl.Surface.createFrom(
         w_i32,
         h_i32,
         sdl.PixelFormat.rgba32,
         @constCast(readback.pixels.ptr),
         pitch_i32,
     ) orelse return error.SurfaceCreationFailed;
+}
+
+fn encodeReadbackPng(
+    gpa: std.mem.Allocator,
+    readback: MappedReadback,
+) ![]u8 {
+    const surf = try wrapReadbackSurface(readback);
     defer surf.destroy();
+    return surf.encodePngAlloc(gpa);
+}
+
+fn encodeReadbackIterm2(
+    gpa: std.mem.Allocator,
+    readback: MappedReadback,
+) ![]u8 {
+    const surf = try wrapReadbackSurface(readback);
+    defer surf.destroy();
+    if (try surf.encodeJpegAlloc(gpa, 85)) |jpeg| {
+        return jpeg;
+    }
     return surf.encodePngAlloc(gpa);
 }
 
@@ -1043,8 +1059,11 @@ fn transmitFrame(
                 crop,
                 null,
             );
-            const png = try encodeReadbackPng(frame_allocator, readback);
-            defer frame_allocator.free(png);
+            const img_bytes = try encodeReadbackIterm2(
+                frame_allocator,
+                readback,
+            );
+            defer frame_allocator.free(img_bytes);
             var aw: std.Io.Writer.Allocating = .fromArrayList(
                 gpa,
                 &payload.bytes,
@@ -1054,7 +1073,7 @@ fn transmitFrame(
                 &aw.writer,
                 .{
                     .iterm2 = .{
-                        .image_bytes = png,
+                        .image_bytes = img_bytes,
                         .dims = readback.dims,
                     },
                 },
