@@ -1,6 +1,6 @@
 ---
 trigger: glob
-globs: '**/src/app/**, **/src/cache/**, **/src/intents/**, **/src/input/**, **/src/ipc/**, **/src/state/**, **/src/viewer.zig, **/src/main.zig'
+globs: '**/src/app/**, **/src/cache/**, **/src/intents/**, **/src/input/**, **/src/ipc/**, **/src/state/**, **/src/viewer.zig, **/src/main.zig, **/src/tui_main.zig'
 description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, AppIntent queue, std.Io.Group workers, cancellation, and cache/upload priority gating.
 ---
 
@@ -57,7 +57,10 @@ description: AppState/ViewerState/UiViewModel split, 3-phase frame pipeline, App
     `sysExecuteIntents` (`defer self.clearIntents()` right after empty check;
     `defer self.flushPendingSelectionStreams()`) $\\to$
     `sysSyncWindow` $\\to$ `sysProcessAssetUploads` $\\to$
-    `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`).
+    `sysUpdateCache` (`defer state.flushPendingWaitLoadStreams()`). When
+    `ViewerDefaults.animations == .disabled` (e.g. `peng-tui`),
+    `runUpdatePhase` settles spring/pan/zoom animations immediately in-place
+    rather than relying on `parsed_test_mode`.
   - Complete visible rendered frames in `updateFrame` call
     `app_state.frame_metrics.present.settle(input.now_ms)` before
     `buildUiViewModel` and record phase timings + `swapchain_present_ts`

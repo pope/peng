@@ -26,6 +26,7 @@ ______________________________________________________________________
   (`Shift+R`), and instant before/after comparison (`\` key).
 - **Lightroom-Style Image Triage & SIMD Filtering:** Instant photo triage with Pick (`z`), Reject (`x`), and Unflag (`u`) shortcuts. Filtered view modes (`v` / `Shift+V`) cycle between Default (hides rejected images), Picks Only, Rejects Only, Unflagged Only, and All Images. Filtering and visible count calculations are accelerated via 256-bit SIMD vector instructions (`@Vector(32, u8)`) and hardware popcounting (`POPCNT`), enabling sub-microsecond filtering across collections of 10,000+ photos.
 - **UNIX Pipeline Integration & Triage Export:** On application exit, classifications are streamed cleanly to standard output as tab-separated rows (`PICK\t/path/to/image.jpg` or `REJECT\t/path/to/image.jpg`), allowing direct integration with shell tools (`awk`, `xargs`, `cp`, `mv`).
+- **GPU-Accelerated Terminal Viewer (`peng-tui`):** Full interactive terminal viewer and photo triage tool powered by headless SDL3 GPU rendering and `libvaxis`, auto-detecting Kitty/Ghostty (including `tmux` passthrough), WezTerm iTerm2 (TurboJPEG), Sixel, and Unicode Halfblocks.
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
 
@@ -114,13 +115,14 @@ direnv allow
 zig build
 ```
 
-This compiles five executables to `./zig-out/bin/`:
+This compiles six executables to `./zig-out/bin/`:
 
-1. `peng`: The primary image viewer and resident `--server`.
-2. `peng-msg`: A lightweight CLI client for sending IPC control messages.
-3. `peng-preview`: Standalone Kitty Graphics Protocol (`t=t`) terminal image previewer.
-4. `peng-precache`: Standalone parallel Freedesktop thumbnail pre-cacher.
-5. `peng-test-runner`: The automated visual regression test runner.
+1. `peng`: The primary GUI image viewer and resident `--server`.
+2. `peng-tui`: The interactive GPU-accelerated terminal image viewer and triage tool.
+3. `peng-msg`: A lightweight CLI client for sending IPC control messages.
+4. `peng-preview`: Standalone Kitty Graphics Protocol (`t=t`) terminal image previewer.
+5. `peng-precache`: Standalone parallel Freedesktop thumbnail pre-cacher.
+6. `peng-test-runner`: The automated visual regression test runner.
 
 ______________________________________________________________________
 
@@ -163,6 +165,62 @@ Aliases:
 - `--scale` supports preset aliases: `fit` (alias for `full`), `fill` (alias
   for `crop`), `1:1` or `actual` (alias for `none`).
 - `--server` can also be specified as `--daemon`; `--socket` as `--ipc-socket`.
+
+### Terminal Image Viewer (`peng-tui`)
+
+`peng-tui` brings Peng's headless GPU shader pipeline, RAW+JPEG stacking, CBZ
+archives, command/file palettes, and photo triage workflow directly to the
+terminal.
+
+```bash
+# View and triage a directory of images (auto-detects terminal graphics protocol)
+./zig-out/bin/peng-tui path/to/photos/
+
+# Force a specific protocol and move the infobar to the top
+./zig-out/bin/peng-tui --protocol sixel --infobar top path/to/photos/
+
+# Export picked photos via stdout TSV on exit
+./zig-out/bin/peng-tui path/to/photos/ | awk -F'\t' '$1 == "PICK" { print $2 }'
+```
+
+#### Supported Graphics Protocols
+
+- **Kitty (`kitty`)**: Native Kitty/Ghostty graphics via shared memory (`t=s`),
+  temp files (`t=t`), direct base64 (`t=d`), or `tmux` DCS passthrough (`U=1`
+  Unicode placeholders when supported).
+- **iTerm2 (`iterm2`)**: OSC 1337 inline images (WezTerm, iTerm2) encoded via
+  `libturbojpeg` with PNG fallback.
+- **Sixel (`sixel`)**: 256-color median-cut palette with Bayer dithering for
+  Sixel-capable terminals.
+- **Halfblocks (`halfblocks`)**: Universal 24-bit truecolor Unicode `▀`/`▄`
+  fallback for any terminal.
+
+#### `peng-tui` CLI Flags
+
+| Flag                  | Argument                                                                    | Description                                                       |
+| :-------------------- | :-------------------------------------------------------------------------- | :---------------------------------------------------------------- |
+| `--protocol`          | `auto`, `kitty`, `sixel`, `iterm2`, `halfblocks`                            | Terminal graphics protocol (default: `auto`).                     |
+| `--infobar`           | `bottom`, `top`, `none`                                                     | Infobar placement (default: `bottom`).                            |
+| `-s`, `--scale`       | `fit`, `fill`, `shrink`, `1:1`, `width`, `height`                           | Default image scale mode (default: `fit`).                        |
+| `--filter`            | `nearest`, `linear`, `pixel_art`, `mitchell`, `lanczos3`, `fsr`, `tiny_cnn` | GPU resampling filter (default: `linear`).                        |
+| `--slideshow`         | `<SECONDS>`                                                                 | Start slideshow with the given interval in seconds.               |
+| `--stack-raw-jpeg`    | None                                                                        | Group RAW and companion JPEG files into a single entry (default). |
+| `--no-stack-raw-jpeg` | None                                                                        | Display RAW and companion JPEG files separately.                  |
+| `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                                        | XDG shared thumbnail cache policy (default: `read_only`).         |
+| `--no-thumb-cache`    | None                                                                        | Disable the Freedesktop XDG shared thumbnail cache.               |
+| `--log-file`          | `<PATH>`                                                                    | Write debug logs to a file instead of muting stderr.              |
+| `-h`, `--help`        | None                                                                        | Show help message.                                                |
+
+`peng-tui` shares Peng's standard keyboard shortcuts for navigation, zoom, pan,
+rotation, triage (`z`/`x`/`u`/`v`), palettes (`:` / `Ctrl+P` / `Ctrl+O`), and
+image info/stats overlays (`d` / `Shift+D`), with a few TUI-specific bindings:
+
+- `f`: Open File Search palette (replaces GUI fullscreen).
+- `V` (`Shift+v`): Cycle infobar placement (`bottom` → `top` → `none`).
+- `Ctrl+C`: Exit cleanly.
+- **Simultaneous Diagonal Panning**: On terminals supporting the Kitty keyboard
+  protocol (`report_events`, e.g. Kitty/Ghostty), holding two directional keys
+  (`h`/`j`/`k`/`l` or arrow keys) pans diagonally when zoomed in.
 
 ### Standalone CLI Utilities (`peng-preview` & `peng-precache`)
 
@@ -332,7 +390,7 @@ ______________________________________________________________________
 
 Peng is structured around a reactive, unidirectional **game-engine frame
 pipeline** (`src/viewer.zig`, `src/app/systems/root.zig`) backed by an acyclic
-17-package Zig module graph (`build.zig`):
+19-package Zig module graph (`build.zig`):
 
 ```text
 Phase 1: Ingest          Phase 2a: Reduce Intents      Phase 2b: Sync Hardware & Workers    Phase 3: Render Snapshot
