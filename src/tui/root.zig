@@ -4,12 +4,14 @@
 //! terminal presentation helpers without depending on SDL or `app`.
 
 pub const canvas = @import("canvas.zig");
+pub const cli = @import("cli.zig");
 pub const infobar = @import("infobar.zig");
 pub const input = @import("input.zig");
 pub const overlays = @import("overlays.zig");
 
 test {
     _ = canvas;
+    _ = cli;
     _ = infobar;
     _ = input;
     _ = overlays;

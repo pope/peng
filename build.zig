@@ -325,6 +325,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "palette", .module = palette_module },
             .{ .name = "state", .module = state_module },
             .{ .name = "termgfx", .module = termgfx_module },
+            .{ .name = "thumbcache", .module = thumbcache_module },
             .{ .name = "triage", .module = triage_module },
             .{ .name = "vaxis", .module = vaxis_mod },
             .{ .name = "vfs", .module = vfs_module },

@@ -23,11 +23,11 @@ const MappedReadback = gpu.graphics.MappedReadback;
 const PacketBuildContext = gpu.pass.PacketBuildContext;
 const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
-const ProtocolMode = termgfx.ProtocolMode;
 const RenderPacket = gpu.pass.RenderPacket;
 const RenderResources = gpu.graphics.RenderResources;
 const ResolvedTarget = termgfx.ResolvedTarget;
 const TextureRef = gpu.TextureRef;
+const TuiCliArgs = tui.cli.TuiCliArgs;
 const UvRect = geom.UvRect;
 const ViewportLayout = tui.canvas.ViewportLayout;
 const ViewportParams = state_pkg.ViewportParams;
@@ -36,12 +36,17 @@ const ViewportParams = state_pkg.ViewportParams;
 pub const panic = vaxis.Panic;
 
 /// Silences `std.log` output to `stderr` while the TUI alternate screen owns
-/// the terminal so `vaxis` and background worker logs never corrupt the UI.
+/// the terminal (or redirects logs to `--log-file` when configured) so `vaxis`
+/// and background worker logs never corrupt the UI.
 pub const std_options: std.Options = .{
     .logFn = tuiLogFn,
 };
 
 var tui_log_muted: std.atomic.Value(bool) = .init(false);
+var tui_log_file_enabled: std.atomic.Value(bool) = .init(false);
+var tui_log_mutex: std.Io.Mutex = .init;
+var tui_log_file: ?std.Io.File = null;
+var tui_log_io: ?std.Io = null;
 
 fn tuiLogFn(
     comptime message_level: std.log.Level,
@@ -49,6 +54,23 @@ fn tuiLogFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    if (tui_log_file_enabled.load(.acquire)) {
+        const io = tui_log_io.?;
+        tui_log_mutex.lockUncancelable(io);
+        defer tui_log_mutex.unlock(io);
+        if (tui_log_file) |file| {
+            var buf: [2048]u8 = undefined;
+            var w = file.writerStreaming(io, &buf);
+            const lvl = comptime message_level.asText();
+            const prefix = if (scope == .default)
+                lvl ++ ": "
+            else
+                lvl ++ "(" ++ @tagName(scope) ++ "): ";
+            w.interface.print(prefix ++ format ++ "\n", args) catch {};
+            w.interface.flush() catch {};
+            return;
+        }
+    }
     if (tui_log_muted.load(.acquire)) return;
     std.log.defaultLog(message_level, scope, format, args);
 }
@@ -63,64 +85,17 @@ const TuiEvent = union(enum) {
     timer_tick,
 };
 
-const TuiCliArgs = struct {
-    path: ?[]const u8 = null,
-    protocol: ProtocolMode = .auto,
-    infobar: InfobarPosition = .bottom,
-    help: bool = false,
-};
-
-fn parseInfobarPosition(str: []const u8) ?InfobarPosition {
-    if (std.mem.eql(u8, str, "bottom")) return .bottom;
-    if (std.mem.eql(u8, str, "top")) return .top;
-    if (std.mem.eql(u8, str, "none")) return .none;
-    return null;
-}
-
-fn parseCliArgs(init: std.process.Init) !TuiCliArgs {
-    var result: TuiCliArgs = .{};
+fn parseProcessArgs(init: std.process.Init) !TuiCliArgs {
     var iter = try init.minimal.args.iterateAllocator(init.gpa);
     defer iter.deinit();
     _ = iter.next(); // skip argv[0]
 
+    var raw: std.ArrayList([]const u8) = .empty;
+    defer raw.deinit(init.gpa);
     while (iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            result.help = true;
-            return result;
-        } else if (std.mem.eql(u8, arg, "--protocol")) {
-            const val = iter.next() orelse return error.MissingArgument;
-            result.protocol = ProtocolMode.parse(val) orelse
-                return error.InvalidProtocol;
-        } else if (std.mem.eql(u8, arg, "--infobar")) {
-            const val = iter.next() orelse return error.MissingArgument;
-            result.infobar = parseInfobarPosition(val) orelse
-                return error.InvalidInfobar;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            return error.UnknownFlag;
-        } else if (result.path == null) {
-            result.path = try init.gpa.dupe(u8, arg);
-        }
+        try raw.append(init.gpa, arg);
     }
-    return result;
-}
-
-fn printHelp(io: std.Io) void {
-    var buf: [2048]u8 = undefined;
-    var w = std.Io.File.stdout().writerStreaming(io, &buf);
-    w.interface.writeAll(
-        \\Usage: peng-tui [OPTIONS] [PATH]
-        \\
-        \\GPU-accelerated terminal image viewer and photo triage tool.
-        \\
-        \\Options:
-        \\  --protocol <auto|kitty|sixel|iterm2|halfblocks>
-        \\                         Terminal graphics protocol (default: auto)
-        \\  --infobar <bottom|top|none>
-        \\                         Infobar placement (default: bottom)
-        \\  -h, --help             Show this help message
-        \\
-    ) catch {};
-    w.interface.flush() catch {};
+    return tui.cli.parseArgs(init.gpa, raw.items);
 }
 
 fn wakeVaxisLoop(ptr: *anyopaque) void {
@@ -831,18 +806,60 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    const cli = parseCliArgs(init) catch |err| {
+    var cli = parseProcessArgs(init) catch |err| {
         std.log.err("Invalid arguments ({s}). Use --help for usage.", .{
             @errorName(err),
         });
         std.process.exit(1);
     };
-    defer if (cli.path) |p| gpa.free(p);
+    defer cli.deinit(gpa);
 
     if (cli.help) {
-        printHelp(io);
+        tui.cli.printHelp(io);
         return;
     }
+
+    if (cli.log_file) |log_path| {
+        const f = std.Io.Dir.cwd().createFile(io, log_path, .{
+            .truncate = true,
+        }) catch |err| {
+            std.log.err("Failed to open log file '{s}': {s}", .{
+                log_path,
+                @errorName(err),
+            });
+            std.process.exit(1);
+        };
+        tui_log_io = io;
+        tui_log_mutex.lockUncancelable(io);
+        tui_log_file = f;
+        tui_log_mutex.unlock(io);
+        tui_log_file_enabled.store(true, .release);
+    }
+    defer if (tui_log_file_enabled.swap(false, .acq_rel)) {
+        const log_io = tui_log_io.?;
+        tui_log_mutex.lockUncancelable(log_io);
+        const f_opt = tui_log_file;
+        tui_log_file = null;
+        tui_log_mutex.unlock(log_io);
+        if (f_opt) |f| f.close(log_io);
+    };
+
+    const selections_tsv = try runTuiSession(init, cli);
+    defer if (selections_tsv) |tsv| gpa.free(tsv);
+
+    // Emit TSV classifications to stdout strictly after alt-screen teardown
+    // so piped shell workflows receive clean `PICK\t<path>` / `REJECT\t<path>`.
+    if (selections_tsv) |tsv| {
+        var out_buf: [4096]u8 = undefined;
+        var out_w = std.Io.File.stdout().writerStreaming(io, &out_buf);
+        out_w.interface.writeAll(tsv) catch {};
+        out_w.interface.flush() catch {};
+    }
+}
+
+fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
+    const gpa = init.gpa;
+    const io = init.io;
 
     const target = cli.protocol.resolve(init.environ_map);
 
@@ -880,9 +897,11 @@ pub fn main(init: std.process.Init) !void {
             const ui_state = try state_pkg.UiState.init(gpa);
             break :blk .{
                 .defaults = .{
+                    .default_scale = cli.default_scale,
                     .crossfade = false,
                     .snackbar_enabled = false,
                     .auto_title = false,
+                    .stack_raw_jpeg = cli.stack_raw_jpeg,
                 },
                 .navigation = nav,
                 .ui = ui_state,
@@ -906,12 +925,18 @@ pub fn main(init: std.process.Init) !void {
         .io = io,
     };
     app_state.viewer.resetToDefaults();
+    app_state.viewer.viewport.scale_filter = cli.scale_filter;
+    if (cli.slideshow_interval_s) |secs| {
+        app_state.viewer.navigation.slideshow = .{
+            .active = .{ .interval_s = secs },
+        };
+    }
     defer {
         app_state.workers.exiting.store(true, .release);
         app_state.deinit();
     }
     try app_state.ensureInitialCapacities();
-    app_state.initThumbCache(init.environ_map, .read_only, .normal);
+    app_state.initThumbCache(init.environ_map, cli.thumb_cache, .normal);
 
     const start_ms = state_pkg.timestampToMs(std.Io.Clock.awake.now(io));
     if (cli.path) |path| {
@@ -1186,4 +1211,11 @@ pub fn main(init: std.process.Init) !void {
             pres.post_render.dirty = false;
         }
     }
+
+    if (!app_state.viewer.navigation.triage.hasAnySelections()) return null;
+    var tsv: std.Io.Writer.Allocating = .init(gpa);
+    errdefer tsv.deinit();
+    try app_state.viewer.navigation.writeSelectionsTsv(&tsv.writer);
+    try tsv.writer.flush();
+    return try tsv.toOwnedSlice();
 }
