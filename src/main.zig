@@ -515,7 +515,7 @@ const AppGraphicsAndState = struct {
             .show_title = parsed.show_title,
             .auto_title = !parsed.test_mode,
             .snackbar_enabled = !parsed.test_mode,
-            .crossfade = !parsed.test_mode,
+            .animations = if (parsed.test_mode) .no_crossfade else .full,
             .stack_raw_jpeg = parsed.stack_raw_jpeg,
             .windowless = parsed.windowless,
         };

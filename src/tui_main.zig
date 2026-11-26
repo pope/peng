@@ -1493,7 +1493,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             break :blk .{
                 .defaults = .{
                     .default_scale = cli.default_scale,
-                    .crossfade = false,
+                    .animations = .disabled,
                     .snackbar_enabled = false,
                     .auto_title = false,
                     .stack_raw_jpeg = cli.stack_raw_jpeg,
@@ -1706,7 +1706,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             &app_state,
             frame_input,
             frame_alloc,
-            true,
+            false,
         );
         if (!app_state.viewer.running) break;
 
@@ -1725,14 +1725,6 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 infobar_pos = .none;
             }
             pres.markPostRenderDirty();
-        }
-
-        // Settle animations so terminal frames don't waste bandwidth on
-        // intermediate interpolation frames, and finalize any closing palette.
-        app_state.viewer.animations.settleAll();
-        switch (app_state.viewer.ui.palette.lifecycle) {
-            .closing => app_state.viewer.ui.palette.reset(),
-            .open, .closed => {},
         }
 
         const render_layout = ViewportLayout.compute(winsize, infobar_pos);

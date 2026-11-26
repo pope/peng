@@ -19,6 +19,34 @@ const ViewportParams = viewport.ViewportParams;
 const ZoomController = viewport.ZoomController;
 const ZoomPreset = intents.ZoomPreset;
 
+/// Animation and motion policy controlling UI transitions, smooth keyboard
+/// zoom/pan easing, and image crossfade dissolves. Encodes the invariant that
+/// crossfade cannot be enabled when animations are disabled.
+pub const AnimationMode = enum {
+    /// All animations enabled, including image-to-image crossfade dissolves.
+    full,
+    /// UI and smooth zoom/pan animations enabled; image switches are instant.
+    no_crossfade,
+    /// All animations and smooth tap easing disabled (instant 1-frame settle).
+    disabled,
+
+    /// Returns `true` when UI and smooth motion animations are enabled.
+    pub fn isEnabled(self: AnimationMode) bool {
+        return switch (self) {
+            .full, .no_crossfade => true,
+            .disabled => false,
+        };
+    }
+
+    /// Returns `true` when image-to-image crossfade dissolves are enabled.
+    pub fn crossfadeEnabled(self: AnimationMode) bool {
+        return switch (self) {
+            .full => true,
+            .no_crossfade, .disabled => false,
+        };
+    }
+};
+
 /// Default startup configuration options restored whenever the viewer window
 /// is closed/hidden in server mode.
 pub const ViewerDefaults = struct {
@@ -27,7 +55,7 @@ pub const ViewerDefaults = struct {
     show_title: bool = false,
     auto_title: bool = true,
     snackbar_enabled: bool = true,
-    crossfade: bool = true,
+    animations: AnimationMode = .full,
     stack_raw_jpeg: bool = true,
     windowless: bool = false,
 };
@@ -82,7 +110,7 @@ pub const ViewerState = struct {
 
         self.navigation.slideshow = .inactive;
         self.navigation.manga_mode = false;
-        self.navigation.crossfade = self.defaults.crossfade;
+        self.navigation.crossfade = self.defaults.animations.crossfadeEnabled();
         self.navigation.stack_raw_jpeg = self.defaults.stack_raw_jpeg;
         self.navigation.cadence = .idle;
         self.navigation.direction = .forward;
@@ -194,7 +222,7 @@ test "ViewerState.resetToDefaults restores configured startup defaults" {
         .show_title = true,
         .auto_title = false,
         .snackbar_enabled = false,
-        .crossfade = false,
+        .animations = .no_crossfade,
         .stack_raw_jpeg = false,
         .windowless = true,
     };

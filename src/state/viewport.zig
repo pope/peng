@@ -172,6 +172,27 @@ pub const ViewportParams = struct {
         };
     }
 
+    /// Applies a relative multiplicative zoom `ratio` (or optional absolute
+    /// `snap_zoom` detent target), switching to `.manual` mode and scaling
+    /// `pan_x`/`pan_y` proportionally around the viewport center.
+    pub fn zoomBy(self: *ViewportParams, ratio: f32, snap_zoom: ?f32) void {
+        if (ratio <= 0.0 or !std.math.isFinite(ratio)) return;
+        if (snap_zoom) |snap| {
+            if (snap <= 0.0 or !std.math.isFinite(snap)) return;
+        }
+        self.mode = .manual;
+        const old_zoom = self.zoom_factor.get();
+        const target = snap_zoom orelse @max(
+            ZoomFactor.MIN,
+            old_zoom * ratio,
+        );
+        const new_zoom = ZoomFactor.init(target);
+        self.zoom_factor = new_zoom;
+        const applied_ratio = new_zoom.get() / old_zoom;
+        self.pan_x *= applied_ratio;
+        self.pan_y *= applied_ratio;
+    }
+
     /// Returns true if image content overflows the viewport bounds.
     pub fn isOverflowing(
         self: ViewportParams,
@@ -360,6 +381,39 @@ pub const PanController = struct {
             .active => true,
         } or self.prev_held.hasAny();
     }
+
+    /// Immediately settles any active discrete tap animation, returning the
+    /// remaining `(dx, dy)` pixel delta and transitioning the controller to
+    /// `.idle`. Returns `null` when idle or when opposing directions cancel.
+    pub fn settleTap(self: *PanController) ?struct { dx: f32, dy: f32 } {
+        return switch (self.tap) {
+            .idle => null,
+            .active => |tap| blk: {
+                self.tap = .idle;
+                if (!std.math.isFinite(tap.remaining_px) or
+                    tap.remaining_px <= TAP_EPSILON_PX)
+                {
+                    break :blk null;
+                }
+                var vx: f32 = 0.0;
+                var vy: f32 = 0.0;
+                if (tap.direction.left) vx += 1.0;
+                if (tap.direction.right) vx -= 1.0;
+                if (tap.direction.up) vy += 1.0;
+                if (tap.direction.down) vy -= 1.0;
+                if (vx == 0.0 and vy == 0.0) break :blk null;
+                if (vx != 0.0 and vy != 0.0) {
+                    const inv_sqrt2: f32 = 0.70710678;
+                    vx *= inv_sqrt2;
+                    vy *= inv_sqrt2;
+                }
+                break :blk .{
+                    .dx = vx * tap.remaining_px,
+                    .dy = vy * tap.remaining_px,
+                };
+            },
+        };
+    }
 };
 
 /// Cardinal zoom direction for keyboard zooming.
@@ -478,7 +532,78 @@ pub const ZoomController = struct {
             },
         };
     }
+
+    /// Immediately settles any active discrete zoom tap (or detent pause),
+    /// returning the remaining multiplicative `ratio` and optional `snap_zoom`
+    /// detent target and transitioning the controller to `.idle`.
+    pub fn settleTap(
+        self: *ZoomController,
+    ) ?struct { ratio: f32, snap_zoom: ?f32 } {
+        return switch (self.phase) {
+            .idle => null,
+            .detent_pause_ms => blk: {
+                self.phase = .idle;
+                break :blk null;
+            },
+            .tap => |tap| blk: {
+                self.phase = .idle;
+                if (!std.math.isFinite(tap.remaining_log) or
+                    tap.remaining_log <= TAP_EPSILON_LOG)
+                {
+                    break :blk null;
+                }
+                const ratio: f32 = switch (tap.direction) {
+                    .in => @exp(tap.remaining_log),
+                    .out => @exp(-tap.remaining_log),
+                };
+                break :blk .{
+                    .ratio = ratio,
+                    .snap_zoom = tap.detent_target,
+                };
+            },
+        };
+    }
 };
+
+test "PanController and ZoomController settleTap complete motion in 1 step" {
+    var pan = PanController{
+        .tap = .{
+            .active = .{
+                .direction = .{ .left = true, .up = true },
+                .remaining_px = 20.0,
+            },
+        },
+    };
+    const delta = pan.settleTap() orelse return error.TestUnexpectedNull;
+    try std.testing.expect(!pan.isBusy());
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 20.0 * 0.70710678),
+        delta.dx,
+        1e-4,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 20.0 * 0.70710678),
+        delta.dy,
+        1e-4,
+    );
+    try std.testing.expect(pan.settleTap() == null);
+
+    var zoom = ZoomController{};
+    zoom.triggerTap(.in, 0.9);
+    const z_res = zoom.settleTap() orelse return error.TestUnexpectedNull;
+    try std.testing.expect(!zoom.isBusy());
+    try std.testing.expectApproxEqAbs(
+        ZoomController.TAP_STEP_RATIO,
+        z_res.ratio,
+        1e-4,
+    );
+    try std.testing.expectEqual(@as(?f32, 1.0), z_res.snap_zoom);
+
+    var vp = ViewportParams{ .zoom_factor = ZoomFactor.init(0.9) };
+    vp.zoomBy(z_res.ratio, z_res.snap_zoom);
+    try std.testing.expectEqual(ZoomMode.manual, vp.mode);
+    try std.testing.expectEqual(@as(f32, 1.0), vp.zoom_factor.get());
+}
 
 test "ViewportParams.zoomAtPoint anchors zoom relative to focus point" {
     var vp = ViewportParams{};
