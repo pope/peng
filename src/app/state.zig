@@ -665,6 +665,25 @@ pub const AppState = struct {
         self.viewer.resetZoomPan();
     }
 
+    fn deductDockedEditPanel(
+        self: *const AppState,
+        raw_dims: PhysicalDims,
+        scale_x: f32,
+    ) PhysicalDims {
+        var available_width = raw_dims.w;
+        const edit_progress = self.viewer.animations.get(.edit_panel);
+        const edit_open = self.viewer.ui.overlays.edit_panel.visible;
+        if (edit_open or edit_progress > 0.001) {
+            const docked_w =
+                state_pkg.EDIT_PANEL_WIDTH * edit_progress * scale_x;
+            available_width = @max(available_width - docked_w, 1.0);
+        }
+        return .{
+            .w = @max(available_width, 1.0),
+            .h = @max(raw_dims.h, 1.0),
+        };
+    }
+
     /// Computes available viewport dimensions in physical framebuffer pixels,
     /// scaling for display DPI and docked edit panel.
     pub fn getViewportPixelDims(self: *AppState) PhysicalDims {
@@ -687,18 +706,28 @@ pub const AppState = struct {
             },
         }
 
-        var available_width = win_w;
-        const edit_progress = self.viewer.animations.get(.edit_panel);
-        const edit_open = self.viewer.ui.overlays.edit_panel.visible;
-        if (edit_open or edit_progress > 0.001) {
-            const docked_w =
-                state_pkg.EDIT_PANEL_WIDTH * edit_progress * scale_x;
-            available_width = @max(available_width - docked_w, 1.0);
-        }
-        const view_w = @max(available_width, 1.0);
-        const view_h = @max(win_h, 1.0);
+        return self.deductDockedEditPanel(
+            .{ .w = win_w, .h = win_h },
+            scale_x,
+        );
+    }
 
-        return .{ .w = view_w, .h = view_h };
+    /// Computes visible viewport dimensions in physical pixels for an input
+    /// snapshot, using SDL pixel dimensions in windowed mode and `frame_input`
+    /// logical/DPI dimensions in headless mode, with docked edit panel width
+    /// deducted.
+    pub fn getInputViewportPixelDims(
+        self: *AppState,
+        frame_input: state_pkg.FrameInput,
+    ) PhysicalDims {
+        return switch (self.display.backend()) {
+            .windowed => self.getViewportPixelDims(),
+            .headless => blk: {
+                const dpi = frame_input.dpiScale();
+                const phys = frame_input.logicalWinDims().toPhysical(dpi);
+                break :blk self.deductDockedEditPanel(phys, dpi.x);
+            },
+        };
     }
 
     /// Computes the unzoomed base scale factor fitting the current image to the
@@ -730,6 +759,19 @@ pub const AppState = struct {
             auth,
             dims,
         );
+    }
+
+    /// Returns the maximum rendered-to-viewport overflow ratio for the active
+    /// image against `view_dims`, or `null` when no positive authoritative
+    /// image dimensions are available.
+    pub fn getImageOverflowRatio(
+        self: *const AppState,
+        view_dims: PhysicalDims,
+    ) ?f32 {
+        const entry = self.getCurrentEntry() orelse return null;
+        const auth = entry.getAuthoritativeDims().asPositive() orelse
+            return null;
+        return self.viewer.viewport.overflowRatio(auth, view_dims);
     }
 
     /// Returns a copy of the CacheEntry corresponding to the currently active

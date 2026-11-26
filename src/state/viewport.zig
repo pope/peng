@@ -3,6 +3,7 @@ const intents = @import("intents");
 const std = @import("std");
 const view_transform = @import("view_transform.zig");
 
+const DpiScale = geom.DpiScale;
 const EditParam = intents.EditParam;
 const getSpec = intents.getSpec;
 const PhysicalDims = geom.PhysicalDims;
@@ -172,23 +173,46 @@ pub const ViewportParams = struct {
         };
     }
 
+    fn renderedDims(
+        self: ViewportParams,
+        auth_dims: PhysicalDims,
+        view_dims: PhysicalDims,
+    ) ?struct { img: PhysicalDims, view: PhysicalDims } {
+        const auth = auth_dims.asPositive() orelse return null;
+        const view = view_dims.asPositive() orelse return null;
+        const is_swapped = view_transform.isAngle90or270(self.rotation_angle);
+        const img_w = if (is_swapped) auth.h else auth.w;
+        const img_h = if (is_swapped) auth.w else auth.h;
+        const z = self.effectiveZoom(view, auth);
+        if (!std.math.isFinite(z) or z <= 0.0) return null;
+        return .{
+            .img = .{ .w = img_w * z, .h = img_h * z },
+            .view = view,
+        };
+    }
+
+    /// Returns the maximum rendered-to-viewport span ratio across both axes
+    /// (`max(img_w * z / view_w, img_h * z / view_h)`), or `1.0` when
+    /// dimensions are unavailable.
+    pub fn overflowRatio(
+        self: ViewportParams,
+        auth_dims: PhysicalDims,
+        view_dims: PhysicalDims,
+    ) f32 {
+        const dims = self.renderedDims(auth_dims, view_dims) orelse return 1.0;
+        return @max(dims.img.w / dims.view.w, dims.img.h / dims.view.h);
+    }
+
     /// Returns true if image content overflows the viewport bounds.
     pub fn isOverflowing(
         self: ViewportParams,
         auth_dims: PhysicalDims,
         view_dims: PhysicalDims,
     ) bool {
-        if (auth_dims.w <= 0.0 or auth_dims.h <= 0.0 or
-            view_dims.w <= 0.0 or view_dims.h <= 0.0)
-        {
+        const dims = self.renderedDims(auth_dims, view_dims) orelse
             return false;
-        }
-        const is_swapped = view_transform.isAngle90or270(self.rotation_angle);
-        const img_w = if (is_swapped) auth_dims.h else auth_dims.w;
-        const img_h = if (is_swapped) auth_dims.w else auth_dims.h;
-        const z = self.effectiveZoom(view_dims, auth_dims);
-        return (img_w * z > view_dims.w + 1.0) or
-            (img_h * z > view_dims.h + 1.0);
+        return (dims.img.w > dims.view.w + 1.0) or
+            (dims.img.h > dims.view.h + 1.0);
     }
 
     /// Returns true if non-neutral photographic exposure or contrast
@@ -325,6 +349,67 @@ pub const PanTap = union(enum) {
     active: ActivePanTap,
 };
 
+/// Resolved physical-pixel pan travel and glide velocity for the current
+/// viewport dimensions, display DPI scale, and image overflow ratio.
+pub const PanMetrics = struct {
+    tap_distance_px: f32 = PanController.TAP_DISTANCE,
+    glide_speed_px_per_sec: f32 = PanController.GLIDE_SPEED,
+
+    const TAP_VIEWPORT_FRACTION: f32 = 0.05;
+    const GLIDE_VIEWPORT_RATE: f32 = 1.2; // Geometric viewport spans / sec
+    const MIN_BASE_TAP_DISTANCE_LOGICAL: f32 = 30.0;
+    const MIN_BASE_GLIDE_SPEED_LOGICAL: f32 = 600.0;
+    const OVERFLOW_SCALE_MIN: f32 = 0.5;
+    const OVERFLOW_RAMP_START: f32 = 1.0;
+    const OVERFLOW_RAMP_END: f32 = 3.0;
+
+    /// Computes the smoothstep speed multiplier in `[OVERFLOW_SCALE_MIN, 1.0]`
+    /// across `[OVERFLOW_RAMP_START, OVERFLOW_RAMP_END]` so panning stays calm
+    /// when barely zoomed past fit-to-window and reaches full speed zoomed in.
+    pub fn overflowScale(overflow_ratio: f32) f32 {
+        if (std.math.isPositiveInf(overflow_ratio)) return 1.0;
+        if (!std.math.isFinite(overflow_ratio)) return OVERFLOW_SCALE_MIN;
+        const t = std.math.clamp(
+            (overflow_ratio - OVERFLOW_RAMP_START) /
+                (OVERFLOW_RAMP_END - OVERFLOW_RAMP_START),
+            0.0,
+            1.0,
+        );
+        const smooth = t * t * (3.0 - 2.0 * t);
+        return OVERFLOW_SCALE_MIN + (1.0 - OVERFLOW_SCALE_MIN) * smooth;
+    }
+
+    /// Derives physical-pixel tap distance and glide speed from physical
+    /// viewport dimensions, display DPI scale, and rendered overflow ratio.
+    pub fn fromViewport(
+        view_dims: PhysicalDims,
+        dpi: DpiScale,
+        overflow_ratio: f32,
+    ) PanMetrics {
+        const safe_dpi = DpiScale.init(dpi.x, dpi.y);
+        const dpi_factor = @max(safe_dpi.x, safe_dpi.y);
+        const min_base_tap = MIN_BASE_TAP_DISTANCE_LOGICAL * dpi_factor;
+        const min_base_glide = MIN_BASE_GLIDE_SPEED_LOGICAL * dpi_factor;
+        const scale = overflowScale(overflow_ratio);
+
+        const view = view_dims.asPositive() orelse return .{
+            .tap_distance_px = min_base_tap * scale,
+            .glide_speed_px_per_sec = min_base_glide * scale,
+        };
+
+        const ref_span = @sqrt(view.w) * @sqrt(view.h);
+        const base_tap = @max(ref_span * TAP_VIEWPORT_FRACTION, min_base_tap);
+        const base_glide = @max(
+            ref_span * GLIDE_VIEWPORT_RATE,
+            min_base_glide,
+        );
+        return .{
+            .tap_distance_px = base_tap * scale,
+            .glide_speed_px_per_sec = base_glide * scale,
+        };
+    }
+};
+
 /// Dynamic state tracking for smooth directional keyboard viewport panning.
 pub const PanController = struct {
     tap: PanTap = .idle,
@@ -333,7 +418,7 @@ pub const PanController = struct {
 
     pub const TAP_DISTANCE: f32 = 30.0;
     pub const TAP_EPSILON_PX: f32 = 0.001;
-    pub const GLIDE_SPEED: f32 = 800.0; // Physical pixels per second
+    pub const GLIDE_SPEED: f32 = 800.0; // Default physical pixels per second
 
     /// Clears active smooth tap and held motion state.
     pub inline fn clearMotion(self: *PanController) void {
@@ -780,4 +865,190 @@ test "ZoomController triggerTap detent latching, isBusy, and suppress" {
     ctrl.reset();
     try std.testing.expect(!ctrl.isBusy());
     try std.testing.expect(!ctrl.suppressed_held.hasAny());
+}
+
+test "ViewportParams.overflowRatio handles modes, rotation, and bad dims" {
+    const view = PhysicalDims{ .w = 1000.0, .h = 500.0 };
+    const img = PhysicalDims{ .w = 2000.0, .h = 1000.0 };
+
+    // .fit matches viewport -> overflow 1.0
+    var vp: ViewportParams = .{};
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        vp.overflowRatio(img, view),
+        0.001,
+    );
+
+    // .manual at 1.0x on 2000x1000 in 1000x500 -> overflow 2.0
+    vp.mode = .manual;
+    vp.zoom_factor = ZoomFactor.init(1.0);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 2.0),
+        vp.overflowRatio(img, view),
+        0.001,
+    );
+
+    // 90-degree rotation swaps dims -> 1000x2000 in 1000x500 -> overflow 4.0
+    vp.rotation_angle = 90.0;
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 4.0),
+        vp.overflowRatio(img, view),
+        0.001,
+    );
+
+    // .fill on 4000x1000 pano in 1000x500 -> height fits, width overflows 2.0
+    vp.rotation_angle = 0.0;
+    vp.mode = .fill;
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 2.0),
+        vp.overflowRatio(.{ .w = 4000.0, .h = 1000.0 }, view),
+        0.001,
+    );
+
+    // Non-positive, NaN, and +Inf dims safely fall back to 1.0
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        vp.overflowRatio(.{ .w = nan, .h = 100.0 }, view),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        vp.overflowRatio(.{ .w = inf, .h = 100.0 }, view),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        vp.overflowRatio(img, .{ .w = 0.0, .h = nan }),
+    );
+}
+
+test "PanMetrics.fromViewport scales with viewport size, DPI, and overflow" {
+    const dpi_1x = DpiScale.init(1.0, 1.0);
+    const dpi_2x = DpiScale.init(2.0, 2.0);
+    const full_overflow = PanMetrics.OVERFLOW_RAMP_END;
+
+    // 1080p @ 1x at full zoom (overflow >= 3.0): sqrt(1920*1080) = 1440
+    const m_1080p = PanMetrics.fromViewport(
+        .{ .w = 1920.0, .h = 1080.0 },
+        dpi_1x,
+        full_overflow,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 72.0),
+        m_1080p.tap_distance_px,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1728.0),
+        m_1080p.glide_speed_px_per_sec,
+        0.01,
+    );
+
+    // Barely overflowing (overflow = 1.0) eases down to 0.5x of full speed
+    const m_barely = PanMetrics.fromViewport(
+        .{ .w = 1920.0, .h = 1080.0 },
+        dpi_1x,
+        1.0,
+    );
+    try std.testing.expectApproxEqAbs(
+        m_1080p.tap_distance_px * PanMetrics.OVERFLOW_SCALE_MIN,
+        m_barely.tap_distance_px,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        m_1080p.glide_speed_px_per_sec * PanMetrics.OVERFLOW_SCALE_MIN,
+        m_barely.glide_speed_px_per_sec,
+        0.01,
+    );
+
+    // Midpoint (overflow = 2.0) hits 0.75x
+    const m_mid = PanMetrics.fromViewport(
+        .{ .w = 1920.0, .h = 1080.0 },
+        dpi_1x,
+        2.0,
+    );
+    try std.testing.expectApproxEqAbs(
+        m_1080p.glide_speed_px_per_sec * 0.75,
+        m_mid.glide_speed_px_per_sec,
+        0.01,
+    );
+
+    // Clamping & non-finite overflowScale edge cases
+    try std.testing.expectEqual(
+        PanMetrics.OVERFLOW_SCALE_MIN,
+        PanMetrics.overflowScale(-10.0),
+    );
+    try std.testing.expectEqual(
+        PanMetrics.OVERFLOW_SCALE_MIN,
+        PanMetrics.overflowScale(-std.math.inf(f32)),
+    );
+    try std.testing.expectEqual(
+        PanMetrics.OVERFLOW_SCALE_MIN,
+        PanMetrics.overflowScale(std.math.nan(f32)),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        PanMetrics.overflowScale(std.math.inf(f32)),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        PanMetrics.overflowScale(50.0),
+    );
+
+    // 4K (1920x1080 logical @ 2x): sqrt(3840*2160) = 2880 -> 2x physical speed
+    const m_4k = PanMetrics.fromViewport(
+        .{ .w = 3840.0, .h = 2160.0 },
+        dpi_2x,
+        full_overflow,
+    );
+    try std.testing.expectApproxEqAbs(
+        m_1080p.tap_distance_px * 2.0,
+        m_4k.tap_distance_px,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        m_1080p.glide_speed_px_per_sec * 2.0,
+        m_4k.glide_speed_px_per_sec,
+        0.01,
+    );
+
+    // Extreme strip window (3840x200) is dampened by geometric mean (~876.4)
+    const m_strip = PanMetrics.fromViewport(
+        .{ .w = 3840.0, .h = 200.0 },
+        dpi_1x,
+        full_overflow,
+    );
+    try std.testing.expect(m_strip.tap_distance_px < 50.0);
+
+    // Tiny window hits DPI-scaled base floors
+    const m_tiny = PanMetrics.fromViewport(
+        .{ .w = 200.0, .h = 200.0 },
+        dpi_2x,
+        full_overflow,
+    );
+    try std.testing.expectApproxEqAbs(
+        PanMetrics.MIN_BASE_TAP_DISTANCE_LOGICAL * 2.0,
+        m_tiny.tap_distance_px,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        PanMetrics.MIN_BASE_GLIDE_SPEED_LOGICAL * 2.0,
+        m_tiny.glide_speed_px_per_sec,
+        0.01,
+    );
+
+    // Invalid dims and unsanitized NaN/Inf/0 DPI fall back cleanly to finite
+    const m_bad = PanMetrics.fromViewport(
+        .{ .w = std.math.nan(f32), .h = std.math.inf(f32) },
+        .{ .x = std.math.nan(f32), .y = std.math.inf(f32) },
+        full_overflow,
+    );
+    try std.testing.expectEqual(
+        PanMetrics.MIN_BASE_TAP_DISTANCE_LOGICAL,
+        m_bad.tap_distance_px,
+    );
+    try std.testing.expectEqual(
+        PanMetrics.MIN_BASE_GLIDE_SPEED_LOGICAL,
+        m_bad.glide_speed_px_per_sec,
+    );
 }
