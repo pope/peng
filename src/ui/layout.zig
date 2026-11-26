@@ -769,13 +769,8 @@ fn renderImageCanvas(
         .none, .pending, .staged_cpu, .not_available, .unloaded => {},
     }
 
-    if (!drew_thumb) switch (entry.resident.asset) {
-        .loaded_gpu, .promoting_gpu => {
-            const gpu = switch (entry.resident.asset) {
-                .loaded_gpu => |g| g,
-                .promoting_gpu => |promo| promo.active,
-                .loaded_cpu, .none, .failed => unreachable,
-            };
+    if (!drew_thumb) switch (entry.resident.asset.displayView()) {
+        .gpu => |gpu| {
             const tex = gpu.gpu_texture;
             const full_alpha = if (is_image_dissolve)
                 std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0)
@@ -794,7 +789,7 @@ fn renderImageCanvas(
                 .uv = uv,
             });
         },
-        .loaded_cpu => {},
+        .cpu => {},
         .none => {
             if (entry.inflight.startTimeMs()) |start_ms| {
                 const elapsed = ui_model.current_time_ms -| start_ms;
@@ -872,11 +867,7 @@ fn renderDissolvePrevQuad(
         .active => |d| d,
     };
     const prev_entry = dissolve.prev_entry;
-    const gpu = switch (prev_entry.resident.asset) {
-        .loaded_gpu => |g| g,
-        .promoting_gpu => |promo| promo.active,
-        .loaded_cpu, .none, .failed => return,
-    };
+    const gpu = prev_entry.resident.asset.activeGpu() orelse return;
 
     const prev_auth = prev_entry.getAuthoritativeDims();
     const prev_dims = computeDrawDims(
@@ -1312,10 +1303,9 @@ test "renderViewport emits TextureRef commands for dissolve, thumb, and full" {
         .{ .w = 800.0, .h = 600.0 },
         .{ .w = 160.0, .h = 120.0 },
     );
-    const prev_tex = switch (prev_entry.resident.asset) {
-        .loaded_gpu => |g| g.gpu_texture,
-        .promoting_gpu, .loaded_cpu, .none, .failed => unreachable,
-    };
+    const prev_gpu = prev_entry.resident.asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    const prev_tex = prev_gpu.gpu_texture;
     const thumb_tex = switch (entry.resident.thumbnail) {
         .loaded => |t| t.texture,
         .none,
@@ -1323,12 +1313,11 @@ test "renderViewport emits TextureRef commands for dissolve, thumb, and full" {
         .staged_cpu,
         .not_available,
         .unloaded,
-        => unreachable,
+        => return error.TestUnexpectedResult,
     };
-    const full_tex = switch (entry.resident.asset) {
-        .loaded_gpu => |g| g.gpu_texture,
-        .promoting_gpu, .loaded_cpu, .none, .failed => unreachable,
-    };
+    const full_gpu = entry.resident.asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    const full_tex = full_gpu.gpu_texture;
 
     var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit(std.testing.allocator);

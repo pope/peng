@@ -138,6 +138,62 @@ pub const ResidentAsset = union(enum) {
         };
     }
 
+    /// Read-only projection of `ResidentAsset` for display and telemetry
+    /// consumers where `.loaded_gpu` and `.promoting_gpu` expose the same
+    /// active `GpuTextureComponent` payload.
+    pub const DisplayView = union(enum) {
+        none,
+        cpu: CpuAsset,
+        gpu: GpuTextureComponent,
+        failed,
+    };
+
+    /// Projects this asset into a 4-variant `DisplayView`, unifying
+    /// `.loaded_gpu` and `.promoting_gpu` into `.gpu` at the type level.
+    pub inline fn displayView(self: ResidentAsset) DisplayView {
+        return switch (self) {
+            .none => .none,
+            .loaded_cpu => |asset| .{ .cpu = asset },
+            .loaded_gpu => |gpu| .{ .gpu = gpu },
+            .promoting_gpu => |promo| .{ .gpu = promo.active },
+            .failed => .failed,
+        };
+    }
+
+    /// Returns the active GPU texture component when `.loaded_gpu` or
+    /// `.promoting_gpu`, or `null` otherwise.
+    pub inline fn activeGpu(self: ResidentAsset) ?GpuTextureComponent {
+        return switch (self) {
+            .loaded_gpu => |gpu| gpu,
+            .promoting_gpu => |promo| promo.active,
+            .none, .loaded_cpu, .failed => null,
+        };
+    }
+
+    /// Returns the source file byte size for any decoded resident asset
+    /// (`.loaded_cpu`, `.loaded_gpu`, or `.promoting_gpu`), or `null` when
+    /// unloaded or failed.
+    pub inline fn diskSizeBytes(self: ResidentAsset) ?u64 {
+        return switch (self) {
+            .loaded_gpu => |gpu| gpu.size_bytes,
+            .promoting_gpu => |promo| promo.active.size_bytes,
+            .loaded_cpu => |asset| asset.cpu.size_bytes,
+            .none, .failed => null,
+        };
+    }
+
+    /// Returns decode timing telemetry for any decoded resident asset
+    /// (`.loaded_cpu`, `.loaded_gpu`, or `.promoting_gpu`), or `null` when
+    /// unloaded or failed.
+    pub inline fn decodeTelemetry(self: ResidentAsset) ?DecodeTelemetry {
+        return switch (self) {
+            .loaded_gpu => |gpu| gpu.decode,
+            .promoting_gpu => |promo| promo.active.decode,
+            .loaded_cpu => |asset| asset.cpu.decode,
+            .none, .failed => null,
+        };
+    }
+
     /// Releases resident CPU surface or GPU texture resources.
     pub fn deinit(self: *ResidentAsset, gpu_device: ?sdl.gpu.Device) void {
         switch (self.*) {
@@ -1875,10 +1931,8 @@ test "ImageCache - promoting_gpu and staged_cpu readiness and deinit" {
         .{ .w = 100.0, .h = 100.0 },
         .{ .w = 0.0, .h = 0.0 },
     );
-    const active_gpu = switch (stub.resident.asset) {
-        .loaded_gpu => |g| g,
-        .none, .loaded_cpu, .promoting_gpu, .failed => unreachable,
-    };
+    const active_gpu = stub.resident.asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
     const key0 = try cache.appendSlot(allocator, id0, stub);
     try std.testing.expect(!cache.hasPendingCpuUploads(true));
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n1, true));
@@ -2053,4 +2107,120 @@ test "CacheEntry.computeThumbnailUvRect handles pre-oriented cached thumbs" {
     try std.testing.expectEqual(@as(f32, 6000.0), uv_no_full.source_h);
     try std.testing.expectEqual(@as(f32, 0.0), uv_no_full.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), uv_no_full.v_max);
+}
+
+test "ResidentAsset accessors across all variants" {
+    const none_asset: ResidentAsset = .none;
+    try std.testing.expectEqual(
+        ResidentAsset.DisplayView.none,
+        none_asset.displayView(),
+    );
+    try std.testing.expect(none_asset.activeGpu() == null);
+    try std.testing.expect(none_asset.diskSizeBytes() == null);
+    try std.testing.expect(none_asset.decodeTelemetry() == null);
+
+    const failed_asset: ResidentAsset = .failed;
+    try std.testing.expectEqual(
+        ResidentAsset.DisplayView.failed,
+        failed_asset.displayView(),
+    );
+    try std.testing.expect(failed_asset.activeGpu() == null);
+    try std.testing.expect(failed_asset.diskSizeBytes() == null);
+    try std.testing.expect(failed_asset.decodeTelemetry() == null);
+
+    const surf = sdl.Surface.create(2, 2, sdl.PixelFormat.rgba32) orelse
+        return error.OutOfMemory;
+    defer surf.destroy();
+    const cpu_decode: DecodeTelemetry = .{
+        .read_time_ms = 1.5,
+        .decode_time_ms = 2.5,
+    };
+    const cpu_asset: ResidentAsset = .{
+        .loaded_cpu = .{
+            .cpu = .{
+                .surface = surf,
+                .w = 2.0,
+                .h = 2.0,
+                .size_bytes = 1234,
+                .decode = cpu_decode,
+            },
+        },
+    };
+    switch (cpu_asset.displayView()) {
+        .cpu => |c| try std.testing.expectEqual(
+            @as(u64, 1234),
+            c.cpu.size_bytes,
+        ),
+        .none, .gpu, .failed => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(cpu_asset.activeGpu() == null);
+    try std.testing.expectEqual(@as(?u64, 1234), cpu_asset.diskSizeBytes());
+    try std.testing.expectEqual(
+        @as(?DecodeTelemetry, cpu_decode),
+        cpu_asset.decodeTelemetry(),
+    );
+
+    const gpu_decode: DecodeTelemetry = .{
+        .read_time_ms = 3.0,
+        .decode_time_ms = 4.0,
+    };
+    const stub_gpu = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 100.0, .h = 50.0 },
+        .{ .w = 0.0, .h = 0.0 },
+    ).resident.asset.activeGpu() orelse return error.TestUnexpectedResult;
+    const stub_tex = stub_gpu.gpu_texture;
+    const gpu_comp = GpuTextureComponent{
+        .gpu_texture = stub_tex,
+        .w = 100.0,
+        .h = 50.0,
+        .size_bytes = 5678,
+        .decode = gpu_decode,
+        .ingest = .{ .upload_time_ms = 0.75, .memory_size_bytes = 20000 },
+    };
+    const gpu_asset: ResidentAsset = .{ .loaded_gpu = gpu_comp };
+    switch (gpu_asset.displayView()) {
+        .gpu => |g| try std.testing.expectEqual(
+            stub_tex.ptr,
+            g.gpu_texture.ptr,
+        ),
+        .none, .cpu, .failed => return error.TestUnexpectedResult,
+    }
+    const active_from_gpu = gpu_asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(stub_tex.ptr, active_from_gpu.gpu_texture.ptr);
+    try std.testing.expectEqual(@as(?u64, 5678), gpu_asset.diskSizeBytes());
+    try std.testing.expectEqual(
+        @as(?DecodeTelemetry, gpu_decode),
+        gpu_asset.decodeTelemetry(),
+    );
+
+    const promo_asset: ResidentAsset = .{
+        .promoting_gpu = .{
+            .active = gpu_comp,
+            .staged = .{
+                .cpu = .{
+                    .surface = surf,
+                    .w = 2.0,
+                    .h = 2.0,
+                    .size_bytes = 9999,
+                    .decode = .{ .read_time_ms = 9.0, .decode_time_ms = 8.0 },
+                },
+            },
+        },
+    };
+    switch (promo_asset.displayView()) {
+        .gpu => |g| try std.testing.expectEqual(@as(u64, 5678), g.size_bytes),
+        .none, .cpu, .failed => return error.TestUnexpectedResult,
+    }
+    const active_from_promo = promo_asset.activeGpu() orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        stub_tex.ptr,
+        active_from_promo.gpu_texture.ptr,
+    );
+    try std.testing.expectEqual(@as(?u64, 5678), promo_asset.diskSizeBytes());
+    try std.testing.expectEqual(
+        @as(?DecodeTelemetry, gpu_decode),
+        promo_asset.decodeTelemetry(),
+    );
 }

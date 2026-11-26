@@ -250,8 +250,8 @@ fn renderInfoOverlay(
                 );
             }
         }
-        switch (entry.resident.asset) {
-            .loaded_cpu => |asset| {
+        switch (entry.resident.asset.displayView()) {
+            .cpu => |asset| {
                 mime_type = asset.cpu.mime_type;
                 disk_size_str = try formatSize(
                     frame_allocator,
@@ -265,12 +265,7 @@ fn renderInfoOverlay(
                     .{ asset.cpu.w, asset.cpu.h, megapixels, prev_suffix },
                 );
             },
-            .loaded_gpu, .promoting_gpu => {
-                const gpu = switch (entry.resident.asset) {
-                    .loaded_gpu => |g| g,
-                    .promoting_gpu => |promo| promo.active,
-                    .loaded_cpu, .none, .failed => unreachable,
-                };
+            .gpu => |gpu| {
                 mime_type = gpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
                 const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
@@ -645,8 +640,8 @@ pub fn renderStatsOverlay(
     var upload_str: []const u8 = "N/A";
 
     if (current_entry) |entry| {
-        switch (entry.resident.asset) {
-            .loaded_cpu => |asset| {
+        switch (entry.resident.asset.displayView()) {
+            .cpu => |asset| {
                 read_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{asset.cpu.decode.read_time_ms},
@@ -660,12 +655,7 @@ pub fn renderStatsOverlay(
                     .{asset.cpu.decode.conversion_time_ms},
                 );
             },
-            .loaded_gpu, .promoting_gpu => {
-                const gpu = switch (entry.resident.asset) {
-                    .loaded_gpu => |g| g,
-                    .promoting_gpu => |promo| promo.active,
-                    .loaded_cpu, .none, .failed => unreachable,
-                };
+            .gpu => |gpu| {
                 mem_size_str = try formatSize(
                     frame_allocator,
                     gpu.ingest.memory_size_bytes,

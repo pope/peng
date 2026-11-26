@@ -359,44 +359,23 @@ fn resolveActiveImageQuad(
             .none, .pending, .staged_cpu, .not_available, .unloaded => false,
         };
 
-    if (!prefer_thumb) switch (entry.resident.asset) {
-        .loaded_gpu => |g| {
-            return .{
-                .tex = g.gpu_texture,
-                .render_crop = render_crop,
-                .present_crop = present_crop,
-                .visible_rect = visible_rect,
-                .quad = .{
-                    .rect = canvas_rect,
-                    .texture = .{ .tex = g.gpu_texture },
-                    .view_params = vp,
-                    .uv = .{
-                        .rotation_angle = vp.rotation_angle,
-                        .source_w = auth.w,
-                        .source_h = auth.h,
-                    },
+    if (!prefer_thumb) if (entry.resident.asset.activeGpu()) |g| {
+        return .{
+            .tex = g.gpu_texture,
+            .render_crop = render_crop,
+            .present_crop = present_crop,
+            .visible_rect = visible_rect,
+            .quad = .{
+                .rect = canvas_rect,
+                .texture = .{ .tex = g.gpu_texture },
+                .view_params = vp,
+                .uv = .{
+                    .rotation_angle = vp.rotation_angle,
+                    .source_w = auth.w,
+                    .source_h = auth.h,
                 },
-            };
-        },
-        .promoting_gpu => |promo| {
-            return .{
-                .tex = promo.active.gpu_texture,
-                .render_crop = render_crop,
-                .present_crop = present_crop,
-                .visible_rect = visible_rect,
-                .quad = .{
-                    .rect = canvas_rect,
-                    .texture = .{ .tex = promo.active.gpu_texture },
-                    .view_params = vp,
-                    .uv = .{
-                        .rotation_angle = vp.rotation_angle,
-                        .source_w = auth.w,
-                        .source_h = auth.h,
-                    },
-                },
-            };
-        },
-        .none, .loaded_cpu, .failed => {},
+            },
+        };
     };
 
     switch (entry.resident.thumbnail) {
@@ -1333,12 +1312,10 @@ fn buildDetailsModel(app_state: *const AppState) tui.overlays.DetailsModel {
     else
         0;
 
-    const size_bytes: ?u64 = if (cache_opt) |c| switch (c.resident.asset) {
-        .loaded_gpu => |g| g.size_bytes,
-        .promoting_gpu => |p| p.active.size_bytes,
-        .loaded_cpu => |cpu| cpu.cpu.size_bytes,
-        .none, .failed => null,
-    } else null;
+    const size_bytes: ?u64 = if (cache_opt) |c|
+        c.resident.asset.diskSizeBytes()
+    else
+        null;
 
     return .{
         .filename = if (entry_opt) |e| e.getBasename() else "",
@@ -1390,24 +1367,13 @@ fn buildStatsModel(
     var vram_bytes: u64 = 0;
 
     if (cache_opt) |c| {
-        switch (c.resident.asset) {
-            .loaded_gpu => |g| {
-                read_ms = g.decode.read_time_ms;
-                decode_ms = g.decode.decode_time_ms;
-                upload_ms = g.ingest.upload_time_ms;
-                vram_bytes = g.ingest.memory_size_bytes;
-            },
-            .promoting_gpu => |p| {
-                read_ms = p.active.decode.read_time_ms;
-                decode_ms = p.active.decode.decode_time_ms;
-                upload_ms = p.active.ingest.upload_time_ms;
-                vram_bytes = p.active.ingest.memory_size_bytes;
-            },
-            .loaded_cpu => |cpu| {
-                read_ms = cpu.cpu.decode.read_time_ms;
-                decode_ms = cpu.cpu.decode.decode_time_ms;
-            },
-            .none, .failed => {},
+        if (c.resident.asset.decodeTelemetry()) |d| {
+            read_ms = d.read_time_ms;
+            decode_ms = d.decode_time_ms;
+        }
+        if (c.resident.asset.activeGpu()) |g| {
+            upload_ms = g.ingest.upload_time_ms;
+            vram_bytes = g.ingest.memory_size_bytes;
         }
     }
 
