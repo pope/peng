@@ -27,7 +27,7 @@ pub const TuiCliArgs = struct {
     scale_filter: TextureScaleMode = .linear,
     slideshow_interval_s: ?f32 = null,
     stack_raw_jpeg: bool = true,
-    thumb_cache: ThumbCacheMode = .read_only,
+    thumb_cache: ThumbCacheMode = .all,
     log_file: ?[]const u8 = null,
     help: bool = false,
 
@@ -171,7 +171,7 @@ test "parseArgs parses all flags and positional path" {
         "2.5",
         "--no-stack-raw-jpeg",
         "--thumb-cache",
-        "all",
+        "read_only",
         "--log-file",
         "/tmp/peng-tui.log",
         "testfiles/images/",
@@ -188,7 +188,7 @@ test "parseArgs parses all flags and positional path" {
     );
     try std.testing.expectEqual(@as(?f32, 2.5), parsed.slideshow_interval_s);
     try std.testing.expect(!parsed.stack_raw_jpeg);
-    try std.testing.expectEqual(ThumbCacheMode.all, parsed.thumb_cache);
+    try std.testing.expectEqual(ThumbCacheMode.read_only, parsed.thumb_cache);
     try std.testing.expectEqualStrings("/tmp/peng-tui.log", parsed.log_file.?);
     try std.testing.expectEqualStrings("testfiles/images/", parsed.path.?);
 }
@@ -255,6 +255,7 @@ test "parseArgs defaults, help, case-insensitive infobar, and OOM safety" {
         defaults.scale_filter,
     );
     try std.testing.expect(defaults.stack_raw_jpeg);
+    try std.testing.expectEqual(ThumbCacheMode.all, defaults.thumb_cache);
     try std.testing.expect(defaults.path == null);
     try std.testing.expect(defaults.log_file == null);
 

@@ -206,7 +206,7 @@ terminal.
 | `--slideshow`         | `<SECONDS>`                                                                 | Start slideshow with the given interval in seconds.               |
 | `--stack-raw-jpeg`    | None                                                                        | Group RAW and companion JPEG files into a single entry (default). |
 | `--no-stack-raw-jpeg` | None                                                                        | Display RAW and companion JPEG files separately.                  |
-| `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                                        | XDG shared thumbnail cache policy (default: `read_only`).         |
+| `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                                        | XDG shared thumbnail cache policy (default: `all`).               |
 | `--no-thumb-cache`    | None                                                                        | Disable the Freedesktop XDG shared thumbnail cache.               |
 | `--log-file`          | `<PATH>`                                                                    | Write debug logs to a file instead of muting stderr.              |
 | `-h`, `--help`        | None                                                                        | Show help message.                                                |
