@@ -157,8 +157,8 @@ const GpuOffscreenRenderer = struct {
         frame_allocator: std.mem.Allocator,
         quad: ImageQuadContext,
         dims: PositiveDimsU32,
-    ) !MappedReadback {
-        const res = try gpu.pass.executeOffscreenReadback(
+    ) !gpu.pass.OffscreenFrameResult {
+        return gpu.pass.executeOffscreenReadback(
             &self.resources,
             quad.view_params,
             gpa,
@@ -171,7 +171,6 @@ const GpuOffscreenRenderer = struct {
             quad,
             buildSingleImagePacket,
         );
-        return res.readback;
     }
 };
 
@@ -204,7 +203,7 @@ const FrameRenderer = union(enum) {
         frame_allocator: std.mem.Allocator,
         quad: ImageQuadContext,
         dims: PositiveDimsU32,
-    ) !MappedReadback {
+    ) !gpu.pass.OffscreenFrameResult {
         return switch (self.*) {
             .gpu => |*r| r.renderImageReadback(
                 gpa,
@@ -303,7 +302,13 @@ fn resolveActiveImageQuad(
         .h = draw_dims.h,
     };
 
-    switch (entry.resident.asset) {
+    const prefer_thumb = app_state.viewer.ui.overlays.debug_show_thumb and
+        switch (entry.resident.thumbnail) {
+            .loaded => true,
+            .none, .pending, .staged_cpu, .not_available, .unloaded => false,
+        };
+
+    if (!prefer_thumb) switch (entry.resident.asset) {
         .loaded_gpu => |g| {
             return .{
                 .tex = g.gpu_texture,
@@ -335,7 +340,7 @@ fn resolveActiveImageQuad(
             };
         },
         .none, .loaded_cpu, .failed => {},
-    }
+    };
 
     switch (entry.resident.thumbnail) {
         .loaded => |thumb| {
@@ -792,6 +797,76 @@ fn buildDetailsModel(app_state: *const AppState) tui.overlays.DetailsModel {
     };
 }
 
+fn protocolDisplayLabel(target: ResolvedTarget) []const u8 {
+    return switch (target.protocol) {
+        .kitty => switch (target.transport) {
+            .direct => if (target.is_remote)
+                "Kitty (SSH PNG)"
+            else
+                "Kitty (local)",
+            .tmux_passthrough,
+            .tmux_unicode_placeholders,
+            => "Kitty (tmux)",
+        },
+        .sixel => "Sixel",
+        .iterm2 => "iTerm2",
+        .halfblocks => "Halfblocks (SIMD)",
+    };
+}
+
+fn buildStatsModel(
+    app_state: *const AppState,
+    target: ResolvedTarget,
+    layout: ViewportLayout,
+    last_gpu_pass_ms: f64,
+) tui.overlays.StatsModel {
+    const cache_opt = app_state.getCurrentEntry();
+    var read_ms: f64 = 0.0;
+    var decode_ms: f64 = 0.0;
+    var upload_ms: f64 = 0.0;
+    var vram_bytes: u64 = 0;
+
+    if (cache_opt) |c| {
+        switch (c.resident.asset) {
+            .loaded_gpu => |g| {
+                read_ms = g.decode.read_time_ms;
+                decode_ms = g.decode.decode_time_ms;
+                upload_ms = g.ingest.upload_time_ms;
+                vram_bytes = g.ingest.memory_size_bytes;
+            },
+            .promoting_gpu => |p| {
+                read_ms = p.active.decode.read_time_ms;
+                decode_ms = p.active.decode.decode_time_ms;
+                upload_ms = p.active.ingest.upload_time_ms;
+                vram_bytes = p.active.ingest.memory_size_bytes;
+            },
+            .loaded_cpu => |cpu| {
+                read_ms = cpu.cpu.decode.read_time_ms;
+                decode_ms = cpu.cpu.decode.decode_time_ms;
+            },
+            .none, .failed => {},
+        }
+    }
+
+    return .{
+        .protocol_label = protocolDisplayLabel(target),
+        .viewport_cols = layout.image_cols,
+        .viewport_rows = layout.image_rows,
+        .viewport_px_w = layout.image_px.w,
+        .viewport_px_h = layout.image_px.h,
+        .cell_px_w = layout.cell_px.w,
+        .cell_px_h = layout.cell_px.h,
+        .gpu_pass_ms = last_gpu_pass_ms,
+        .read_ms = read_ms,
+        .decode_ms = decode_ms,
+        .upload_ms = upload_ms,
+        .vram_bytes = vram_bytes,
+        .cached_entries = app_state.cache.slots.len,
+        .total_images = app_state.viewer.navigation.items.len,
+        .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
+    };
+}
+
 fn timerWakeTask(
     io: std.Io,
     loop: *vaxis.Loop(TuiEvent),
@@ -959,6 +1034,20 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
     try vx.resize(gpa, tty.writer(), winsize);
 
     var infobar_pos = cli.infobar;
+    var last_visible_infobar: InfobarPosition = switch (infobar_pos) {
+        .bottom, .top => infobar_pos,
+        .none => .bottom,
+    };
+    const initial_pinned = switch (infobar_pos) {
+        .bottom, .top => true,
+        .none => false,
+    };
+    app_state.viewer.ui.overlays.title_display = if (initial_pinned)
+        .pinned
+    else
+        .hidden;
+    var prev_title_pinned = initial_pinned;
+    var last_gpu_pass_ms: f64 = 0.0;
     var pres: PresentationState = .{ .transport = target.transport };
     defer pres.deinit(gpa, &vx, tty.writer());
 
@@ -1054,6 +1143,17 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         }
         if (acc.local_actions.cycle_infobar) {
             infobar_pos = infobar_pos.next();
+            switch (infobar_pos) {
+                .bottom, .top => {
+                    last_visible_infobar = infobar_pos;
+                    app_state.viewer.ui.overlays.title_display = .pinned;
+                    prev_title_pinned = true;
+                },
+                .none => {
+                    app_state.viewer.ui.overlays.title_display = .hidden;
+                    prev_title_pinned = false;
+                },
+            }
             pres.post_render.dirty = true;
         }
         if (acc.local_actions.open_file_search) {
@@ -1088,6 +1188,23 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         );
         if (!app_state.viewer.running) break;
 
+        // Sync `toggle_title` / `set_title` intents with the TUI infobar.
+        const now_title_pinned =
+            app_state.viewer.ui.overlays.title_display.isPinned();
+        if (now_title_pinned != prev_title_pinned) {
+            prev_title_pinned = now_title_pinned;
+            if (now_title_pinned) {
+                infobar_pos = last_visible_infobar;
+            } else {
+                switch (infobar_pos) {
+                    .bottom, .top => last_visible_infobar = infobar_pos,
+                    .none => {},
+                }
+                infobar_pos = .none;
+            }
+            pres.post_render.dirty = true;
+        }
+
         // Settle animations so terminal frames don't waste bandwidth on
         // intermediate interpolation frames, and finalize any closing palette.
         app_state.viewer.animations.settleAll();
@@ -1096,26 +1213,32 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             .open, .closed => {},
         }
 
+        const render_layout = ViewportLayout.compute(winsize, infobar_pos);
+        app_state.viewer.last_win_dims = .{
+            .w = @floatFromInt(render_layout.image_px.w),
+            .h = @floatFromInt(render_layout.image_px.h),
+        };
         const root_win = vx.window();
         root_win.clear();
-        const image_win = active_layout.imageWindow(root_win);
+        const image_win = render_layout.imageWindow(root_win);
 
-        if (resolveActiveImageQuad(&app_state, active_layout)) |active| {
+        if (resolveActiveImageQuad(&app_state, render_layout)) |active| {
             const key = RenderKey.init(
                 active.tex,
-                active_layout,
+                render_layout,
                 active.quad,
             );
             const dirty = pres.last_key == null or
                 !pres.last_key.?.eql(key);
             if (dirty) {
-                const readback = try renderer.renderImageReadback(
+                const frame_res = try renderer.renderImageReadback(
                     gpa,
                     frame_alloc,
                     active.quad,
-                    active_layout.image_px,
+                    render_layout.image_px,
                 );
-                defer readback.deinit();
+                defer frame_res.readback.deinit();
+                last_gpu_pass_ms = frame_res.timings.total_pass_ms;
 
                 try transmitFrame(
                     gpa,
@@ -1124,8 +1247,8 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     &vx,
                     tty.writer(),
                     target,
-                    active_layout,
-                    readback,
+                    render_layout,
+                    frame_res.readback,
                     &pres,
                 );
                 pres.last_key = key;
@@ -1139,8 +1262,8 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 try img.draw(image_win, .{
                     .z_index = -1_073_741_825,
                     .size = .{
-                        .cols = active_layout.image_cols,
-                        .rows = active_layout.image_rows,
+                        .cols = render_layout.image_cols,
+                        .rows = render_layout.image_rows,
                     },
                 });
             } else if (target.protocol == .halfblocks and
@@ -1157,13 +1280,14 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             pres.clearImage(&vx, tty.writer());
         }
 
-        if (active_layout.infobarWindow(root_win)) |bar| {
+        if (render_layout.infobarWindow(root_win)) |bar| {
             tui.infobar.render(bar, buildInfobarModel(&app_state), frame_alloc);
         }
 
         const pal_open = app_state.viewer.ui.palette.isAcceptingInput();
         const details_open = app_state.viewer.ui.overlays.info_panel.visible;
-        const overlay_open = pal_open or details_open;
+        const stats_open = app_state.viewer.ui.overlays.stats_panel.visible;
+        const overlay_open = pal_open or details_open or stats_open;
         if (pal_open) {
             const nav_slice = app_state.viewer.navigation.items.slice();
             tui.overlays.renderPalette(
@@ -1171,6 +1295,17 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 &app_state.viewer.ui.palette,
                 nav_slice.items(.entry),
                 nav_slice.items(.classification),
+                frame_alloc,
+            );
+        } else if (stats_open) {
+            tui.overlays.renderStats(
+                image_win,
+                buildStatsModel(
+                    &app_state,
+                    target,
+                    render_layout,
+                    last_gpu_pass_ms,
+                ),
                 frame_alloc,
             );
         } else if (details_open) {
@@ -1203,7 +1338,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             // never desync vaxis's tracked cursor state.
             try tty.writer().print(
                 "\x1b7\x1b[{d};1H",
-                .{active_layout.image_row + 1},
+                .{render_layout.image_row + 1},
             );
             try tty.writer().writeAll(pres.post_render.bytes.items);
             try tty.writer().writeAll("\x1b8");

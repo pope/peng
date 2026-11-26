@@ -45,6 +45,26 @@ pub const DetailsModel = struct {
     filter_name: []const u8 = "",
 };
 
+/// Snapshot of runtime performance and terminal graphics telemetry displayed
+/// in the Stats for Nerds (`toggle_stats`) modal.
+pub const StatsModel = struct {
+    protocol_label: []const u8 = "",
+    viewport_cols: u16 = 0,
+    viewport_rows: u16 = 0,
+    viewport_px_w: u32 = 0,
+    viewport_px_h: u32 = 0,
+    cell_px_w: u32 = 0,
+    cell_px_h: u32 = 0,
+    gpu_pass_ms: f64 = 0.0,
+    read_ms: f64 = 0.0,
+    decode_ms: f64 = 0.0,
+    upload_ms: f64 = 0.0,
+    vram_bytes: u64 = 0,
+    cached_entries: usize = 0,
+    total_images: usize = 0,
+    debug_show_thumb: bool = false,
+};
+
 fn modeAccent(mode: ActivePaletteMode) vaxis.Color {
     return switch (mode) {
         .files => fg_pink,
@@ -468,6 +488,96 @@ pub fn renderDetails(
     }
 }
 
+fn formatMs(allocator: std.mem.Allocator, ms: f64) []const u8 {
+    if (!std.math.isFinite(ms) or ms < 0.0) return "-";
+    return allocator.print("{d:.2} ms", .{ms}) catch "-";
+}
+
+/// Renders the Stats for Nerds (`toggle_stats`) telemetry modal centered
+/// inside `parent`. Formatted strings are allocated from `frame_allocator`,
+/// which must outlive `vaxis.render`.
+pub fn renderStats(
+    parent: vaxis.Window,
+    model: StatsModel,
+    frame_allocator: std.mem.Allocator,
+) void {
+    const inner = createCenteredModal(parent, 64, 13, fg_mauve) orelse return;
+
+    _ = writeClippedRow(inner, 0, 1, inner.width -| 2, "Stats for Nerds", .{
+        .fg = fg_mauve,
+        .bg = bg_modal,
+        .bold = true,
+    });
+
+    const vp_str = frame_allocator.print(
+        "{d}x{d} cells ({d}x{d} px, {d}x{d}/cell)",
+        .{
+            model.viewport_cols,
+            model.viewport_rows,
+            model.viewport_px_w,
+            model.viewport_px_h,
+            model.cell_px_w,
+            model.cell_px_h,
+        },
+    ) catch "-";
+    const io_dec_str = frame_allocator.print(
+        "{s} read / {s} decode",
+        .{
+            formatMs(frame_allocator, model.read_ms),
+            formatMs(frame_allocator, model.decode_ms),
+        },
+    ) catch "-";
+    const gpu_str = frame_allocator.print(
+        "{s} upload / {s} pass",
+        .{
+            formatMs(frame_allocator, model.upload_ms),
+            formatMs(frame_allocator, model.gpu_pass_ms),
+        },
+    ) catch "-";
+    const vram_str = if (model.vram_bytes > 0)
+        formatByteSize(frame_allocator, model.vram_bytes)
+    else
+        "-";
+    const cache_str = frame_allocator.print(
+        "{d} cached / {d} total",
+        .{ model.cached_entries, model.total_images },
+    ) catch "-";
+
+    const Row = struct { label: []const u8, value: []const u8 };
+    const rows = [_]Row{
+        .{ .label = "Protocol", .value = model.protocol_label },
+        .{ .label = "Viewport", .value = vp_str },
+        .{ .label = "CPU Decode", .value = io_dec_str },
+        .{ .label = "GPU Pass", .value = gpu_str },
+        .{ .label = "Image VRAM", .value = vram_str },
+        .{ .label = "Cache", .value = cache_str },
+        .{
+            .label = "Debug Thumb",
+            .value = if (model.debug_show_thumb) "ON" else "OFF",
+        },
+    };
+
+    const label_w: u16 = 12;
+    for (rows, 0..) |item, i| {
+        const r: u16 = @intCast(2 + i);
+        if (r >= inner.height) break;
+        _ = writeClippedRow(inner, r, 1, label_w, item.label, .{
+            .fg = fg_subtext,
+            .bg = bg_modal,
+        });
+        if (inner.width > label_w +| 3) {
+            _ = writeClippedRow(
+                inner,
+                r,
+                label_w +| 2,
+                inner.width -| (label_w +| 3),
+                item.value,
+                .{ .fg = fg_text, .bg = bg_modal },
+            );
+        }
+    }
+}
+
 fn screenContains(
     allocator: std.mem.Allocator,
     win: vaxis.Window,
@@ -619,4 +729,66 @@ test "renderDetails renders metadata and handles narrow screens safely" {
         arena.allocator(),
     );
     try std.testing.expect(!try screenContains(allocator, narrow_win, "\x1b"));
+}
+
+test "renderStats renders telemetry rows and handles NaN timings" {
+    const allocator = std.testing.allocator;
+    var screen = try vaxis.Screen.init(allocator, .{
+        .cols = 72,
+        .rows = 18,
+        .x_pixel = 720,
+        .y_pixel = 360,
+    });
+    defer screen.deinit(allocator);
+
+    const root: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 72,
+        .height = 18,
+        .screen = &screen,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    renderStats(root, .{
+        .protocol_label = "Kitty (local)",
+        .viewport_cols = 72,
+        .viewport_rows = 17,
+        .viewport_px_w = 720,
+        .viewport_px_h = 340,
+        .cell_px_w = 10,
+        .cell_px_h = 20,
+        .gpu_pass_ms = 1.25,
+        .read_ms = 0.5,
+        .decode_ms = std.math.nan(f64),
+        .upload_ms = 0.75,
+        .vram_bytes = 4 * 1024 * 1024,
+        .cached_entries = 3,
+        .total_images = 12,
+        .debug_show_thumb = true,
+    }, arena.allocator());
+
+    try std.testing.expect(try screenContains(
+        allocator,
+        root,
+        "Stats for Nerds",
+    ));
+    try std.testing.expect(try screenContains(
+        allocator,
+        root,
+        "Kitty (local)",
+    ));
+    try std.testing.expect(try screenContains(allocator, root, "4.00 MiB"));
+    try std.testing.expect(try screenContains(allocator, root, "3 cached"));
+    try std.testing.expect(try screenContains(
+        allocator,
+        root,
+        "0.50 ms read / - decode",
+    ));
+    try std.testing.expect(!try screenContains(allocator, root, "nan"));
+    try std.testing.expect(try screenContains(allocator, root, "ON"));
 }
