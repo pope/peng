@@ -102,6 +102,7 @@ fn uploadActivePendingThumb(
     entry.resident.thumbnail = .{
         .loaded = .{
             .texture = upload_res.gpu_texture,
+            .upload_id = cache.nextUploadId(),
             .info = .{
                 .w = upload_res.w,
                 .h = upload_res.h,
@@ -527,6 +528,7 @@ fn completeGpuUpload(
         const prev_gpu = entry.resident.asset.hasGpuTexture();
         entry.resident.asset.replaceGpuTexture(.{
             .gpu_texture = res.gpu_texture,
+            .upload_id = state.cache.nextUploadId(),
             .w = res.w,
             .h = res.h,
             .size_bytes = meta.size_bytes,

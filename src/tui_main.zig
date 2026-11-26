@@ -4,6 +4,7 @@
 //! GPU image-processing pipeline and `termgfx` graphics protocol encoders.
 
 const app = @import("app");
+const cache = @import("cache");
 const core = @import("core");
 const geom = @import("geom");
 const gpu = @import("gpu");
@@ -16,6 +17,7 @@ const vaxis = @import("vaxis");
 
 const AppState = app.state.AppState;
 const FRect = geom.FRect;
+const ImageCacheKey = cache.ImageCacheKey;
 const ImageCellCrop = tui.canvas.ImageCellCrop;
 const InfobarPosition = tui.canvas.InfobarPosition;
 const InputAccumulator = tui.input.InputAccumulator;
@@ -28,6 +30,7 @@ const RenderPacket = gpu.pass.RenderPacket;
 const RenderResources = gpu.graphics.RenderResources;
 const ResolvedTarget = termgfx.ResolvedTarget;
 const TextureRef = gpu.TextureRef;
+const TextureUploadId = cache.TextureUploadId;
 const TuiCliArgs = tui.cli.TuiCliArgs;
 const UvRect = geom.UvRect;
 const ViewportLayout = tui.canvas.ViewportLayout;
@@ -217,8 +220,20 @@ const FrameRenderer = union(enum) {
     }
 };
 
-const RenderKey = struct {
+const TextureLayer = enum {
+    primary,
+    thumbnail,
+};
+
+const TextureIdentity = struct {
+    upload_id: TextureUploadId,
+    cache_key: ImageCacheKey,
     tex_ptr: usize,
+    layer: TextureLayer,
+};
+
+const RenderKey = struct {
+    tex_id: TextureIdentity,
     image_row: u16,
     render_crop: ImageCellCrop,
     present_crop: ImageCellCrop,
@@ -234,7 +249,7 @@ const RenderKey = struct {
     quad_hash: u64,
 
     fn init(
-        tex: sdl.gpu.Texture,
+        tex_id: TextureIdentity,
         layout: ViewportLayout,
         render_crop: ImageCellCrop,
         present_crop: ImageCellCrop,
@@ -248,7 +263,7 @@ const RenderKey = struct {
         quad_hasher.update(std.mem.asBytes(&quad.rect));
         quad_hasher.update(std.mem.asBytes(&quad.uv));
         return .{
-            .tex_ptr = @intFromPtr(tex.ptr),
+            .tex_id = tex_id,
             .image_row = layout.image_row,
             .render_crop = render_crop,
             .present_crop = present_crop,
@@ -272,7 +287,7 @@ const RenderKey = struct {
 
 const ActiveImageQuad = struct {
     quad: ImageQuadContext,
-    tex: sdl.gpu.Texture,
+    tex_id: TextureIdentity,
     render_crop: ImageCellCrop,
     present_crop: ImageCellCrop,
     visible_rect: FRect,
@@ -282,7 +297,10 @@ fn resolveActiveImageQuad(
     app_state: *const AppState,
     layout: ViewportLayout,
 ) ?ActiveImageQuad {
-    const entry = app_state.getCurrentEntry() orelse return null;
+    const cur_id = app_state.viewer.navigation.getCurrentMediaId() orelse
+        return null;
+    const cache_key = app_state.cache.activeKey(cur_id);
+    const entry = app_state.cache.getEntry(cache_key) orelse return null;
     const vp = app_state.viewer.viewport;
     const auth = entry.getAuthoritativeDims();
     if (auth.w <= 0.0 or auth.h <= 0.0) return null;
@@ -361,7 +379,12 @@ fn resolveActiveImageQuad(
 
     if (!prefer_thumb) if (entry.resident.asset.activeGpu()) |g| {
         return .{
-            .tex = g.gpu_texture,
+            .tex_id = .{
+                .upload_id = g.upload_id,
+                .cache_key = cache_key,
+                .tex_ptr = @intFromPtr(g.gpu_texture.ptr),
+                .layer = .primary,
+            },
             .render_crop = render_crop,
             .present_crop = present_crop,
             .visible_rect = visible_rect,
@@ -386,7 +409,12 @@ fn resolveActiveImageQuad(
                 vp.rotation_angle,
             );
             return .{
-                .tex = thumb.texture,
+                .tex_id = .{
+                    .upload_id = thumb.upload_id,
+                    .cache_key = cache_key,
+                    .tex_ptr = @intFromPtr(thumb.texture.ptr),
+                    .layer = .thumbnail,
+                },
                 .render_crop = render_crop,
                 .present_crop = present_crop,
                 .visible_rect = visible_rect,
@@ -1731,7 +1759,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         const active_quad = resolveActiveImageQuad(&app_state, render_layout);
         if (active_quad) |active| {
             const key = RenderKey.init(
-                active.tex,
+                active.tex_id,
                 render_layout,
                 active.render_crop,
                 active.present_crop,

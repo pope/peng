@@ -70,9 +70,18 @@ pub const PendingThumbSurface = struct {
     }
 };
 
+/// Nominal monotonic identifier stamped on every uploaded GPU texture
+/// (primary assets and thumbnails) by `ImageCache.nextUploadId`. `.none` is
+/// reserved for synthetic unit-test stubs.
+pub const TextureUploadId = enum(u64) {
+    none = 0,
+    _,
+};
+
 /// Resident GPU texture allocation and VRAM memory footprint metadata.
 pub const GpuTextureComponent = struct {
     gpu_texture: sdl.gpu.Texture,
+    upload_id: TextureUploadId,
     w: f32,
     h: f32,
     size_bytes: u64,
@@ -296,6 +305,7 @@ pub const ThumbnailState = union(enum) {
     unloaded: ThumbnailInfo,
     loaded: struct {
         texture: sdl.gpu.Texture,
+        upload_id: TextureUploadId,
         info: ThumbnailInfo,
     },
 
@@ -428,6 +438,7 @@ pub const CacheEntry = struct {
             .{
                 .loaded = .{
                     .texture = dummy_tex,
+                    .upload_id = .none,
                     .info = .{
                         .w = thumb_dims.w,
                         .h = thumb_dims.h,
@@ -442,6 +453,7 @@ pub const CacheEntry = struct {
                 .asset = .{
                     .loaded_gpu = .{
                         .gpu_texture = dummy_tex,
+                        .upload_id = .none,
                         .w = full_dims.w,
                         .h = full_dims.h,
                         .size_bytes = 1000,
@@ -664,11 +676,23 @@ pub const ImageCache = struct {
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
     current_image_cache_hit: bool = false,
+    /// Monotonic main-thread counter stamping every GPU texture upload
+    /// (primary assets and thumbnails) to prevent pointer-reuse ABA bugs.
+    next_texture_upload_id: u64 = 1,
 
     /// Pinned array of atomic job epochs for zero-allocation cancellation.
     job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32) = @splat(.init(1)),
     /// Bitmask tracking active job IDs (0..15).
     job_alloc_mask: u16 = 0,
+
+    /// Allocates a strictly increasing non-`.none` upload ID for a newly
+    /// uploaded GPU texture (primary asset or thumbnail). Main-thread only.
+    pub fn nextUploadId(self: *ImageCache) TextureUploadId {
+        const id = self.next_texture_upload_id;
+        const next = id +% 1;
+        self.next_texture_upload_id = if (next == 0) 1 else next;
+        return @fromBackingInt(id);
+    }
 
     /// Allocates an unused job slot and returns its JobTicket.
     pub fn allocJob(self: *ImageCache) ?JobTicket {
@@ -1300,6 +1324,7 @@ test "enforceVramBudget - eviction, circular distance, neighbor protection" {
                     .asset = .{
                         .loaded_gpu = .{
                             .gpu_texture = undefined,
+                            .upload_id = .none,
                             .w = 100,
                             .h = 100,
                             .size_bytes = size,
@@ -1457,6 +1482,7 @@ test "hasUnreadyPrefetchSlots" {
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 100,
@@ -1839,6 +1865,7 @@ test "CacheEntry - getAuthoritativeDims priority resolution" {
     entry.resident.thumbnail = .{
         .loaded = .{
             .texture = undefined,
+            .upload_id = .none,
             .info = .{ .w = 160.0, .h = 120.0 },
         },
     };
@@ -2171,6 +2198,7 @@ test "ResidentAsset accessors across all variants" {
     const stub_tex = stub_gpu.gpu_texture;
     const gpu_comp = GpuTextureComponent{
         .gpu_texture = stub_tex,
+        .upload_id = .none,
         .w = 100.0,
         .h = 50.0,
         .size_bytes = 5678,

@@ -478,6 +478,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "app", .module = app_module },
+                .{ .name = "cache", .module = cache_module },
                 .{ .name = "core", .module = core_module },
                 .{ .name = "geom", .module = geom_module },
                 .{ .name = "gpu", .module = gpu_module },

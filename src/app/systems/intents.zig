@@ -1317,6 +1317,7 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
             .asset = .{
                 .loaded_gpu = .{
                     .gpu_texture = undefined,
+                    .upload_id = .none,
                     .w = 100,
                     .h = 100,
                     .size_bytes = 1000,
@@ -1739,6 +1740,7 @@ test "togglePairStream - requires loaded status before requesting target" {
     entry0.resident.asset = .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
+            .upload_id = .none,
             .w = 1616,
             .h = 1080,
             .size_bytes = 500_000,
