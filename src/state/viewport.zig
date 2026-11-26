@@ -215,6 +215,36 @@ pub const ViewportParams = struct {
             (dims.img.h > dims.view.h + 1.0);
     }
 
+    /// Clamps `pan_x` and `pan_y` so the rendered image cannot be panned past
+    /// the viewport bounds on either axis. Axes where the rendered image fits
+    /// within the viewport (matching `isOverflowing`'s 1 px tolerance) are
+    /// centered at `+0.0`. Non-finite pan values are always reset to `0.0`.
+    pub fn clampPan(
+        self: *ViewportParams,
+        auth_dims: PhysicalDims,
+        view_dims: PhysicalDims,
+    ) void {
+        if (!std.math.isFinite(self.pan_x)) self.pan_x = 0.0;
+        if (!std.math.isFinite(self.pan_y)) self.pan_y = 0.0;
+        const dims = self.renderedDims(auth_dims, view_dims) orelse return;
+        const max_x = if (dims.img.w > dims.view.w + 1.0)
+            (dims.img.w - dims.view.w) * 0.5
+        else
+            0.0;
+        const max_y = if (dims.img.h > dims.view.h + 1.0)
+            (dims.img.h - dims.view.h) * 0.5
+        else
+            0.0;
+        self.pan_x = if (max_x <= 0.0)
+            0.0
+        else
+            std.math.clamp(self.pan_x, -max_x, max_x);
+        self.pan_y = if (max_y <= 0.0)
+            0.0
+        else
+            std.math.clamp(self.pan_y, -max_y, max_y);
+    }
+
     /// Returns true if non-neutral photographic exposure or contrast
     /// adjustments are applied.
     pub fn hasAdjustments(self: ViewportParams) bool {
@@ -920,6 +950,77 @@ test "ViewportParams.overflowRatio handles modes, rotation, and bad dims" {
         @as(f32, 1.0),
         vp.overflowRatio(img, .{ .w = 0.0, .h = nan }),
     );
+}
+
+test "ViewportParams.clampPan keeps image within viewport bounds" {
+    const view = PhysicalDims{ .w = 1000.0, .h = 600.0 };
+    const img = PhysicalDims{ .w = 2000.0, .h = 1000.0 };
+
+    // 1. Fitted image locks both axes to +0.0 (no negative zero)
+    var vp: ViewportParams = .{};
+    vp.setPan(-120.0, -80.0);
+    vp.clampPan(img, view);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
+    try std.testing.expect(!std.math.signbit(vp.pan_x));
+    try std.testing.expect(!std.math.signbit(vp.pan_y));
+
+    // 1b. Non-power-of-two .fit ratio (1-ULP overshoot) still locks to +0.0
+    vp.setPan(50.0, -50.0);
+    vp.clampPan(
+        .{ .w = 1234.0, .h = 987.0 },
+        .{ .w = 1920.0, .h = 1080.0 },
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
+    try std.testing.expect(!vp.isZoomed());
+
+    // 2. Overflowing both axes (2000x1000 @ 1.0x in 1000x600):
+    //    max_x = (2000 - 1000)/2 = 500, max_y = (1000 - 600)/2 = 200
+    vp.mode = .manual;
+    vp.zoom_factor = ZoomFactor.init(1.0);
+    vp.setPan(999.0, -999.0);
+    vp.clampPan(img, view);
+    try std.testing.expectApproxEqAbs(@as(f32, 500.0), vp.pan_x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -200.0), vp.pan_y, 0.001);
+
+    // 3. Single-axis overflow (2000x400 @ 1.0x in 1000x600):
+    //    horizontal clamps to +-500, vertical locks to +0.0
+    vp.setPan(-800.0, -150.0);
+    vp.clampPan(.{ .w = 2000.0, .h = 400.0 }, view);
+    try std.testing.expectApproxEqAbs(@as(f32, -500.0), vp.pan_x, 0.001);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
+    try std.testing.expect(!std.math.signbit(vp.pan_y));
+
+    // 4. .fill mode on 4000x1000 pano in 1000x500 -> 2000x500 (max_x = 500)
+    vp.mode = .fill;
+    vp.setPan(900.0, -200.0);
+    vp.clampPan(.{ .w = 4000.0, .h = 1000.0 }, .{ .w = 1000.0, .h = 500.0 });
+    try std.testing.expectApproxEqAbs(@as(f32, 500.0), vp.pan_x, 0.001);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
+
+    // 5. 90-degree rotation swaps bounds (1000x2000 @ 1.0x in 1000x600):
+    //    max_x = 0, max_y = (2000 - 600)/2 = 700
+    vp.mode = .manual;
+    vp.zoom_factor = ZoomFactor.init(1.0);
+    vp.rotation_angle = 90.0;
+    vp.setPan(300.0, 900.0);
+    vp.clampPan(img, view);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_x);
+    try std.testing.expectApproxEqAbs(@as(f32, 700.0), vp.pan_y, 0.001);
+
+    // 6. Non-finite pan resets safely to 0.0 even when dims are unavailable
+    vp.rotation_angle = 0.0;
+    vp.setPan(std.math.nan(f32), std.math.inf(f32));
+    vp.clampPan(.{ .w = 0.0, .h = 0.0 }, view);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
+
+    // 7. Finite pan with unavailable dims is left untouched
+    vp.setPan(42.0, -17.0);
+    vp.clampPan(.{ .w = 0.0, .h = 0.0 }, view);
+    try std.testing.expectEqual(@as(f32, 42.0), vp.pan_x);
+    try std.testing.expectEqual(@as(f32, -17.0), vp.pan_y);
 }
 
 test "PanMetrics.fromViewport scales with viewport size, DPI, and overflow" {

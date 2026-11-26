@@ -774,6 +774,18 @@ pub const AppState = struct {
         return self.viewer.viewport.overflowRatio(auth, view_dims);
     }
 
+    /// Clamps viewport pan offsets to the rendered image bounds for
+    /// `view_dims`. No-op when no active image with positive authoritative
+    /// dimensions exists.
+    pub fn clampViewportPan(
+        self: *AppState,
+        view_dims: PhysicalDims,
+    ) void {
+        const entry = self.getCurrentEntry() orelse return;
+        const auth = entry.getAuthoritativeDims().asPositive() orelse return;
+        self.viewer.viewport.clampPan(auth, view_dims);
+    }
+
     /// Returns a copy of the CacheEntry corresponding to the currently active
     /// image, or null.
     pub fn getCurrentEntry(self: *const AppState) ?CacheEntry {

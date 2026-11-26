@@ -842,10 +842,15 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     defer self.flushPendingSelectionStreams();
     if (self.pending_intents.items.len == 0) return;
     defer self.clearIntents();
+    const view_dims = if (ctx.input) |inp|
+        self.getInputViewportPixelDims(inp)
+    else
+        self.getViewportPixelDims();
     for (self.pending_intents.items) |intent| {
         if (!self.viewer.running) break;
         const old_idx = self.viewer.navigation.current_index;
         try executeIntent(self, intent, ctx.now_ms);
+        self.clampViewportPan(view_dims);
         const advanced = (old_idx != null and
             self.viewer.navigation.current_index != old_idx);
         triggerSnackbarForIntent(
@@ -2562,4 +2567,68 @@ test "executeIntent - saturates snackbar and title deadlines near max u64" {
         ),
         .hidden, .pinned => return error.TestExpectedTransientTitle,
     }
+}
+
+test "sysExecuteIntents clamps pan_by, set_pan, zoom_out, and rotate_cw" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Headless default viewport is 1024x768; image is 2048x1536
+    _ = try app_st.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "clamp.png" },
+    });
+    app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
+        .inflight = .{ .queued_decode = .{} },
+    });
+    app_st.cache.get(key0).?.metadata.full_dims = .{
+        .w = 2048.0,
+        .h = 1536.0,
+    };
+
+    const ctx = FrameContext{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = null,
+        .delta_time_ms = 16.0,
+    };
+
+    // 1. Zoom 1.0x -> max_x = 512, max_y = 384; pan_by cannot exceed bounds
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state.clampZoomFactor(1.0);
+    try app_st.pushIntent(.{ .pan_by = .{ .dx = 900.0, .dy = -900.0 } });
+    try sysExecuteIntents(ctx);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 512.0),
+        app_st.viewer.viewport.pan_x,
+        0.01,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, -384.0),
+        app_st.viewer.viewport.pan_y,
+        0.01,
+    );
+
+    // 2. Zooming out to fit (0.5x) pulls pan cleanly back to 0.0
+    try app_st.pushIntent(.{ .set_zoom = 0.5 });
+    try sysExecuteIntents(ctx);
+    try std.testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.pan_y);
+
+    // 3. set_pan at 1.0x followed by rotate_cw swaps bounds:
+    //    rotated 1536x2048 in 1024x768 -> max_x = 256, max_y = 640
+    app_st.viewer.viewport.zoom_factor = state.clampZoomFactor(1.0);
+    try app_st.pushIntent(.{ .set_pan = .{ .x = 512.0, .y = 0.0 } });
+    try app_st.pushIntent(.rotate_cw);
+    try sysExecuteIntents(ctx);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 256.0),
+        app_st.viewer.viewport.pan_x,
+        0.01,
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.pan_y);
 }
