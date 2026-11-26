@@ -56,6 +56,7 @@ pub const StatsModel = struct {
     cell_px_w: u32 = 0,
     cell_px_h: u32 = 0,
     gpu_pass_ms: f64 = 0.0,
+    term_encode_ms: f64 = 0.0,
     read_ms: f64 = 0.0,
     decode_ms: f64 = 0.0,
     upload_ms: f64 = 0.0,
@@ -501,7 +502,7 @@ pub fn renderStats(
     model: StatsModel,
     frame_allocator: std.mem.Allocator,
 ) void {
-    const inner = createCenteredModal(parent, 64, 13, fg_mauve) orelse return;
+    const inner = createCenteredModal(parent, 64, 14, fg_mauve) orelse return;
 
     _ = writeClippedRow(inner, 0, 1, inner.width -| 2, "Stats for Nerds", .{
         .fg = fg_mauve,
@@ -534,6 +535,7 @@ pub fn renderStats(
             formatMs(frame_allocator, model.gpu_pass_ms),
         },
     ) catch "-";
+    const enc_str = formatMs(frame_allocator, model.term_encode_ms);
     const vram_str = if (model.vram_bytes > 0)
         formatByteSize(frame_allocator, model.vram_bytes)
     else
@@ -549,6 +551,7 @@ pub fn renderStats(
         .{ .label = "Viewport", .value = vp_str },
         .{ .label = "CPU Decode", .value = io_dec_str },
         .{ .label = "GPU Pass", .value = gpu_str },
+        .{ .label = "Term Encode", .value = enc_str },
         .{ .label = "Image VRAM", .value = vram_str },
         .{ .label = "Cache", .value = cache_str },
         .{
@@ -763,6 +766,7 @@ test "renderStats renders telemetry rows and handles NaN timings" {
         .cell_px_w = 10,
         .cell_px_h = 20,
         .gpu_pass_ms = 1.25,
+        .term_encode_ms = 3.45,
         .read_ms = 0.5,
         .decode_ms = std.math.nan(f64),
         .upload_ms = 0.75,
@@ -790,5 +794,11 @@ test "renderStats renders telemetry rows and handles NaN timings" {
         "0.50 ms read / - decode",
     ));
     try std.testing.expect(!try screenContains(allocator, root, "nan"));
+    try std.testing.expect(try screenContains(
+        allocator,
+        root,
+        "Term Encode",
+    ));
+    try std.testing.expect(try screenContains(allocator, root, "3.45 ms"));
     try std.testing.expect(try screenContains(allocator, root, "ON"));
 }

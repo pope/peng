@@ -706,6 +706,10 @@ const UiRenderKey = struct {
                     u64,
                     @bitCast(s.gpu_pass_ms),
                 )));
+                hasher.update(std.mem.asBytes(&@as(
+                    u64,
+                    @bitCast(s.term_encode_ms),
+                )));
                 hasher.update(std.mem.asBytes(&@as(u64, @bitCast(s.read_ms))));
                 hasher.update(std.mem.asBytes(&@as(
                     u64,
@@ -1394,6 +1398,7 @@ fn buildStatsModel(
     target: ResolvedTarget,
     layout: ViewportLayout,
     last_gpu_pass_ms: f64,
+    last_term_encode_ms: f64,
 ) tui.overlays.StatsModel {
     const cache_opt = app_state.getCurrentEntry();
     var read_ms: f64 = 0.0;
@@ -1432,6 +1437,7 @@ fn buildStatsModel(
         .cell_px_w = layout.cell_px.w,
         .cell_px_h = layout.cell_px.h,
         .gpu_pass_ms = last_gpu_pass_ms,
+        .term_encode_ms = last_term_encode_ms,
         .read_ms = read_ms,
         .decode_ms = decode_ms,
         .upload_ms = upload_ms,
@@ -1626,6 +1632,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
         .hidden;
     var prev_title_pinned = initial_pinned;
     var last_gpu_pass_ms: f64 = 0.0;
+    var last_term_encode_ms: f64 = 0.0;
     var pres: PresentationState = .{};
     defer pres.deinit(gpa, &vx, tty.writer());
 
@@ -1826,6 +1833,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     render_layout.cell_px,
                 );
 
+                const enc_start = std.Io.Clock.awake.now(io);
                 try transmitFrame(
                     gpa,
                     frame_alloc,
@@ -1839,6 +1847,15 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     sliced.readback,
                     &pres,
                 );
+                const enc_end = std.Io.Clock.awake.now(io);
+                switch (target.protocol) {
+                    .kitty, .sixel, .iterm2 => {
+                        last_term_encode_ms = state_pkg.durationToMs(
+                            enc_start.durationTo(enc_end),
+                        );
+                    },
+                    .halfblocks => {},
+                }
                 pres.last_key = key;
                 image_changed = true;
             }
@@ -1847,7 +1864,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             image_changed = true;
         }
 
-        const active_overlay: ActiveOverlay = if (app_state.viewer.ui.palette
+        var active_overlay: ActiveOverlay = if (app_state.viewer.ui.palette
             .isAcceptingInput())
             .palette
         else if (app_state.viewer.ui.overlays.stats_panel.visible)
@@ -1857,6 +1874,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     target,
                     render_layout,
                     last_gpu_pass_ms,
+                    last_term_encode_ms,
                 ),
             }
         else if (app_state.viewer.ui.overlays.info_panel.visible)
@@ -1900,12 +1918,23 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                 },
                 .halfblocks => |hb| {
                     if (hb.pixels.len > 0) {
+                        const blit_start = std.Io.Clock.awake.now(io);
                         tui.canvas.blitHalfblocksToWindow(
                             hb.crop.subWindow(image_win),
                             hb.pixels,
                             hb.pitch,
                             hb.dims,
                         );
+                        const blit_end = std.Io.Clock.awake.now(io);
+                        last_term_encode_ms = state_pkg.durationToMs(
+                            blit_start.durationTo(blit_end),
+                        );
+                        switch (active_overlay) {
+                            .stats => |*sm| {
+                                sm.term_encode_ms = last_term_encode_ms;
+                            },
+                            .none, .palette, .details => {},
+                        }
                     }
                 },
                 .none, .post_render => {},
