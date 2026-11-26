@@ -16,6 +16,7 @@ const vaxis = @import("vaxis");
 
 const AppState = app.state.AppState;
 const FRect = geom.FRect;
+const ImageCellCrop = tui.canvas.ImageCellCrop;
 const InfobarPosition = tui.canvas.InfobarPosition;
 const InputAccumulator = tui.input.InputAccumulator;
 const LogicalDims = geom.LogicalDims;
@@ -217,11 +218,8 @@ const FrameRenderer = union(enum) {
 
 const RenderKey = struct {
     tex_ptr: usize,
-    px_w: u32,
-    px_h: u32,
     image_row: u16,
-    image_cols: u16,
-    image_rows: u16,
+    crop: ImageCellCrop,
     mode: @TypeOf(@as(ViewportParams, .{}).mode),
     fit_mode: @TypeOf(@as(ViewportParams, .{}).fit_mode),
     zoom_bits: u32,
@@ -236,6 +234,7 @@ const RenderKey = struct {
     fn init(
         tex: sdl.gpu.Texture,
         layout: ViewportLayout,
+        crop: ImageCellCrop,
         quad: ImageQuadContext,
     ) RenderKey {
         const vp = quad.view_params;
@@ -247,11 +246,8 @@ const RenderKey = struct {
         quad_hasher.update(std.mem.asBytes(&quad.uv));
         return .{
             .tex_ptr = @intFromPtr(tex.ptr),
-            .px_w = layout.image_px.w,
-            .px_h = layout.image_px.h,
             .image_row = layout.image_row,
-            .image_cols = layout.image_cols,
-            .image_rows = layout.image_rows,
+            .crop = crop,
             .mode = vp.mode,
             .fit_mode = vp.fit_mode,
             .zoom_bits = @bitCast(vp.zoom_factor.get()),
@@ -273,6 +269,7 @@ const RenderKey = struct {
 const ActiveImageQuad = struct {
     quad: ImageQuadContext,
     tex: sdl.gpu.Texture,
+    crop: ImageCellCrop,
 };
 
 fn resolveActiveImageQuad(
@@ -295,11 +292,28 @@ fn resolveActiveImageQuad(
         vp.rotation_angle,
         vp.fit_mode,
     );
-    const canvas_rect: FRect = .{
+    const full_rect: FRect = .{
         .x = (view_logical.w - draw_dims.w) * 0.5,
         .y = (view_logical.h - draw_dims.h) * 0.5,
         .w = draw_dims.w,
         .h = draw_dims.h,
+    };
+    // Crop to fitted image cells in unpanned `.fit` mode to avoid reading back
+    // and transferring empty letterbox margins; keep full viewport when panned
+    // or in `.fill`/`.manual` modes so dragging/zooming never clips or
+    // reallocates the offscreen GPU target per frame.
+    const crop: ImageCellCrop = switch (vp.mode) {
+        .fit => if (vp.pan_x == 0.0 and vp.pan_y == 0.0)
+            layout.cropForRect(full_rect)
+        else
+            layout.fullCrop(),
+        .fill, .manual => layout.fullCrop(),
+    };
+    const canvas_rect: FRect = .{
+        .x = full_rect.x - crop.pxOffsetX(layout.cell_px),
+        .y = full_rect.y - crop.pxOffsetY(layout.cell_px),
+        .w = full_rect.w,
+        .h = full_rect.h,
     };
 
     const prefer_thumb = app_state.viewer.ui.overlays.debug_show_thumb and
@@ -312,6 +326,7 @@ fn resolveActiveImageQuad(
         .loaded_gpu => |g| {
             return .{
                 .tex = g.gpu_texture,
+                .crop = crop,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = g.gpu_texture },
@@ -327,6 +342,7 @@ fn resolveActiveImageQuad(
         .promoting_gpu => |promo| {
             return .{
                 .tex = promo.active.gpu_texture,
+                .crop = crop,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = promo.active.gpu_texture },
@@ -368,6 +384,7 @@ fn resolveActiveImageQuad(
             uv.source_h = if (swapped) auth.w else auth.h;
             return .{
                 .tex = thumb.texture,
+                .crop = crop,
                 .quad = .{
                     .rect = canvas_rect,
                     .texture = .{ .tex = thumb.texture },
@@ -384,6 +401,13 @@ const CachedHalfblocks = struct {
     pixels: []u8 = &.{},
     pitch: usize = 0,
     dims: PositiveDimsU32 = .{ .w = 1, .h = 1 },
+    crop: ImageCellCrop = .{
+        .col_off = 0,
+        .row_off = 0,
+        .cols = 1,
+        .rows = 1,
+        .px = .{ .w = 1, .h = 1 },
+    },
 
     fn deinit(self: *CachedHalfblocks, gpa: std.mem.Allocator) void {
         if (self.pixels.len > 0) {
@@ -396,6 +420,7 @@ const CachedHalfblocks = struct {
         self: *CachedHalfblocks,
         gpa: std.mem.Allocator,
         readback: MappedReadback,
+        crop: ImageCellCrop,
     ) !void {
         if (self.pixels.len != readback.pixels.len) {
             const next = try gpa.alloc(u8, readback.pixels.len);
@@ -405,6 +430,7 @@ const CachedHalfblocks = struct {
         @memcpy(self.pixels, readback.pixels);
         self.pitch = readback.pitch;
         self.dims = readback.dims;
+        self.crop = crop;
     }
 };
 
@@ -452,8 +478,11 @@ const ActiveOverlay = union(enum) {
 
 const UiImageState = union(enum) {
     none,
-    kitty: u32,
-    other,
+    kitty: struct {
+        id: u32,
+        crop: ImageCellCrop,
+    },
+    other: ImageCellCrop,
 };
 
 const UiRenderKey = struct {
@@ -626,11 +655,13 @@ const UiRenderKey = struct {
 
 const KittyVaxisState = struct {
     image: vaxis.Image,
+    crop: ImageCellCrop,
     pending_free_id: ?u32 = null,
 };
 
 const PostRenderState = struct {
     payload: CachedPostRenderPayload = .{},
+    crop: ImageCellCrop,
     kitty_fallback: ?termgfx.TransportMode = null,
 };
 
@@ -720,8 +751,11 @@ const PresentationState = struct {
         if (!has_quad) return .none;
         return switch (self.content) {
             .none => .none,
-            .kitty_vaxis => |kv| .{ .kitty = kv.image.id },
-            .halfblocks, .post_render => .other,
+            .kitty_vaxis => |kv| .{
+                .kitty = .{ .id = kv.image.id, .crop = kv.crop },
+            },
+            .halfblocks => |hb| .{ .other = hb.crop },
+            .post_render => |pr| .{ .other = pr.crop },
         };
     }
 
@@ -753,10 +787,20 @@ const PresentationState = struct {
         gpa: std.mem.Allocator,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
+        crop: ImageCellCrop,
         kitty_fallback: ?termgfx.TransportMode,
     ) *CachedPostRenderPayload {
         switch (self.content) {
             .post_render => |*pr| {
+                if (!pr.crop.eql(crop)) {
+                    // Wipe stale Sixel/iTerm2/Kitty-fallback margins when the
+                    // cropped cell rectangle shifts or shrinks.
+                    if (pr.kitty_fallback) |tr| {
+                        emitKittyDeleteFallback(tty_writer, tr);
+                    }
+                    vx.queueRefresh();
+                }
+                pr.crop = crop;
                 pr.kitty_fallback = kitty_fallback;
                 pr.payload.clear();
                 return &pr.payload;
@@ -764,7 +808,10 @@ const PresentationState = struct {
             .none, .kitty_vaxis, .halfblocks => {
                 self.clearContent(gpa, vx, tty_writer);
                 self.content = .{
-                    .post_render = .{ .kitty_fallback = kitty_fallback },
+                    .post_render = .{
+                        .crop = crop,
+                        .kitty_fallback = kitty_fallback,
+                    },
                 };
                 return &self.content.post_render.payload;
             },
@@ -777,6 +824,7 @@ const PresentationState = struct {
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
         new_img: vaxis.Image,
+        crop: ImageCellCrop,
     ) void {
         switch (self.content) {
             .kitty_vaxis => |*kv| {
@@ -788,10 +836,13 @@ const PresentationState = struct {
                 }
                 kv.pending_free_id = kv.image.id;
                 kv.image = new_img;
+                kv.crop = crop;
             },
             .none, .halfblocks, .post_render => {
                 self.clearContent(gpa, vx, tty_writer);
-                self.content = .{ .kitty_vaxis = .{ .image = new_img } };
+                self.content = .{
+                    .kitty_vaxis = .{ .image = new_img, .crop = crop },
+                };
             },
         }
     }
@@ -826,13 +877,14 @@ fn transmitFrame(
     tty_writer: *std.Io.Writer,
     target: ResolvedTarget,
     layout: ViewportLayout,
+    crop: ImageCellCrop,
     readback: MappedReadback,
     pres: *PresentationState,
 ) !void {
     switch (target.protocol) {
         .halfblocks => {
             const hb = pres.ensureHalfblocks(gpa, vx, tty_writer);
-            try hb.update(gpa, readback);
+            try hb.update(gpa, readback, crop);
         },
         .kitty => {
             if (vx.caps.kitty_graphics and target.transport == .direct and
@@ -893,12 +945,13 @@ fn transmitFrame(
                     );
                 };
 
-                pres.setKittyImage(gpa, vx, tty_writer, new_img);
+                pres.setKittyImage(gpa, vx, tty_writer, new_img, crop);
             } else {
                 const payload = pres.ensurePostRender(
                     gpa,
                     vx,
                     tty_writer,
+                    crop,
                     target.transport,
                 );
                 var aw: std.Io.Writer.Allocating = .fromArrayList(
@@ -910,8 +963,8 @@ fn transmitFrame(
                 const opts: termgfx.PreviewOptions = .{
                     .transport = target.transport,
                     .cell_dims = .{
-                        .cols = layout.image_cols,
-                        .rows = layout.image_rows,
+                        .cols = crop.cols,
+                        .rows = crop.rows,
                     },
                     .cell_px = layout.cell_px,
                 };
@@ -955,7 +1008,13 @@ fn transmitFrame(
             }
         },
         .sixel => {
-            const payload = pres.ensurePostRender(gpa, vx, tty_writer, null);
+            const payload = pres.ensurePostRender(
+                gpa,
+                vx,
+                tty_writer,
+                crop,
+                null,
+            );
             var aw: std.Io.Writer.Allocating = .fromArrayList(
                 gpa,
                 &payload.bytes,
@@ -977,7 +1036,13 @@ fn transmitFrame(
             payload.dirty = true;
         },
         .iterm2 => {
-            const payload = pres.ensurePostRender(gpa, vx, tty_writer, null);
+            const payload = pres.ensurePostRender(
+                gpa,
+                vx,
+                tty_writer,
+                crop,
+                null,
+            );
             const png = try encodeReadbackPng(frame_allocator, readback);
             defer frame_allocator.free(png);
             var aw: std.Io.Writer.Allocating = .fromArrayList(
@@ -1550,6 +1615,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
             const key = RenderKey.init(
                 active.tex,
                 render_layout,
+                active.crop,
                 active.quad,
             );
             const dirty = pres.last_key == null or
@@ -1559,7 +1625,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     gpa,
                     frame_alloc,
                     active.quad,
-                    render_layout.image_px,
+                    active.crop.px,
                 );
                 defer frame_res.readback.deinit();
                 last_gpu_pass_ms = frame_res.timings.total_pass_ms;
@@ -1572,6 +1638,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     tty.writer(),
                     target,
                     render_layout,
+                    active.crop,
                     frame_res.readback,
                     &pres,
                 );
@@ -1626,18 +1693,18 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     // and non-default cell backgrounds (Kitty spec), so modals
                     // with explicit RGB backgrounds render opaque while
                     // `.default` viewport cells let the image show through.
-                    try kv.image.draw(image_win, .{
+                    try kv.image.draw(kv.crop.subWindow(image_win), .{
                         .z_index = -1_073_741_825,
                         .size = .{
-                            .cols = render_layout.image_cols,
-                            .rows = render_layout.image_rows,
+                            .cols = kv.crop.cols,
+                            .rows = kv.crop.rows,
                         },
                     });
                 },
                 .halfblocks => |hb| {
                     if (hb.pixels.len > 0) {
                         tui.canvas.blitHalfblocksToWindow(
-                            image_win,
+                            hb.crop.subWindow(image_win),
                             hb.pixels,
                             hb.pitch,
                             hb.dims,
@@ -1703,8 +1770,11 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !?[]u8 {
                     // Save/restore cursor via DECSC/DECRC so raw post-render
                     // graphics never desync vaxis's tracked cursor state.
                     try tty.writer().print(
-                        "\x1b7\x1b[{d};1H",
-                        .{render_layout.image_row + 1},
+                        "\x1b7\x1b[{d};{d}H",
+                        .{
+                            render_layout.image_row + pr.crop.row_off + 1,
+                            pr.crop.col_off + 1,
+                        },
                     );
                     try tty.writer().writeAll(pr.payload.bytes.items);
                     try tty.writer().writeAll("\x1b8");

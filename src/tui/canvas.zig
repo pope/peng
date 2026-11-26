@@ -10,6 +10,7 @@ const termgfx = @import("termgfx");
 const vaxis = @import("vaxis");
 
 const CellPixelSize = termgfx.CellPixelSize;
+const FRect = geom.FRect;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
 const upper_half_block = "\xe2\x96\x80";
@@ -27,6 +28,46 @@ pub const InfobarPosition = enum {
             .top => .none,
             .none => .bottom,
         };
+    }
+};
+
+/// Cell-aligned sub-rectangle of `ViewportLayout`'s image area, used to crop
+/// offscreen GPU readbacks and terminal graphics transfers to the visible
+/// image bounds (excluding empty letterbox margins).
+pub const ImageCellCrop = struct {
+    col_off: u16,
+    row_off: u16,
+    cols: u16,
+    rows: u16,
+    px: PositiveDimsU32,
+
+    /// Pixel X offset of `col_off` within the full image viewport.
+    pub fn pxOffsetX(self: ImageCellCrop, cell_px: CellPixelSize) f32 {
+        return @floatFromInt(@as(u32, self.col_off) * @as(u32, cell_px.w));
+    }
+
+    /// Pixel Y offset of `row_off` within the full image viewport.
+    pub fn pxOffsetY(self: ImageCellCrop, cell_px: CellPixelSize) f32 {
+        return @floatFromInt(@as(u32, self.row_off) * @as(u32, cell_px.h));
+    }
+
+    /// Returns the child `vaxis.Window` inside `image_win` corresponding to
+    /// this cropped cell rectangle.
+    pub fn subWindow(
+        self: ImageCellCrop,
+        image_win: vaxis.Window,
+    ) vaxis.Window {
+        return image_win.child(.{
+            .x_off = self.col_off,
+            .y_off = self.row_off,
+            .width = self.cols,
+            .height = self.rows,
+        });
+    }
+
+    /// Returns `true` when two crops have identical cell and pixel bounds.
+    pub fn eql(a: ImageCellCrop, b: ImageCellCrop) bool {
+        return std.meta.eql(a, b);
     }
 };
 
@@ -109,6 +150,100 @@ pub const ViewportLayout = struct {
             .infobar_row = band.infobar_row,
             .cell_px = cell_px,
             .image_px = .{ .w = px_w, .h = px_h },
+        };
+    }
+
+    /// Returns the uncropped cell rectangle covering the entire image viewport.
+    pub fn fullCrop(self: ViewportLayout) ImageCellCrop {
+        return .{
+            .col_off = 0,
+            .row_off = 0,
+            .cols = self.image_cols,
+            .rows = self.image_rows,
+            .px = self.image_px,
+        };
+    }
+
+    /// Snaps a pixel-space rectangle `rect` (in `[0, image_px]`) outward to
+    /// the terminal cell grid, clamped to `[0, image_cols] x [0, image_rows]`.
+    /// Falls back to `fullCrop()` when `rect` is non-finite or non-positive.
+    pub fn cropForRect(self: ViewportLayout, rect: FRect) ImageCellCrop {
+        if (!std.math.isFinite(rect.x) or !std.math.isFinite(rect.y) or
+            !std.math.isFinite(rect.w) or !std.math.isFinite(rect.h) or
+            rect.w <= 0.0 or rect.h <= 0.0)
+        {
+            return self.fullCrop();
+        }
+        const max_px_w: f32 = @floatFromInt(self.image_px.w);
+        const max_px_h: f32 = @floatFromInt(self.image_px.h);
+        const min_x = std.math.clamp(rect.x, 0.0, max_px_w);
+        const max_x = std.math.clamp(rect.x + rect.w, 0.0, max_px_w);
+        const min_y = std.math.clamp(rect.y, 0.0, max_px_h);
+        const max_y = std.math.clamp(rect.y + rect.h, 0.0, max_px_h);
+        if (max_x <= min_x or max_y <= min_y) {
+            return self.fullCrop();
+        }
+
+        const cw: f32 = @floatFromInt(@max(self.cell_px.w, 1));
+        const ch: f32 = @floatFromInt(@max(self.cell_px.h, 1));
+        const max_cols_f: f32 = @floatFromInt(self.image_cols);
+        const max_rows_f: f32 = @floatFromInt(self.image_rows);
+
+        const col_start_f = std.math.clamp(
+            @floor(min_x / cw),
+            0.0,
+            max_cols_f,
+        );
+        const col_end_f = std.math.clamp(
+            @ceil(max_x / cw),
+            0.0,
+            max_cols_f,
+        );
+        const row_start_f = std.math.clamp(
+            @floor(min_y / ch),
+            0.0,
+            max_rows_f,
+        );
+        const row_end_f = std.math.clamp(
+            @ceil(max_y / ch),
+            0.0,
+            max_rows_f,
+        );
+
+        const col_off: u16 = @min(
+            self.image_cols -| 1,
+            @as(u16, @intFromFloat(col_start_f)),
+        );
+        const col_end: u16 = @min(
+            self.image_cols,
+            @max(col_off + 1, @as(u16, @intFromFloat(col_end_f))),
+        );
+        const row_off: u16 = @min(
+            self.image_rows -| 1,
+            @as(u16, @intFromFloat(row_start_f)),
+        );
+        const row_end: u16 = @min(
+            self.image_rows,
+            @max(row_off + 1, @as(u16, @intFromFloat(row_end_f))),
+        );
+
+        const cols = col_end - col_off;
+        const rows = row_end - row_off;
+        return .{
+            .col_off = col_off,
+            .row_off = row_off,
+            .cols = cols,
+            .rows = rows,
+            .px = .{
+                .w = @max(
+                    @as(u32, 1),
+                    @as(u32, cols) * @as(u32, self.cell_px.w),
+                ),
+                .h = @max(
+                    @as(u32, 1),
+                    @as(u32, rows) * @as(u32, self.cell_px.h),
+                ),
+            },
         };
     }
 
@@ -208,6 +343,58 @@ pub fn blitHalfblocksToWindow(
             });
         }
     }
+}
+
+test "ViewportLayout.cropForRect snaps outward, clamps, handles edge cases" {
+    const layout = ViewportLayout.compute(
+        .{ .cols = 100, .rows = 40, .x_pixel = 1000, .y_pixel = 800 },
+        .bottom,
+    );
+    // Portrait image centered horizontally: x in [255, 745], full height.
+    const crop = layout.cropForRect(.{
+        .x = 255.0,
+        .y = 0.0,
+        .w = 490.0,
+        .h = 780.0,
+    });
+    // floor(255 / 10) = 25, ceil(745 / 10) = 75 -> 50 cols (500px).
+    try std.testing.expectEqual(@as(u16, 25), crop.col_off);
+    try std.testing.expectEqual(@as(u16, 0), crop.row_off);
+    try std.testing.expectEqual(@as(u16, 50), crop.cols);
+    try std.testing.expectEqual(@as(u16, 39), crop.rows);
+    try std.testing.expectEqual(@as(u32, 500), crop.px.w);
+    try std.testing.expectEqual(@as(u32, 780), crop.px.h);
+    try std.testing.expectEqual(
+        @as(f32, 250.0),
+        crop.pxOffsetX(layout.cell_px),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        crop.pxOffsetY(layout.cell_px),
+    );
+
+    // Rect larger than viewport clamps to fullCrop.
+    const oversized = layout.cropForRect(.{
+        .x = -50.0,
+        .y = -20.0,
+        .w = 1200.0,
+        .h = 900.0,
+    });
+    try std.testing.expect(oversized.eql(layout.fullCrop()));
+
+    // Non-finite or empty rects safely fall back to fullCrop.
+    try std.testing.expect(layout.cropForRect(.{
+        .x = std.math.nan(f32),
+        .y = 0.0,
+        .w = 100.0,
+        .h = 100.0,
+    }).eql(layout.fullCrop()));
+    try std.testing.expect(layout.cropForRect(.{
+        .x = 0.0,
+        .y = 0.0,
+        .w = 0.0,
+        .h = 100.0,
+    }).eql(layout.fullCrop()));
 }
 
 test "InfobarPosition.next cycles bottom -> top -> none -> bottom" {
