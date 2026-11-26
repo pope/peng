@@ -417,6 +417,11 @@ pub fn build(b: *std.Build) void {
     msg_exe.dead_strip_dylibs = is_darwin;
     b.installArtifact(msg_exe);
 
+    const run_msg_step = b.step("run-msg", "Run peng-msg");
+    const run_msg_cmd = b.addRunArtifact(msg_exe);
+    run_msg_step.dependOn(&run_msg_cmd.step);
+    run_msg_cmd.addPassthruArgs();
+
     const preview_exe = b.addExecutable(.{
         .name = "peng-preview",
         .root_module = b.createModule(.{
@@ -436,6 +441,11 @@ pub fn build(b: *std.Build) void {
     preview_exe.force_load_objc = is_darwin and static_sdl;
     b.installArtifact(preview_exe);
 
+    const run_preview_step = b.step("run-preview", "Run peng-preview");
+    const run_preview_cmd = b.addRunArtifact(preview_exe);
+    run_preview_step.dependOn(&run_preview_cmd.step);
+    run_preview_cmd.addPassthruArgs();
+
     const precache_exe = b.addExecutable(.{
         .name = "peng-precache",
         .root_module = b.createModule(.{
@@ -454,6 +464,11 @@ pub fn build(b: *std.Build) void {
     precache_exe.dead_strip_dylibs = is_darwin;
     precache_exe.force_load_objc = is_darwin and static_sdl;
     b.installArtifact(precache_exe);
+
+    const run_precache_step = b.step("run-precache", "Run peng-precache");
+    const run_precache_cmd = b.addRunArtifact(precache_exe);
+    run_precache_step.dependOn(&run_precache_cmd.step);
+    run_precache_cmd.addPassthruArgs();
 
     const test_runner_exe = b.addExecutable(.{
         .name = "peng-test-runner",
