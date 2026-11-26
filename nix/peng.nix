@@ -139,7 +139,7 @@ stdenv.mkDerivation (_finalAttrs: {
 
   postConfigure = ''
     mkdir -p .zig-cache/p
-    cp -r --no-preserve=mode ${callPackage ./deps.nix { }}/* .zig-cache/p/
+    cp -rL --no-preserve=mode ${callPackage ./deps.nix { }}/* .zig-cache/p/
     export ZIG_GLOBAL_CACHE_DIR=$PWD/.zig-cache
   ''
   + lib.optionalString static ''
