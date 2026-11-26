@@ -494,6 +494,11 @@ pub fn build(b: *std.Build) void {
     tui_exe.step.dependOn(compile_shaders);
     b.installArtifact(tui_exe);
 
+    const run_tui_step = b.step("run-tui", "Run peng-tui");
+    const run_tui_cmd = b.addRunArtifact(tui_exe);
+    run_tui_step.dependOn(&run_tui_cmd.step);
+    run_tui_cmd.addPassthruArgs();
+
     const precache_exe = b.addExecutable(.{
         .name = "peng-precache",
         .root_module = b.createModule(.{
