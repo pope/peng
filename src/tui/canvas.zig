@@ -14,6 +14,7 @@ const FRect = geom.FRect;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
 const upper_half_block = "\xe2\x96\x80";
+const lower_half_block = "\xe2\x96\x84";
 
 /// Placement of the 1-row status bar inside the terminal viewport.
 pub const InfobarPosition = enum {
@@ -486,7 +487,7 @@ pub fn blitHalfblocksToWindow(
 
         var c: u16 = 0;
         while (c < win.width) : (c += 1) {
-            const top = toVaxisColor(termgfx.sampleHalfblockBox(
+            const top_raw = termgfx.sampleHalfblockBox(
                 rgba_pixels,
                 pitch,
                 dims,
@@ -494,8 +495,8 @@ pub fn blitHalfblocksToWindow(
                 cols,
                 top_idx,
                 half_rows,
-            ));
-            const bot = toVaxisColor(termgfx.sampleHalfblockBox(
+            );
+            const bot_raw = termgfx.sampleHalfblockBox(
                 rgba_pixels,
                 pitch,
                 dims,
@@ -503,14 +504,80 @@ pub fn blitHalfblocksToWindow(
                 cols,
                 bot_idx,
                 half_rows,
-            ));
+            );
+            const top = toVaxisColor(top_raw);
+            const bot = toVaxisColor(bot_raw);
 
-            win.writeCell(c, r, .{
-                .char = .{ .grapheme = upper_half_block, .width = 1 },
-                .style = .{ .fg = top, .bg = bot },
-            });
+            // Never put `.default` on `.fg` of a block glyph (which would draw
+            // in the terminal's foreground text color instead of background).
+            const cell: vaxis.Cell = if (top_raw.eql(bot_raw))
+                .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{ .fg = .default, .bg = top },
+                }
+            else switch (top_raw) {
+                .default => .{
+                    .char = .{ .grapheme = lower_half_block, .width = 1 },
+                    .style = .{ .fg = bot, .bg = .default },
+                },
+                .rgb => .{
+                    .char = .{ .grapheme = upper_half_block, .width = 1 },
+                    .style = .{ .fg = top, .bg = bot },
+                },
+            };
+            win.writeCell(c, r, cell);
         }
     }
+}
+
+test "blitHalfblocksToWindow avoids default foreground on transparent edges" {
+    const allocator = std.testing.allocator;
+    var screen = try vaxis.Screen.init(allocator, .{
+        .cols = 3,
+        .rows = 1,
+        .x_pixel = 30,
+        .y_pixel = 20,
+    });
+    defer screen.deinit(allocator);
+
+    const win: vaxis.Window = .{
+        .x_off = 0,
+        .y_off = 0,
+        .parent_x_off = 0,
+        .parent_y_off = 0,
+        .width = 3,
+        .height = 1,
+        .screen = &screen,
+    };
+
+    // 3x2 RGBA image:
+    // col 0: both transparent -> space with default bg
+    // col 1: top transparent, bottom red -> lower half block (fg=red, bg=def)
+    // col 2: both blue -> space with blue bg
+    const pixels = [_]u8{
+        0, 0, 0, 0, 0,   0, 0, 0,   0, 0, 255, 255,
+        0, 0, 0, 0, 255, 0, 0, 255, 0, 0, 255, 255,
+    };
+    blitHalfblocksToWindow(win, &pixels, 3 * 4, .{ .w = 3, .h = 2 });
+
+    const c0 = win.readCell(0, 0).?;
+    try std.testing.expectEqualStrings(" ", c0.char.grapheme);
+    try std.testing.expectEqual(vaxis.Color.default, c0.style.bg);
+
+    const c1 = win.readCell(1, 0).?;
+    try std.testing.expectEqualStrings(lower_half_block, c1.char.grapheme);
+    try std.testing.expectEqual(
+        vaxis.Color{ .rgb = .{ 255, 0, 0 } },
+        c1.style.fg,
+    );
+    try std.testing.expectEqual(vaxis.Color.default, c1.style.bg);
+
+    const c2 = win.readCell(2, 0).?;
+    try std.testing.expectEqualStrings(" ", c2.char.grapheme);
+    try std.testing.expectEqual(
+        vaxis.Color{ .rgb = .{ 0, 0, 255 } },
+        c2.style.bg,
+    );
 }
 
 test "ViewportLayout.cropForRect snaps outward, clamps, handles edge cases" {
@@ -797,10 +864,7 @@ test "blitHalfblocksToWindow handles exact, padded, scaled, and invalid" {
     // Upscaling 1x1 solid gray onto 2x1 window fills both cells cleanly.
     const one_px = [_]u8{ 100, 150, 200, 255 };
     blitHalfblocksToWindow(win, &one_px, 4, .{ .w = 1, .h = 1 });
-    try std.testing.expectEqual(
-        vaxis.Color{ .rgb = .{ 100, 150, 200 } },
-        win.readCell(1, 0).?.style.fg,
-    );
+    try std.testing.expectEqualStrings(" ", win.readCell(1, 0).?.char.grapheme);
     try std.testing.expectEqual(
         vaxis.Color{ .rgb = .{ 100, 150, 200 } },
         win.readCell(1, 0).?.style.bg,
