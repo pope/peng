@@ -52,10 +52,14 @@ pub const PreviewSurface = struct {
     }
 };
 
+/// Maximum byte length of a local Kitty transfer path or shared-memory name
+/// (`384` raw bytes encode to `512` base64 characters, matching `termgfx`).
+pub const max_kitty_path_len: usize = 384;
+
 /// Result of rendering a raw RGBA32 preview file for the Kitty Graphics
 /// Protocol (`t=t`).
 pub const PreviewRenderResult = struct {
-    path_buf: [128]u8 = undefined,
+    path_buf: [max_kitty_path_len]u8 = undefined,
     path_len: usize,
     dims: PositiveDimsU32,
 
@@ -402,6 +406,60 @@ const TempPreviewFile = struct {
     res: PreviewRenderResult,
 };
 
+const win32 = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn GetTempPathW(
+        nBufferLength: u32,
+        lpBuffer: [*]u16,
+    ) callconv(.winapi) u32;
+} else struct {};
+
+fn utf16LeToUtf8Bounded(buf: []u8, utf16le: []const u16) ?[]const u8 {
+    var iter = std.unicode.Utf16LeIterator.init(utf16le);
+    var out_len: usize = 0;
+    while (iter.nextCodepoint() catch return null) |cp| {
+        const cp_len = std.unicode.utf8CodepointSequenceLength(cp) catch
+            return null;
+        if (out_len + cp_len > buf.len) return null;
+        _ = std.unicode.utf8Encode(cp, buf[out_len..]) catch return null;
+        out_len += cp_len;
+    }
+    return buf[0..out_len];
+}
+
+fn resolveWindowsTempDir(buf: []u8) ?[]const u8 {
+    if (comptime builtin.os.tag != .windows) {
+        @compileError("resolveWindowsTempDir is Windows-only");
+    }
+    var wide_buf: [512]u16 = undefined;
+    const n = win32.GetTempPathW(@intCast(wide_buf.len), &wide_buf);
+    if (n == 0 or n >= wide_buf.len) return null;
+    const dir = utf16LeToUtf8Bounded(buf, wide_buf[0..n]) orelse return null;
+    if (dir.len == 0) return null;
+    return dir;
+}
+
+fn formatTempPreviewPath(
+    buf: []u8,
+    dir_prefix: []const u8,
+    tick: u64,
+    seq: u64,
+    ext: []const u8,
+) ![]const u8 {
+    if (dir_prefix.len == 0) return error.InvalidTempDir;
+    const last = dir_prefix[dir_prefix.len - 1];
+    const sep: []const u8 = if (last == '/' or last == '\\')
+        ""
+    else if (comptime builtin.os.tag == .windows)
+        "\\"
+    else
+        "/";
+    return std.mem.print(
+        buf,
+        "{s}{s}tty-graphics-protocol-peng-{x}-{d}.{s}",
+        .{ dir_prefix, sep, tick, seq, ext },
+    );
+}
+
 fn createTempPreviewFile(
     io: std.Io,
     ext: []const u8,
@@ -421,13 +479,28 @@ fn createTempPreviewFile(
         .dims = dims,
     };
 
-    const candidate_dirs = [_][]const u8{ "/dev/shm", "/tmp" };
+    var win_dir_buf: [max_kitty_path_len]u8 = undefined;
+    var candidate_buf: [2][]const u8 = undefined;
+    const candidate_dirs: []const []const u8 =
+        if (comptime builtin.os.tag == .windows) blk: {
+            const tmp = resolveWindowsTempDir(&win_dir_buf) orelse
+                return error.TempFileCreateFailed;
+            candidate_buf[0] = tmp;
+            break :blk candidate_buf[0..1];
+        } else blk: {
+            candidate_buf[0] = "/dev/shm";
+            candidate_buf[1] = "/tmp";
+            break :blk candidate_buf[0..2];
+        };
+
     dir_loop: for (candidate_dirs) |dir_prefix| {
         for (0..4) |attempt| {
-            const candidate_path = std.mem.print(
+            const candidate_path = formatTempPreviewPath(
                 &res.path_buf,
-                "{s}/tty-graphics-protocol-peng-{x}-{d}.{s}",
-                .{ dir_prefix, tick, seq + attempt, ext },
+                dir_prefix,
+                tick,
+                seq + attempt,
+                ext,
             ) catch continue :dir_loop;
             if (std.Io.Dir.createFile(
                 std.Io.Dir.cwd(),
@@ -468,7 +541,8 @@ pub fn writeOutputFileAtomic(
 
 /// Decodes, orients, and scales `path` to fit within `max_dims`, encodes it as
 /// JPEG (opaque) or PNG (alpha), and writes it to a temporary file in
-/// `/dev/shm` or `/tmp`. Caller owns the returned file path.
+/// `/dev/shm` or `/tmp` (or the Windows temp directory via `GetTempPathW`).
+/// Caller owns the returned file path.
 pub fn renderPreviewEncodedFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -556,7 +630,7 @@ pub const KittyTransferKind = enum {
 /// a temporary file (`t=t`) for Kitty Graphics Protocol transmission.
 pub const KittyTransferResult = struct {
     kind: KittyTransferKind,
-    name_buf: [128]u8 = undefined,
+    name_buf: [max_kitty_path_len]u8 = undefined,
     name_len: usize = 0,
     dims: PositiveDimsU32,
 
@@ -820,8 +894,9 @@ pub fn renderPreviewKittyLocal(
 }
 
 /// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
-/// raw packed RGBA32 bytes to a temporary file in `/dev/shm` or `/tmp` for
-/// Kitty Graphics Protocol `t=t` transfer.
+/// raw packed RGBA32 bytes to a temporary file in `/dev/shm` or `/tmp` (or the
+/// Windows temp directory via `GetTempPathW`) for Kitty Graphics Protocol
+/// `t=t` transfer.
 pub fn renderPreviewRgbaFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -926,5 +1001,89 @@ test "renderPreviewKittyLocal writes RGBA32 to POSIX shm and cleans up" {
                 @as(u64, res.dims.h) * 4;
             try std.testing.expectEqual(expected, stat.size);
         }
+    } else {
+        try std.testing.expectEqual(KittyTransferKind.temp_file, res.kind);
+        try std.testing.expect(
+            std.mem.find(u8, res.name(), "tty-graphics-protocol-peng-") != null,
+        );
+        const stat = try std.Io.Dir.statFile(
+            std.Io.Dir.cwd(),
+            io,
+            res.name(),
+            .{},
+        );
+        const expected: u64 = @as(u64, res.dims.w) *
+            @as(u64, res.dims.h) * 4;
+        try std.testing.expectEqual(expected, stat.size);
     }
+}
+
+test "formatTempPreviewPath handles trailing separators and empty dir" {
+    var buf: [max_kitty_path_len]u8 = undefined;
+    try std.testing.expectError(
+        error.InvalidTempDir,
+        formatTempPreviewPath(&buf, "", 0x10, 1, "rgba"),
+    );
+
+    const with_trailing = try formatTempPreviewPath(
+        &buf,
+        "C:\\Temp\\",
+        0x10,
+        2,
+        "rgba",
+    );
+    try std.testing.expectEqualStrings(
+        "C:\\Temp\\tty-graphics-protocol-peng-10-2.rgba",
+        with_trailing,
+    );
+
+    const without_trailing = try formatTempPreviewPath(
+        &buf,
+        "/tmp",
+        0x1a,
+        3,
+        "rgba",
+    );
+    const expected_sep = if (comptime builtin.os.tag == .windows) "\\" else "/";
+    var exp_buf: [64]u8 = undefined;
+    const expected = try std.mem.print(
+        &exp_buf,
+        "/tmp{s}tty-graphics-protocol-peng-1a-3.rgba",
+        .{expected_sep},
+    );
+    try std.testing.expectEqualStrings(expected, without_trailing);
+}
+
+test "utf16LeToUtf8Bounded converts UTF-16LE and rejects overflow/surrogates" {
+    var small: [8]u8 = undefined;
+    // Exact 8-byte ASCII fit.
+    const ascii_ok = [_]u16{ 'C', ':', '\\', 'T', 'e', 'm', 'p', '\\' };
+    try std.testing.expectEqualStrings(
+        "C:\\Temp\\",
+        utf16LeToUtf8Bounded(&small, &ascii_ok).?,
+    );
+    // 9-byte ASCII overflows 8-byte buffer without panicking.
+    const ascii_over = [_]u16{ 'C', ':', '\\', 'T', 'e', 'm', 'p', '\\', 'x' };
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        utf16LeToUtf8Bounded(&small, &ascii_over),
+    );
+    // Three 3-byte BMP chars (9 UTF-8 bytes) overflow 8-byte buffer.
+    const bmp_over = [_]u16{ 0x65E5, 0x672C, 0x8A9E };
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        utf16LeToUtf8Bounded(&small, &bmp_over),
+    );
+    // Two 3-byte BMP chars (6 UTF-8 bytes) fit in 8-byte buffer.
+    const bmp_ok = [_]u16{ 0x65E5, 0x672C };
+    try std.testing.expectEqualStrings(
+        "\xe6\x97\xa5\xe6\x9c\xac",
+        utf16LeToUtf8Bounded(&small, &bmp_ok).?,
+    );
+    // Unpaired high surrogate is rejected cleanly.
+    const lone_surrogate = [_]u16{ 0xD800, 'a' };
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        utf16LeToUtf8Bounded(&small, &lone_surrogate),
+    );
 }
