@@ -443,8 +443,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     var sub_no_img_buf: [160]u8 = undefined;
     const sub_no_img = try std.mem.print(
         &sub_no_img_buf,
-        "{s}/sub_no_images",
-        .{tmp_dir},
+        "{s}{c}sub_no_images",
+        .{ tmp_dir, std.Io.Dir.path.sep },
     );
 
     var state = try AppState.initHeadless(allocator, io);

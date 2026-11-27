@@ -1468,11 +1468,12 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     try std.testing.expectEqual(@as(usize, 3), entries.items.len);
 
     var exp_buf: [160]u8 = undefined;
+    const sep = std.Io.Dir.path.sep;
 
     // Index 0: sub_a
     try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
     try std.testing.expectEqualStrings(
-        try std.mem.print(&exp_buf, "{s}/sub_a", .{tmp_dir_path}),
+        try std.mem.print(&exp_buf, "{s}{c}sub_a", .{ tmp_dir_path, sep }),
         entries.items[0].getFullPath(),
     );
     try std.testing.expectEqual(
@@ -1490,7 +1491,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 1: sub_b
     try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
     try std.testing.expectEqualStrings(
-        try std.mem.print(&exp_buf, "{s}/sub_b", .{tmp_dir_path}),
+        try std.mem.print(&exp_buf, "{s}{c}sub_b", .{ tmp_dir_path, sep }),
         entries.items[1].getFullPath(),
     );
     try std.testing.expectEqual(
@@ -1508,7 +1509,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 2: sub_empty
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
     try std.testing.expectEqualStrings(
-        try std.mem.print(&exp_buf, "{s}/sub_empty", .{tmp_dir_path}),
+        try std.mem.print(&exp_buf, "{s}{c}sub_empty", .{ tmp_dir_path, sep }),
         entries.items[2].getFullPath(),
     );
     try std.testing.expectEqual(

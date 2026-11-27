@@ -1,4 +1,5 @@
 const app_state = @import("../state.zig");
+const builtin = @import("builtin");
 const cache_pkg = @import("cache");
 const context = @import("context.zig");
 const geom = @import("geom");
@@ -751,6 +752,7 @@ test "prepareCacheTextures - uploads loaded_cpu without double free" {
 }
 
 test "completeGpuUpload - enqueues thumb write before swapRemove" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);

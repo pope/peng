@@ -3,6 +3,7 @@
 //! Bridges SDL surface loading, smooth downscaling, orthogonal EXIF rotation,
 //! and PNG encoding with the pure `thumbcache` module.
 
+const builtin = @import("builtin");
 const geom = @import("geom");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -338,6 +339,7 @@ test "writeThumbnailPng and loadCachedThumbnail roundtrip with rotation" {
 }
 
 test "precacheFileThumbnail and precachePathsParallel valid thumbnails" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 

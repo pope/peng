@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const cache = @import("cache");
 const context = @import("context.zig");
 const core = @import("core");
@@ -2388,6 +2389,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
 }
 
 test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 

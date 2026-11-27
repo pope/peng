@@ -1346,10 +1346,12 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
         );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .enabled);
-        try std.testing.expectEqualStrings(
-            "/custom/xdg_cache/thumbnails",
-            cfg.enabled.cache_dir,
+        const exp_xdg = try std.Io.Dir.path.join(
+            allocator,
+            &.{ "/custom/xdg_cache", "thumbnails" },
         );
+        defer allocator.free(exp_xdg);
+        try std.testing.expectEqualStrings(exp_xdg, cfg.enabled.cache_dir);
         try std.testing.expectEqual(ThumbTier.normal, cfg.enabled.write_tier);
         try std.testing.expectEqual(
             ThumbWritePolicy.all_missing,
@@ -1373,10 +1375,12 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
         );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .enabled);
-        try std.testing.expectEqualStrings(
-            "/home/tester/.cache/thumbnails",
-            cfg.enabled.cache_dir,
+        const exp_home = try std.Io.Dir.path.join(
+            allocator,
+            &.{ "/home/tester", ".cache", "thumbnails" },
         );
+        defer allocator.free(exp_home);
+        try std.testing.expectEqualStrings(exp_home, cfg.enabled.cache_dir);
         try std.testing.expectEqual(
             ThumbWritePolicy.missing_embedded_only,
             cfg.enabled.write_policy,
@@ -1501,8 +1505,12 @@ test "collectPrecacheFiles respects flat vs recursive directory traversal" {
         try std.testing.expect(
             std.mem.endsWith(u8, rec_paths.items[0], "a.jpg"),
         );
+        const nested_suffix = if (builtin.os.tag == .windows)
+            "nested\\b.png"
+        else
+            "nested/b.png";
         try std.testing.expect(
-            std.mem.endsWith(u8, rec_paths.items[1], "nested/b.png"),
+            std.mem.endsWith(u8, rec_paths.items[1], nested_suffix),
         );
     }
 }
