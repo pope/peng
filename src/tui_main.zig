@@ -971,6 +971,7 @@ const PresentationState = struct {
     last_key: ?RenderKey = null,
     last_ui_key: ?UiRenderKey = null,
     content: PresentationContent = .none,
+    warned_local_kitty_fallback: bool = false,
 
     fn deinit(
         self: *PresentationState,
@@ -1205,6 +1206,26 @@ fn encodeReadbackPng(
     return surf.encodePngAlloc(gpa);
 }
 
+fn transmitVaxisKittySurfacePng(
+    frame_allocator: std.mem.Allocator,
+    vx: *vaxis.Vaxis,
+    tty_writer: *std.Io.Writer,
+    surf: sdl.Surface,
+    w_u16: u16,
+    h_u16: u16,
+) !vaxis.Image {
+    const png = try surf.encodePngAlloc(frame_allocator);
+    defer frame_allocator.free(png);
+    return vx.transmitImage(
+        frame_allocator,
+        tty_writer,
+        png,
+        w_u16,
+        h_u16,
+        .png,
+    );
+}
+
 fn encodeReadbackIterm2(
     gpa: std.mem.Allocator,
     readback: MappedReadback,
@@ -1262,29 +1283,23 @@ fn transmitFrame(
             {
                 const w_u16: u16 = @intCast(readback.dims.w);
                 const h_u16: u16 = @intCast(readback.dims.h);
-                const new_img: vaxis.Image = if (target.is_remote) blk: {
-                    const png = try encodeReadbackPng(
+                const surf = try wrapReadbackSurface(readback);
+                defer surf.destroy();
+
+                const new_img: vaxis.Image = if (target.is_remote)
+                    try transmitVaxisKittySurfacePng(
                         frame_allocator,
-                        readback,
-                    );
-                    defer frame_allocator.free(png);
-                    break :blk try vx.transmitImage(
-                        frame_allocator,
+                        vx,
                         tty_writer,
-                        png,
+                        surf,
                         w_u16,
                         h_u16,
-                        .png,
-                    );
-                } else blk: {
-                    const surf = try wrapReadbackSurface(readback);
-                    defer surf.destroy();
-
-                    const transfer = try core.preview.writeSurfaceKittyLocal(
-                        io,
-                        surf,
-                        readback.dims,
-                    );
+                    )
+                else if (core.preview.writeSurfaceKittyLocal(
+                    io,
+                    surf,
+                    readback.dims,
+                )) |transfer| blk: {
                     errdefer transfer.cleanup(io);
                     const med: vaxis.Image.TransmitMedium =
                         switch (transfer.kind) {
@@ -1299,6 +1314,23 @@ fn transmitFrame(
                         h_u16,
                         med,
                         .rgba,
+                    );
+                } else |err| blk: {
+                    if (!pres.warned_local_kitty_fallback) {
+                        pres.warned_local_kitty_fallback = true;
+                        std.log.warn(
+                            "Local Kitty transfer unavailable ({s}); " ++
+                                "falling back to direct PNG",
+                            .{@errorName(err)},
+                        );
+                    }
+                    break :blk try transmitVaxisKittySurfacePng(
+                        frame_allocator,
+                        vx,
+                        tty_writer,
+                        surf,
+                        w_u16,
+                        h_u16,
                     );
                 };
 
