@@ -287,6 +287,31 @@ fn preparePreviewCommand(
     }
 
     const target = protocol.resolve(environ_map);
+    if (output_path == null) {
+        if (target.unsupportedKittyReason()) |msg| {
+            std.log.err("{s}", .{msg});
+            return error.InvalidPreviewArgs;
+        }
+        switch (protocol) {
+            .kitty_shm => {
+                std.log.err(
+                    "Kitty shared memory (kitty-shm) is not supported by " ++
+                        "peng-msg.",
+                    .{},
+                );
+                return error.InvalidPreviewArgs;
+            },
+            .auto,
+            .kitty,
+            .kitty_temp,
+            .kitty_direct,
+            .kitty_rgba,
+            .sixel,
+            .iterm2,
+            .halfblocks,
+            => {},
+        }
+    }
     const term_target: ?termgfx.ResolvedTarget = if (output_path == null)
         target
     else
@@ -479,7 +504,21 @@ fn writeTerminalPreview(
 
     switch (target.protocol) {
         .kitty => {
-            if (target.is_remote) {
+            const use_direct = switch (target.kitty_transfer) {
+                .auto => target.is_remote,
+                .temp_file => false,
+                .direct, .direct_rgba => true,
+                .shm => {
+                    deleteTempFileQuiet(io, prev.path);
+                    std.log.err(
+                        "Kitty shared memory (kitty-shm) is not supported " ++
+                            "by peng-msg.",
+                        .{},
+                    );
+                    return false;
+                },
+            };
+            if (use_direct) {
                 defer deleteTempFileQuiet(io, prev.path);
                 const rgba = readRgbaTempFile(
                     gpa,

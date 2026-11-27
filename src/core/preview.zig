@@ -839,6 +839,32 @@ fn writeSurfaceRgbaToTempFile(
 }
 
 /// Writes an already-rendered RGBA32 `sdl.Surface` (`dims`) to POSIX shared
+/// memory (`t=s`). Returns `error.UnsupportedPlatform` on Windows.
+pub fn writeSurfaceKittyShm(
+    io: std.Io,
+    surface: sdl.Surface,
+    dims: PositiveDimsU32,
+) !KittyTransferResult {
+    return writeRgbaToShm(io, surface, dims);
+}
+
+/// Writes an already-rendered RGBA32 `sdl.Surface` (`dims`) to a temporary
+/// file (`t=t`) in `/dev/shm`, `/tmp`, or the Windows temp directory.
+pub fn writeSurfaceKittyTempFile(
+    io: std.Io,
+    surface: sdl.Surface,
+    dims: PositiveDimsU32,
+) !KittyTransferResult {
+    const tmp_res = try writeSurfaceRgbaToTempFile(io, surface, dims);
+    return .{
+        .kind = .temp_file,
+        .name_buf = tmp_res.path_buf,
+        .name_len = tmp_res.path_len,
+        .dims = tmp_res.dims,
+    };
+}
+
+/// Writes an already-rendered RGBA32 `sdl.Surface` (`dims`) to POSIX shared
 /// memory (`t=s`) when available, falling back to a temporary file (`t=t`) if
 /// `shm_open` is unavailable.
 pub fn writeSurfaceKittyLocal(
@@ -846,7 +872,7 @@ pub fn writeSurfaceKittyLocal(
     surface: sdl.Surface,
     dims: PositiveDimsU32,
 ) !KittyTransferResult {
-    if (writeRgbaToShm(io, surface, dims)) |shm_res| {
+    if (writeSurfaceKittyShm(io, surface, dims)) |shm_res| {
         return shm_res;
     } else |err| {
         std.log.debug(
@@ -855,13 +881,7 @@ pub fn writeSurfaceKittyLocal(
         );
     }
 
-    const tmp_res = try writeSurfaceRgbaToTempFile(io, surface, dims);
-    return .{
-        .kind = .temp_file,
-        .name_buf = tmp_res.path_buf,
-        .name_len = tmp_res.path_len,
-        .dims = tmp_res.dims,
-    };
+    return writeSurfaceKittyTempFile(io, surface, dims);
 }
 
 /// Decodes, orients, and scales `path` to fit within `max_dims`, then writes

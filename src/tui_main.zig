@@ -672,14 +672,37 @@ const CachedHalfblocks = struct {
 const CachedPostRenderPayload = struct {
     bytes: std.ArrayList(u8) = .empty,
     dirty: bool = false,
+    is_one_shot: bool = false,
+    pending_transfer: ?core.preview.KittyTransferResult = null,
 
-    fn deinit(self: *CachedPostRenderPayload, gpa: std.mem.Allocator) void {
+    fn deinit(
+        self: *CachedPostRenderPayload,
+        gpa: std.mem.Allocator,
+        io: std.Io,
+    ) void {
+        if (self.pending_transfer) |tr| {
+            tr.cleanup(io);
+            self.pending_transfer = null;
+        }
         self.bytes.deinit(gpa);
     }
 
-    fn clear(self: *CachedPostRenderPayload) void {
+    fn clear(self: *CachedPostRenderPayload, io: std.Io) void {
+        if (self.pending_transfer) |tr| {
+            tr.cleanup(io);
+            self.pending_transfer = null;
+        }
         self.bytes.clearRetainingCapacity();
         self.dirty = false;
+        self.is_one_shot = false;
+    }
+
+    fn markDelivered(self: *CachedPostRenderPayload) void {
+        self.pending_transfer = null;
+        self.dirty = false;
+        if (self.is_one_shot) {
+            self.bytes.clearRetainingCapacity();
+        }
     }
 };
 
@@ -972,14 +995,16 @@ const PresentationState = struct {
     last_ui_key: ?UiRenderKey = null,
     content: PresentationContent = .none,
     warned_local_kitty_fallback: bool = false,
+    needs_retransmit: bool = false,
 
     fn deinit(
         self: *PresentationState,
         gpa: std.mem.Allocator,
+        io: std.Io,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
     ) void {
-        self.clearImage(gpa, vx, tty_writer);
+        self.clearImage(gpa, io, vx, tty_writer);
     }
 
     fn flushPendingKittyFree(
@@ -1001,6 +1026,7 @@ const PresentationState = struct {
     fn clearContent(
         self: *PresentationState,
         gpa: std.mem.Allocator,
+        io: std.Io,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
     ) void {
@@ -1017,7 +1043,7 @@ const PresentationState = struct {
                 if (pr.kitty_fallback) |tr| {
                     emitKittyDeleteFallback(tty_writer, tr);
                 }
-                pr.payload.deinit(gpa);
+                pr.payload.deinit(gpa, io);
             },
         }
         self.content = .none;
@@ -1026,11 +1052,13 @@ const PresentationState = struct {
     fn clearImage(
         self: *PresentationState,
         gpa: std.mem.Allocator,
+        io: std.Io,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
     ) void {
         self.last_key = null;
-        self.clearContent(gpa, vx, tty_writer);
+        self.needs_retransmit = false;
+        self.clearContent(gpa, io, vx, tty_writer);
     }
 
     fn hasActiveContent(self: *const PresentationState) bool {
@@ -1057,7 +1085,16 @@ const PresentationState = struct {
 
     fn markPostRenderDirty(self: *PresentationState) void {
         switch (self.content) {
-            .post_render => |*pr| pr.payload.dirty = true,
+            .post_render => |*pr| {
+                if (pr.payload.is_one_shot and
+                    pr.payload.bytes.items.len == 0)
+                {
+                    self.last_key = null;
+                    self.needs_retransmit = true;
+                } else {
+                    pr.payload.dirty = true;
+                }
+            },
             .none, .kitty_vaxis, .halfblocks => {},
         }
     }
@@ -1065,13 +1102,14 @@ const PresentationState = struct {
     fn ensureHalfblocks(
         self: *PresentationState,
         gpa: std.mem.Allocator,
+        io: std.Io,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
     ) *CachedHalfblocks {
         switch (self.content) {
             .halfblocks => |*hb| return hb,
             .none, .kitty_vaxis, .post_render => {
-                self.clearContent(gpa, vx, tty_writer);
+                self.clearContent(gpa, io, vx, tty_writer);
                 self.content = .{ .halfblocks = .{} };
                 return &self.content.halfblocks;
             },
@@ -1081,6 +1119,7 @@ const PresentationState = struct {
     fn ensurePostRender(
         self: *PresentationState,
         gpa: std.mem.Allocator,
+        io: std.Io,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
         crop: ImageCellCrop,
@@ -1102,11 +1141,11 @@ const PresentationState = struct {
                 pr.crop = crop;
                 pr.pixel_dims = pixel_dims;
                 pr.kitty_fallback = kitty_fallback;
-                pr.payload.clear();
+                pr.payload.clear(io);
                 return &pr.payload;
             },
             .none, .kitty_vaxis, .halfblocks => {
-                self.clearContent(gpa, vx, tty_writer);
+                self.clearContent(gpa, io, vx, tty_writer);
                 self.content = .{
                     .post_render = .{
                         .crop = crop,
@@ -1122,6 +1161,7 @@ const PresentationState = struct {
     fn setKittyImage(
         self: *PresentationState,
         gpa: std.mem.Allocator,
+        io: std.Io,
         vx: *vaxis.Vaxis,
         tty_writer: *std.Io.Writer,
         new_img: vaxis.Image,
@@ -1140,7 +1180,7 @@ const PresentationState = struct {
                 kv.crop = crop;
             },
             .none, .halfblocks, .post_render => {
-                self.clearContent(gpa, vx, tty_writer);
+                self.clearContent(gpa, io, vx, tty_writer);
                 self.content = .{
                     .kitty_vaxis = .{ .image = new_img, .crop = crop },
                 };
@@ -1226,6 +1266,79 @@ fn transmitVaxisKittySurfacePng(
     );
 }
 
+fn transmitVaxisKittyRgba(
+    frame_allocator: std.mem.Allocator,
+    vx: *vaxis.Vaxis,
+    tty_writer: *std.Io.Writer,
+    readback: MappedReadback,
+    w_u16: u16,
+    h_u16: u16,
+) !vaxis.Image {
+    if (w_u16 == 0 or h_u16 == 0) return error.InvalidDimensions;
+    const row_bytes: usize = @as(usize, w_u16) * 4;
+    if (readback.pitch < row_bytes) return error.InvalidPitch;
+    const h_usize: usize = @as(usize, h_u16);
+    const required_bytes: u64 =
+        @as(u64, h_usize - 1) *| @as(u64, readback.pitch) +|
+        @as(u64, row_bytes);
+    if (required_bytes > readback.pixels.len) return error.BufferTooSmall;
+    const total_bytes = std.math.mul(usize, row_bytes, h_usize) catch
+        return error.DimensionsTooLarge;
+    if (readback.pitch == row_bytes) {
+        return vx.transmitImage(
+            frame_allocator,
+            tty_writer,
+            readback.pixels[0..total_bytes],
+            w_u16,
+            h_u16,
+            .rgba,
+        );
+    }
+    const packed_rgba = try frame_allocator.alloc(u8, total_bytes);
+    defer frame_allocator.free(packed_rgba);
+    for (0..h_usize) |row| {
+        const src_start = row * readback.pitch;
+        const dst_start = row * row_bytes;
+        @memcpy(
+            packed_rgba[dst_start .. dst_start + row_bytes],
+            readback.pixels[src_start .. src_start + row_bytes],
+        );
+    }
+    return vx.transmitImage(
+        frame_allocator,
+        tty_writer,
+        packed_rgba,
+        w_u16,
+        h_u16,
+        .rgba,
+    );
+}
+
+fn transmitVaxisKittyTransfer(
+    frame_allocator: std.mem.Allocator,
+    io: std.Io,
+    vx: *vaxis.Vaxis,
+    tty_writer: *std.Io.Writer,
+    transfer: core.preview.KittyTransferResult,
+    w_u16: u16,
+    h_u16: u16,
+) !vaxis.Image {
+    errdefer transfer.cleanup(io);
+    const med: vaxis.Image.TransmitMedium = switch (transfer.kind) {
+        .shared_memory => .shared_mem,
+        .temp_file => .temp_file,
+    };
+    return vx.transmitLocalImagePath(
+        frame_allocator,
+        tty_writer,
+        transfer.name(),
+        w_u16,
+        h_u16,
+        med,
+        .rgba,
+    );
+}
+
 fn encodeReadbackIterm2(
     gpa: std.mem.Allocator,
     readback: MappedReadback,
@@ -1273,7 +1386,7 @@ fn transmitFrame(
 ) !void {
     switch (target.protocol) {
         .halfblocks => {
-            const hb = pres.ensureHalfblocks(gpa, vx, tty_writer);
+            const hb = pres.ensureHalfblocks(gpa, io, vx, tty_writer);
             try hb.update(gpa, readback, crop);
         },
         .kitty => {
@@ -1283,61 +1396,117 @@ fn transmitFrame(
             {
                 const w_u16: u16 = @intCast(readback.dims.w);
                 const h_u16: u16 = @intCast(readback.dims.h);
-                const surf = try wrapReadbackSurface(readback);
-                defer surf.destroy();
-
-                const new_img: vaxis.Image = if (target.is_remote)
-                    try transmitVaxisKittySurfacePng(
+                const new_img: vaxis.Image = switch (target.kitty_transfer) {
+                    .direct_rgba => try transmitVaxisKittyRgba(
                         frame_allocator,
                         vx,
                         tty_writer,
-                        surf,
+                        readback,
                         w_u16,
                         h_u16,
-                    )
-                else if (core.preview.writeSurfaceKittyLocal(
-                    io,
-                    surf,
-                    readback.dims,
-                )) |transfer| blk: {
-                    errdefer transfer.cleanup(io);
-                    const med: vaxis.Image.TransmitMedium =
-                        switch (transfer.kind) {
-                            .shared_memory => .shared_mem,
-                            .temp_file => .temp_file,
-                        };
-                    break :blk try vx.transmitLocalImagePath(
-                        frame_allocator,
-                        tty_writer,
-                        transfer.name(),
-                        w_u16,
-                        h_u16,
-                        med,
-                        .rgba,
-                    );
-                } else |err| blk: {
-                    if (!pres.warned_local_kitty_fallback) {
-                        pres.warned_local_kitty_fallback = true;
-                        std.log.warn(
-                            "Local Kitty transfer unavailable ({s}); " ++
-                                "falling back to direct PNG",
-                            .{@errorName(err)},
+                    ),
+                    .direct => blk: {
+                        const surf = try wrapReadbackSurface(readback);
+                        defer surf.destroy();
+                        break :blk try transmitVaxisKittySurfacePng(
+                            frame_allocator,
+                            vx,
+                            tty_writer,
+                            surf,
+                            w_u16,
+                            h_u16,
                         );
-                    }
-                    break :blk try transmitVaxisKittySurfacePng(
-                        frame_allocator,
-                        vx,
-                        tty_writer,
-                        surf,
-                        w_u16,
-                        h_u16,
-                    );
+                    },
+                    .shm => blk: {
+                        const surf = try wrapReadbackSurface(readback);
+                        defer surf.destroy();
+                        const transfer = try core.preview.writeSurfaceKittyShm(
+                            io,
+                            surf,
+                            readback.dims,
+                        );
+                        break :blk try transmitVaxisKittyTransfer(
+                            frame_allocator,
+                            io,
+                            vx,
+                            tty_writer,
+                            transfer,
+                            w_u16,
+                            h_u16,
+                        );
+                    },
+                    .temp_file => blk: {
+                        const surf = try wrapReadbackSurface(readback);
+                        defer surf.destroy();
+                        const transfer =
+                            try core.preview.writeSurfaceKittyTempFile(
+                                io,
+                                surf,
+                                readback.dims,
+                            );
+                        break :blk try transmitVaxisKittyTransfer(
+                            frame_allocator,
+                            io,
+                            vx,
+                            tty_writer,
+                            transfer,
+                            w_u16,
+                            h_u16,
+                        );
+                    },
+                    .auto => blk: {
+                        const surf = try wrapReadbackSurface(readback);
+                        defer surf.destroy();
+                        if (target.is_remote) {
+                            break :blk try transmitVaxisKittySurfacePng(
+                                frame_allocator,
+                                vx,
+                                tty_writer,
+                                surf,
+                                w_u16,
+                                h_u16,
+                            );
+                        }
+                        if (core.preview.writeSurfaceKittyLocal(
+                            io,
+                            surf,
+                            readback.dims,
+                        )) |transfer| {
+                            break :blk try transmitVaxisKittyTransfer(
+                                frame_allocator,
+                                io,
+                                vx,
+                                tty_writer,
+                                transfer,
+                                w_u16,
+                                h_u16,
+                            );
+                        } else |err| {
+                            if (!pres.warned_local_kitty_fallback) {
+                                pres.warned_local_kitty_fallback = true;
+                                std.log.warn(
+                                    "Local Kitty transfer unavailable " ++
+                                        "({s}); falling back to direct PNG",
+                                    .{@errorName(err)},
+                                );
+                            }
+                            break :blk try transmitVaxisKittySurfacePng(
+                                frame_allocator,
+                                vx,
+                                tty_writer,
+                                surf,
+                                w_u16,
+                                h_u16,
+                            );
+                        }
+                    },
                 };
 
-                pres.setKittyImage(gpa, vx, tty_writer, new_img, crop);
+                pres.setKittyImage(gpa, io, vx, tty_writer, new_img, crop);
             } else {
                 const payload = pres.ensurePostRender(
                     gpa,
+                    io,
                     vx,
                     tty_writer,
                     crop,
@@ -1358,27 +1527,23 @@ fn transmitFrame(
                     },
                     .cell_px = layout.cell_px,
                 };
-                if (target.is_remote) {
-                    const png = try encodeReadbackPng(
-                        frame_allocator,
-                        readback,
-                    );
-                    defer frame_allocator.free(png);
-                    try termgfx.writePreview(
-                        &aw.writer,
-                        .{
+                switch (target.kitty_transfer) {
+                    .direct => {
+                        const png = try encodeReadbackPng(
+                            frame_allocator,
+                            readback,
+                        );
+                        defer frame_allocator.free(png);
+                        try termgfx.writePreview(&aw.writer, .{
                             .kitty = .{
                                 .medium = .{ .direct_png = png },
                                 .dims = readback.dims,
                                 .image_id = 1,
                             },
-                        },
-                        opts,
-                    );
-                } else {
-                    try termgfx.writePreview(
-                        &aw.writer,
-                        .{
+                        }, opts);
+                    },
+                    .direct_rgba => {
+                        try termgfx.writePreview(&aw.writer, .{
                             .kitty = .{
                                 .medium = .{
                                     .direct_rgba = .{
@@ -1389,9 +1554,72 @@ fn transmitFrame(
                                 .dims = readback.dims,
                                 .image_id = 1,
                             },
-                        },
-                        opts,
-                    );
+                        }, opts);
+                    },
+                    .shm => {
+                        const surf = try wrapReadbackSurface(readback);
+                        defer surf.destroy();
+                        const transfer = try core.preview.writeSurfaceKittyShm(
+                            io,
+                            surf,
+                            readback.dims,
+                        );
+                        payload.pending_transfer = transfer;
+                        payload.is_one_shot = true;
+                        try termgfx.writePreview(&aw.writer, .{
+                            .kitty = .{
+                                .medium = .{ .shared_memory = transfer.name() },
+                                .dims = readback.dims,
+                                .image_id = 1,
+                            },
+                        }, opts);
+                    },
+                    .temp_file => {
+                        const surf = try wrapReadbackSurface(readback);
+                        defer surf.destroy();
+                        const transfer =
+                            try core.preview.writeSurfaceKittyTempFile(
+                                io,
+                                surf,
+                                readback.dims,
+                            );
+                        payload.pending_transfer = transfer;
+                        payload.is_one_shot = true;
+                        try termgfx.writePreview(&aw.writer, .{
+                            .kitty = .{
+                                .medium = .{ .temp_file = transfer.name() },
+                                .dims = readback.dims,
+                                .image_id = 1,
+                            },
+                        }, opts);
+                    },
+                    .auto => if (target.is_remote) {
+                        const png = try encodeReadbackPng(
+                            frame_allocator,
+                            readback,
+                        );
+                        defer frame_allocator.free(png);
+                        try termgfx.writePreview(&aw.writer, .{
+                            .kitty = .{
+                                .medium = .{ .direct_png = png },
+                                .dims = readback.dims,
+                                .image_id = 1,
+                            },
+                        }, opts);
+                    } else {
+                        try termgfx.writePreview(&aw.writer, .{
+                            .kitty = .{
+                                .medium = .{
+                                    .direct_rgba = .{
+                                        .rgba_pixels = readback.pixels,
+                                        .pitch = readback.pitch,
+                                    },
+                                },
+                                .dims = readback.dims,
+                                .image_id = 1,
+                            },
+                        }, opts);
+                    },
                 }
                 try aw.writer.flush();
                 payload.dirty = true;
@@ -1400,6 +1628,7 @@ fn transmitFrame(
         .sixel => {
             const payload = pres.ensurePostRender(
                 gpa,
+                io,
                 vx,
                 tty_writer,
                 crop,
@@ -1437,6 +1666,7 @@ fn transmitFrame(
             );
             const payload = pres.ensurePostRender(
                 gpa,
+                io,
                 vx,
                 tty_writer,
                 crop,
@@ -1585,14 +1815,20 @@ fn buildDetailsModel(app_state: *const AppState) tui.overlays.DetailsModel {
 
 fn protocolDisplayLabel(target: ResolvedTarget) []const u8 {
     return switch (target.protocol) {
-        .kitty => switch (target.transport) {
-            .direct => if (target.is_remote)
-                "Kitty (SSH PNG)"
-            else
-                "Kitty (local)",
-            .tmux_passthrough,
-            .tmux_unicode_placeholders,
-            => "Kitty (tmux)",
+        .kitty => switch (target.kitty_transfer) {
+            .shm => "Kitty (shm)",
+            .temp_file => "Kitty (temp)",
+            .direct => "Kitty (direct PNG)",
+            .direct_rgba => "Kitty (direct RGBA)",
+            .auto => switch (target.transport) {
+                .direct => if (target.is_remote)
+                    "Kitty (SSH PNG)"
+                else
+                    "Kitty (local)",
+                .tmux_passthrough,
+                .tmux_unicode_placeholders,
+                => "Kitty (tmux)",
+            },
         },
         .sixel => "Sixel",
         .iterm2 => "iTerm2",
@@ -1667,8 +1903,13 @@ pub fn main(init: std.process.Init) !void {
     defer cli.deinit(gpa);
 
     if (cli.help) {
-        tui.cli.printHelp(io);
+        tui.cli.printHelp(io, init.environ_map);
         return;
+    }
+
+    if (cli.protocol.resolve(init.environ_map).unsupportedKittyReason()) |msg| {
+        std.log.err("{s}", .{msg});
+        std.process.exit(1);
     }
 
     const session_exit = blk: {
@@ -1842,7 +2083,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
     var last_gpu_pass_ms: f64 = 0.0;
     var last_term_encode_ms: f64 = 0.0;
     var pres: PresentationState = .{};
-    defer pres.deinit(gpa, &vx, tty.writer());
+    defer pres.deinit(gpa, io, &vx, tty.writer());
 
     var frame_arena = std.heap.ArenaAllocator.init(gpa);
     defer frame_arena.deinit();
@@ -1888,7 +2129,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
             error.Closed => break,
             else => return err,
         };
-        if (first_event == null) {
+        if (first_event == null and !pres.needs_retransmit) {
             switch (wait_strategy) {
                 .poll => {},
                 .wait_indefinite => {
@@ -2013,7 +2254,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
 
         if (winsize.cols == 0 or winsize.rows == 0) {
             if (pres.last_key != null or pres.hasActiveContent()) {
-                pres.clearImage(gpa, &vx, tty.writer());
+                pres.clearImage(gpa, io, &vx, tty.writer());
                 tty.writer().flush() catch {};
             }
             pres.last_ui_key = null;
@@ -2026,6 +2267,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
             .h = @floatFromInt(render_layout.image_px.h),
         };
 
+        pres.needs_retransmit = false;
         var image_changed = false;
         const active_quad = resolveActiveImageQuad(&app_state, render_layout);
         if (active_quad) |active| {
@@ -2082,7 +2324,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
                 image_changed = true;
             }
         } else if (pres.last_key != null or pres.hasActiveContent()) {
-            pres.clearImage(gpa, &vx, tty.writer());
+            pres.clearImage(gpa, io, &vx, tty.writer());
             image_changed = true;
         }
 
@@ -2231,7 +2473,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
                             pr.crop,
                             pr.payload.bytes.items,
                         );
-                        pr.payload.dirty = false;
+                        pr.payload.markDelivered();
                     },
                     .none, .kitty_vaxis, .halfblocks => unreachable,
                 }
@@ -2254,7 +2496,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
                         pr.crop,
                         pr.payload.bytes.items,
                     );
-                    pr.payload.dirty = false;
+                    pr.payload.markDelivered();
                 }
             },
             .none, .kitty_vaxis, .halfblocks => {},

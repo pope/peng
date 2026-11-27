@@ -839,9 +839,13 @@ pub const PreviewArgs = struct {
 };
 
 /// Prints `peng-preview` usage information to standard output.
-pub fn printPreviewHelp(io: std.Io) void {
-    printHelpString(
-        io,
+pub fn printPreviewHelp(
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+) void {
+    var buf: [2048]u8 = undefined;
+    var w = std.Io.File.stdout().writerStreaming(io, &buf);
+    w.interface.print(
         "Usage: peng-preview [OPTIONS] [W H] <PATH>\n\n" ++
             "Render a terminal image preview (Kitty, Sixel, or iTerm2) " ++
             "or write a JPEG/PNG preview file with -o/--output.\n\n" ++
@@ -852,7 +856,7 @@ pub fn printPreviewHelp(io: std.Io) void {
             "  -o, --output <PATH>       " ++
             "Write encoded JPEG/PNG preview to file instead of stdout\n" ++
             "      --protocol <MODE>     Terminal graphics protocol (" ++
-            protocol_modes_string ++ "; default: auto)\n" ++
+            "{s}; default: auto)\n" ++
             "      --size <WxH>          " ++
             "Maximum pixel dimensions (default: 800x600)\n" ++
             "      --cells <COLSxROWS>   " ++
@@ -860,7 +864,9 @@ pub fn printPreviewHelp(io: std.Io) void {
             "      --thumb-cache <MODE>  XDG thumbnail cache policy (" ++
             thumb_cache_modes_string ++ ")\n" ++
             "      --no-thumb-cache      Disable XDG shared thumbnail cache\n",
-    );
+        .{termgfx.protocolModesString(environ_map)},
+    ) catch {};
+    w.interface.flush() catch {};
 }
 
 fn parsePreviewArgsIterator(

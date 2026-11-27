@@ -22,6 +22,7 @@ pub const default_cell_px = detect.default_cell_px;
 pub const HalfblockColor = halfblocks.ColorState;
 pub const HalfblockRgb = halfblocks.Rgb;
 pub const KittyMedium = kitty.KittyMedium;
+pub const KittyTransferMode = detect.KittyTransferMode;
 pub const PreviewSize = detect.PreviewSize;
 pub const Protocol = detect.Protocol;
 pub const ProtocolMode = detect.ProtocolMode;
@@ -30,6 +31,7 @@ pub const ResolvedTarget = detect.ResolvedTarget;
 pub const sampleHalfblockBox = halfblocks.sampleBox;
 pub const TransportMode = detect.TransportMode;
 pub const protocol_modes_string = detect.protocol_modes_string;
+pub const protocolModesString = detect.protocolModesString;
 
 /// Options controlling terminal graphics framing (`TransportMode` and
 /// optional target cell grid / cell pixel size for Kitty `U=1` placeholders).

@@ -137,18 +137,21 @@ pub fn parseArgs(
 }
 
 /// Prints `peng-tui` CLI usage documentation to standard output.
-pub fn printHelp(io: std.Io) void {
+pub fn printHelp(
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+) void {
     var buf: [2048]u8 = undefined;
     var w = std.Io.File.stdout().writerStreaming(io, &buf);
-    w.interface.writeAll(
+    w.interface.print(
         \\Usage: peng-tui [OPTIONS] [PATH]
         \\
         \\GPU-accelerated terminal image viewer and photo triage tool.
         \\On exit, any Pick/Reject classifications are printed as TSV to stdout.
         \\
         \\Options:
-        \\  --protocol <auto|kitty|sixel|iterm2|halfblocks>
-        \\                         Terminal graphics protocol (default: auto)
+        \\  --protocol <MODE>      Terminal graphics protocol (default: auto):
+        \\                         {s}
         \\  --infobar <bottom|top|none>
         \\                         Infobar placement (default: bottom)
         \\  -s, --scale <fit|fill|shrink|1:1|width|height>
@@ -163,7 +166,7 @@ pub fn printHelp(io: std.Io) void {
         \\  --log-file <PATH>      Write debug logs to a file instead of muting
         \\  -h, --help             Show this help message
         \\
-    ) catch {};
+    , .{termgfx.protocolModesString(environ_map)}) catch {};
     w.interface.flush() catch {};
 }
 

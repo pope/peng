@@ -104,11 +104,22 @@ pub const TransportMode = enum {
     tmux_unicode_placeholders,
 };
 
-/// Resolved terminal graphics backend, transport framing mode, and whether the
-/// session is running over SSH (`is_remote`).
+/// Pixel data transfer medium preference for the Kitty Graphics Protocol.
+pub const KittyTransferMode = enum {
+    auto,
+    shm,
+    temp_file,
+    direct,
+    direct_rgba,
+};
+
+/// Resolved terminal graphics backend, transport framing mode, Kitty transfer
+/// medium preference, and whether the session is running over SSH
+/// (`is_remote`).
 pub const ResolvedTarget = struct {
     protocol: Protocol,
     transport: TransportMode = .direct,
+    kitty_transfer: KittyTransferMode = .auto,
     is_remote: bool = false,
 
     /// Reconciles an `.auto`-detected `.direct` Kitty target with a runtime
@@ -122,7 +133,15 @@ pub const ResolvedTarget = struct {
     ) ResolvedTarget {
         switch (mode) {
             .auto => {},
-            .kitty, .sixel, .iterm2, .halfblocks => return self,
+            .kitty,
+            .kitty_shm,
+            .kitty_temp,
+            .kitty_direct,
+            .kitty_rgba,
+            .sixel,
+            .iterm2,
+            .halfblocks,
+            => return self,
         }
         switch (self.transport) {
             .direct => {},
@@ -136,6 +155,31 @@ pub const ResolvedTarget = struct {
             .halfblocks => .halfblocks,
         };
         return next;
+    }
+
+    /// Returns a human-readable error message when an explicit Kitty transfer
+    /// medium cannot be used in this environment (e.g. `kitty-shm` on Windows,
+    /// or local `kitty-shm`/`kitty-temp` over SSH), or `null` when valid.
+    pub fn unsupportedKittyReason(self: ResolvedTarget) ?[]const u8 {
+        switch (self.protocol) {
+            .kitty => {},
+            .sixel, .iterm2, .halfblocks => return null,
+        }
+        return switch (self.kitty_transfer) {
+            .auto, .direct, .direct_rgba => null,
+            .shm => if (comptime builtin.os.tag == .windows)
+                "Kitty shared memory (kitty-shm) is not supported on Windows."
+            else if (self.is_remote)
+                "Local Kitty transfer (kitty-shm) is not supported over " ++
+                    "SSH; use kitty-direct or kitty-rgba."
+            else
+                null,
+            .temp_file => if (self.is_remote)
+                "Local Kitty transfer (kitty-temp) is not supported over " ++
+                    "SSH; use kitty-direct or kitty-rgba."
+            else
+                null,
+        };
     }
 };
 
@@ -252,6 +296,10 @@ pub const PreviewSize = union(enum) {
 pub const ProtocolMode = enum {
     auto,
     kitty,
+    kitty_shm,
+    kitty_temp,
+    kitty_direct,
+    kitty_rgba,
     sixel,
     iterm2,
     halfblocks,
@@ -260,6 +308,10 @@ pub const ProtocolMode = enum {
     pub fn parse(raw: []const u8) ?ProtocolMode {
         if (std.ascii.eqlIgnoreCase(raw, "auto")) return .auto;
         if (std.ascii.eqlIgnoreCase(raw, "kitty")) return .kitty;
+        if (std.ascii.eqlIgnoreCase(raw, "kitty-shm")) return .kitty_shm;
+        if (std.ascii.eqlIgnoreCase(raw, "kitty-temp")) return .kitty_temp;
+        if (std.ascii.eqlIgnoreCase(raw, "kitty-direct")) return .kitty_direct;
+        if (std.ascii.eqlIgnoreCase(raw, "kitty-rgba")) return .kitty_rgba;
         if (std.ascii.eqlIgnoreCase(raw, "sixel")) return .sixel;
         if (std.ascii.eqlIgnoreCase(raw, "iterm2")) return .iterm2;
         if (std.ascii.eqlIgnoreCase(raw, "halfblocks") or
@@ -270,8 +322,8 @@ pub const ProtocolMode = enum {
         return null;
     }
 
-    /// Resolves this mode into a concrete `ResolvedTarget` (protocol and
-    /// `TransportMode`) using `environ_map`.
+    /// Resolves this mode into a concrete `ResolvedTarget` (protocol,
+    /// `TransportMode`, and `KittyTransferMode`) using `environ_map`.
     pub fn resolve(
         self: ProtocolMode,
         environ_map: *const std.process.Environ.Map,
@@ -279,21 +331,55 @@ pub const ProtocolMode = enum {
         const env = terminalEnvFromEnviron(environ_map);
         const protocol: Protocol = switch (self) {
             .auto => detectProtocol(env),
-            .kitty => .kitty,
+            .kitty,
+            .kitty_shm,
+            .kitty_temp,
+            .kitty_direct,
+            .kitty_rgba,
+            => .kitty,
             .sixel => .sixel,
             .iterm2 => .iterm2,
             .halfblocks => .halfblocks,
         };
+        const kitty_transfer: KittyTransferMode = switch (self) {
+            .auto, .kitty, .sixel, .iterm2, .halfblocks => .auto,
+            .kitty_shm => .shm,
+            .kitty_temp => .temp_file,
+            .kitty_direct => .direct,
+            .kitty_rgba => .direct_rgba,
+        };
         return .{
             .protocol = protocol,
             .transport = resolveTransport(env, protocol),
+            .kitty_transfer = kitty_transfer,
             .is_remote = isRemoteSession(env),
         };
     }
 };
 
-/// Comma-separated list of valid `--protocol` values for CLI help/errors.
-pub const protocol_modes_string = "auto, kitty, sixel, iterm2, halfblocks";
+/// Comma-separated list of valid `--protocol` values for CLI help/errors
+/// (omits `kitty-shm` on Windows where POSIX shared memory is unsupported).
+pub const protocol_modes_string = if (builtin.os.tag == .windows)
+    "auto, kitty, kitty-temp, kitty-direct, kitty-rgba, " ++
+        "sixel, iterm2, halfblocks"
+else
+    "auto, kitty, kitty-shm, kitty-temp, kitty-direct, " ++
+        "kitty-rgba, sixel, iterm2, halfblocks";
+
+const remote_protocol_modes_string =
+    "auto, kitty, kitty-direct, kitty-rgba, sixel, iterm2, halfblocks";
+
+/// Returns the comma-separated `--protocol` modes valid for the active
+/// session (`environ_map`), omitting local-only `kitty-shm` and `kitty-temp`
+/// over SSH (and `kitty-shm` on Windows).
+pub fn protocolModesString(
+    environ_map: *const std.process.Environ.Map,
+) []const u8 {
+    if (isRemoteSession(terminalEnvFromEnviron(environ_map))) {
+        return remote_protocol_modes_string;
+    }
+    return protocol_modes_string;
+}
 
 /// Snapshot of terminal-identifying environment variables used for pure,
 /// zero-I/O protocol detection.
@@ -567,6 +653,22 @@ test "ProtocolMode.parse handles valid and invalid names" {
         ProtocolMode.parse("KITTY"),
     );
     try std.testing.expectEqual(
+        ProtocolMode.kitty_shm,
+        ProtocolMode.parse("kitty-shm"),
+    );
+    try std.testing.expectEqual(
+        ProtocolMode.kitty_temp,
+        ProtocolMode.parse("Kitty-Temp"),
+    );
+    try std.testing.expectEqual(
+        ProtocolMode.kitty_direct,
+        ProtocolMode.parse("kitty-direct"),
+    );
+    try std.testing.expectEqual(
+        ProtocolMode.kitty_rgba,
+        ProtocolMode.parse("KITTY-RGBA"),
+    );
+    try std.testing.expectEqual(
         ProtocolMode.sixel,
         ProtocolMode.parse("Sixel"),
     );
@@ -583,6 +685,70 @@ test "ProtocolMode.parse handles valid and invalid names" {
         ProtocolMode.parse("HalfBlock"),
     );
     try std.testing.expectEqual(null, ProtocolMode.parse("unknown"));
+
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try std.testing.expectEqual(
+        KittyTransferMode.shm,
+        ProtocolMode.kitty_shm.resolve(&env).kitty_transfer,
+    );
+    try std.testing.expectEqual(
+        KittyTransferMode.temp_file,
+        ProtocolMode.kitty_temp.resolve(&env).kitty_transfer,
+    );
+    try std.testing.expectEqual(
+        KittyTransferMode.direct,
+        ProtocolMode.kitty_direct.resolve(&env).kitty_transfer,
+    );
+    try std.testing.expectEqual(
+        KittyTransferMode.direct_rgba,
+        ProtocolMode.kitty_rgba.resolve(&env).kitty_transfer,
+    );
+    try std.testing.expectEqual(
+        KittyTransferMode.auto,
+        ProtocolMode.kitty.resolve(&env).kitty_transfer,
+    );
+    try std.testing.expectEqualStrings(
+        protocol_modes_string,
+        protocolModesString(&env),
+    );
+    if (comptime builtin.os.tag == .windows) {
+        try std.testing.expect(
+            ProtocolMode.kitty_shm.resolve(&env).unsupportedKittyReason() !=
+                null,
+        );
+    } else {
+        try std.testing.expectEqual(
+            @as(?[]const u8, null),
+            ProtocolMode.kitty_shm.resolve(&env).unsupportedKittyReason(),
+        );
+    }
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        ProtocolMode.kitty_temp.resolve(&env).unsupportedKittyReason(),
+    );
+
+    // Over SSH, local-only kitty-shm and kitty-temp are rejected and omitted
+    // from help text, while kitty-direct and kitty-rgba remain valid.
+    try env.put("SSH_CONNECTION", "1.2.3.4 55555 5.6.7.8 22");
+    try std.testing.expectEqualStrings(
+        remote_protocol_modes_string,
+        protocolModesString(&env),
+    );
+    try std.testing.expect(
+        ProtocolMode.kitty_shm.resolve(&env).unsupportedKittyReason() != null,
+    );
+    try std.testing.expect(
+        ProtocolMode.kitty_temp.resolve(&env).unsupportedKittyReason() != null,
+    );
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        ProtocolMode.kitty_direct.resolve(&env).unsupportedKittyReason(),
+    );
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        ProtocolMode.kitty_rgba.resolve(&env).unsupportedKittyReason(),
+    );
 }
 
 test "cellsToPixels scales cells by pixel size and clamps to 4096" {

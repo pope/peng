@@ -10,6 +10,8 @@ const renderPreviewSurface = core.preview.renderPreviewSurface;
 const renderPreviewToOutputFile = core.preview.renderPreviewToOutputFile;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const writeSurfaceKittyLocal = core.preview.writeSurfaceKittyLocal;
+const writeSurfaceKittyShm = core.preview.writeSurfaceKittyShm;
+const writeSurfaceKittyTempFile = core.preview.writeSurfaceKittyTempFile;
 
 fn renderSurfaceOrExit(
     gpa: std.mem.Allocator,
@@ -62,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
     defer parsed.deinit(gpa);
 
     if (parsed.help) {
-        app_config.cli.printPreviewHelp(io);
+        app_config.cli.printPreviewHelp(io, init.environ_map);
         return;
     }
 
@@ -80,6 +82,12 @@ pub fn main(init: std.process.Init) !void {
     defer thumb_cfg.deinit(gpa);
 
     const target = parsed.protocol.resolve(init.environ_map);
+    if (parsed.output_path == null) {
+        if (target.unsupportedKittyReason()) |msg| {
+            std.log.err("{s}", .{msg});
+            std.process.exit(1);
+        }
+    }
     const term_target: ?termgfx.ResolvedTarget = if (parsed.output_path == null)
         target
     else
@@ -126,12 +134,27 @@ pub fn main(init: std.process.Init) !void {
             );
             defer preview.deinit();
 
-            if (!target.is_remote) {
-                if (writeSurfaceKittyLocal(
-                    io,
-                    preview.surface,
-                    preview.dims,
-                )) |res| {
+            switch (target.kitty_transfer) {
+                .shm, .temp_file => {
+                    const res = (switch (target.kitty_transfer) {
+                        .shm => writeSurfaceKittyShm(
+                            io,
+                            preview.surface,
+                            preview.dims,
+                        ),
+                        .temp_file => writeSurfaceKittyTempFile(
+                            io,
+                            preview.surface,
+                            preview.dims,
+                        ),
+                        .auto, .direct, .direct_rgba => unreachable,
+                    }) catch |err| {
+                        std.log.err(
+                            "Failed to write Kitty preview for '{s}': {s}",
+                            .{ target_path, @errorName(err) },
+                        );
+                        std.process.exit(1);
+                    };
                     const medium: termgfx.KittyMedium = switch (res.kind) {
                         .shared_memory => .{ .shared_memory = res.name() },
                         .temp_file => .{ .temp_file = res.name() },
@@ -147,13 +170,60 @@ pub fn main(init: std.process.Init) !void {
                         std.process.exit(1);
                     }
                     return;
-                } else |err| {
-                    std.log.debug(
-                        "Local Kitty transfer unavailable ({s}); " ++
-                            "falling back to direct PNG",
-                        .{@errorName(err)},
-                    );
-                }
+                },
+                .direct_rgba => {
+                    const rgba = surfaceRgbaView(preview);
+                    if (!termgfx.writePreviewToStdout(io, .{
+                        .kitty = .{
+                            .medium = .{
+                                .direct_rgba = .{
+                                    .rgba_pixels = rgba.pixels,
+                                    .pitch = rgba.pitch,
+                                },
+                            },
+                            .dims = preview.dims,
+                            .clear_first = parsed.clear_first,
+                        },
+                    }, preview_opts)) {
+                        std.process.exit(1);
+                    }
+                    return;
+                },
+                .direct => {},
+                .auto => {
+                    if (!target.is_remote) {
+                        if (writeSurfaceKittyLocal(
+                            io,
+                            preview.surface,
+                            preview.dims,
+                        )) |res| {
+                            const medium: termgfx.KittyMedium =
+                                switch (res.kind) {
+                                    .shared_memory => .{
+                                        .shared_memory = res.name(),
+                                    },
+                                    .temp_file => .{ .temp_file = res.name() },
+                                };
+                            if (!termgfx.writePreviewToStdout(io, .{
+                                .kitty = .{
+                                    .medium = medium,
+                                    .dims = res.dims,
+                                    .clear_first = parsed.clear_first,
+                                },
+                            }, preview_opts)) {
+                                res.cleanup(io);
+                                std.process.exit(1);
+                            }
+                            return;
+                        } else |err| {
+                            std.log.debug(
+                                "Local Kitty transfer unavailable ({s}); " ++
+                                    "falling back to direct PNG",
+                                .{@errorName(err)},
+                            );
+                        }
+                    }
+                },
             }
 
             const png_bytes = preview.surface.encodePngAlloc(
