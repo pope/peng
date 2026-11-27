@@ -110,6 +110,33 @@ pub const ResolvedTarget = struct {
     protocol: Protocol,
     transport: TransportMode = .direct,
     is_remote: bool = false,
+
+    /// Reconciles an `.auto`-detected `.direct` Kitty target with a runtime
+    /// Kitty graphics capability probe (`has_kitty`). Downgrades unsupported
+    /// `.kitty` guesses to `.halfblocks`, while preserving explicit protocol
+    /// overrides, `tmux` transports, and non-Kitty protocols.
+    pub fn reconcileKittyCapability(
+        self: ResolvedTarget,
+        mode: ProtocolMode,
+        has_kitty: bool,
+    ) ResolvedTarget {
+        switch (mode) {
+            .auto => {},
+            .kitty, .sixel, .iterm2, .halfblocks => return self,
+        }
+        switch (self.transport) {
+            .direct => {},
+            .tmux_passthrough, .tmux_unicode_placeholders => return self,
+        }
+        var next = self;
+        next.protocol = switch (self.protocol) {
+            .kitty => if (has_kitty) .kitty else .halfblocks,
+            .sixel => .sixel,
+            .iterm2 => .iterm2,
+            .halfblocks => .halfblocks,
+        };
+        return next;
+    }
 };
 
 /// Requested preview sizing specification covering every valid combination of
@@ -278,6 +305,7 @@ const TerminalEnv = struct {
     iterm_session_id: ?[]const u8 = null,
     wezterm_executable: ?[]const u8 = null,
     wezterm_pane: ?[]const u8 = null,
+    wt_session: ?[]const u8 = null,
     tmux: ?[]const u8 = null,
     ssh_connection: ?[]const u8 = null,
     ssh_tty: ?[]const u8 = null,
@@ -316,7 +344,8 @@ fn resolveTransport(env: TerminalEnv, protocol: Protocol) TransportMode {
 /// - WezTerm: `.iterm2` outside `tmux` (24-bit truecolor); `.sixel` inside
 ///   `tmux` (native `tmux` cell-grid rendering with clean cursor/exit).
 /// - iTerm2, Warp, Tabby, Hyper: `.iterm2`.
-/// - Foot, mlterm, mintty, Contour, Rio, VSCode, BlackBox, yaft: `.sixel`.
+/// - Foot, mlterm, mintty, Contour, Rio, VSCode, BlackBox, yaft, Windows
+///   Terminal (`WT_SESSION`): `.sixel`.
 /// - Unknown outer terminal inside `tmux`: `.sixel`; otherwise `.kitty`.
 fn detectProtocol(env: TerminalEnv) Protocol {
     const in_tmux = isNonEmpty(env.tmux);
@@ -381,6 +410,7 @@ fn detectProtocol(env: TerminalEnv) Protocol {
         }
     }
 
+    if (isNonEmpty(env.wt_session)) return .sixel;
     if (in_tmux) return .sixel;
     return .kitty;
 }
@@ -396,6 +426,7 @@ fn terminalEnvFromEnviron(
         .iterm_session_id = environ_map.get("ITERM_SESSION_ID"),
         .wezterm_executable = environ_map.get("WEZTERM_EXECUTABLE"),
         .wezterm_pane = environ_map.get("WEZTERM_PANE"),
+        .wt_session = environ_map.get("WT_SESSION"),
         .tmux = environ_map.get("TMUX"),
         .ssh_connection = environ_map.get("SSH_CONNECTION"),
         .ssh_tty = environ_map.get("SSH_TTY"),
@@ -665,4 +696,70 @@ test "isRemoteSession detects SSH environment variables" {
     try std.testing.expect(isRemoteSession(.{
         .ssh_client = "1.2.3.4 55555 22",
     }));
+}
+
+test "detectProtocol routes WT_SESSION to sixel without overriding explicit" {
+    try std.testing.expectEqual(
+        Protocol.sixel,
+        detectProtocol(.{ .wt_session = "wt-session-1" }),
+    );
+    // Explicit terminal identity takes precedence over an inherited WT_SESSION.
+    try std.testing.expectEqual(
+        Protocol.iterm2,
+        detectProtocol(.{
+            .term_program = "WezTerm",
+            .wt_session = "wt-session-1",
+        }),
+    );
+    try std.testing.expectEqual(
+        Protocol.kitty,
+        detectProtocol(.{
+            .kitty_window_id = "1",
+            .wt_session = "wt-session-1",
+        }),
+    );
+}
+
+test "ResolvedTarget.reconcileKittyCapability respects mode and transport" {
+    const direct_kitty: ResolvedTarget = .{ .protocol = .kitty };
+    try std.testing.expectEqual(
+        Protocol.kitty,
+        direct_kitty.reconcileKittyCapability(.auto, true).protocol,
+    );
+    try std.testing.expectEqual(
+        Protocol.halfblocks,
+        direct_kitty.reconcileKittyCapability(.auto, false).protocol,
+    );
+    // Explicit --protocol kitty and tmux transports are never downgraded.
+    try std.testing.expectEqual(
+        Protocol.kitty,
+        direct_kitty.reconcileKittyCapability(.kitty, false).protocol,
+    );
+    const tmux_kitty: ResolvedTarget = .{
+        .protocol = .kitty,
+        .transport = .tmux_unicode_placeholders,
+    };
+    try std.testing.expectEqual(
+        Protocol.kitty,
+        tmux_kitty.reconcileKittyCapability(.auto, false).protocol,
+    );
+    // Non-Kitty protocols are preserved regardless of has_kitty.
+    try std.testing.expectEqual(
+        Protocol.sixel,
+        (ResolvedTarget{ .protocol = .sixel })
+            .reconcileKittyCapability(.auto, false)
+            .protocol,
+    );
+    try std.testing.expectEqual(
+        Protocol.iterm2,
+        (ResolvedTarget{ .protocol = .iterm2 })
+            .reconcileKittyCapability(.auto, true)
+            .protocol,
+    );
+    try std.testing.expectEqual(
+        Protocol.halfblocks,
+        (ResolvedTarget{ .protocol = .halfblocks })
+            .reconcileKittyCapability(.auto, true)
+            .protocol,
+    );
 }

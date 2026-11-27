@@ -1732,7 +1732,7 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
     const gpa = init.gpa;
     const io = init.io;
 
-    const target = cli.protocol.resolve(init.environ_map);
+    var target = cli.protocol.resolve(init.environ_map);
 
     try gpu.graphics.initSdlCore(true);
     defer gpu.graphics.quitSdlCore();
@@ -1772,7 +1772,12 @@ fn runTuiSession(init: std.process.Init, cli: TuiCliArgs) !SessionExit {
 
     try vx.enterAltScreen(tty.writer());
     tui_log_muted.store(true, .release);
-    try vx.queryTerminal(tty.writer(), .fromMilliseconds(250));
+    const query_timeout_ms: i64 = if (target.is_remote) 1000 else 250;
+    try vx.queryTerminal(tty.writer(), .fromMilliseconds(query_timeout_ms));
+    target = target.reconcileKittyCapability(
+        cli.protocol,
+        vx.caps.kitty_graphics,
+    );
     try vx.setMouseMode(tty.writer(), true);
 
     var app_state: AppState = undefined;
