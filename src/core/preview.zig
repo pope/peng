@@ -865,35 +865,6 @@ pub fn writeSurfaceKittyLocal(
 }
 
 /// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
-/// raw packed RGBA32 bytes to POSIX shared memory (`t=s`) when available,
-/// falling back to a temporary file (`t=t`) if `shm_open` is unavailable.
-pub fn renderPreviewKittyLocal(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    thumb_cfg: ThumbCacheConfig,
-    path: []const u8,
-    max_dims: PositiveDimsU32,
-    cancel: anytype,
-) !KittyTransferResult {
-    const preview = try renderPreviewSurface(
-        allocator,
-        io,
-        thumb_cfg,
-        path,
-        max_dims,
-        cancel,
-    );
-    defer preview.deinit();
-
-    const res = try writeSurfaceKittyLocal(io, preview.surface, preview.dims);
-    if (cancel.isCanceled()) {
-        res.cleanup(io);
-        return error.Canceled;
-    }
-    return res;
-}
-
-/// Decodes, orients, and scales `path` to fit within `max_dims`, then writes
 /// raw packed RGBA32 bytes to a temporary file in `/dev/shm` or `/tmp` (or the
 /// Windows temp directory via `GetTempPathW`) for Kitty Graphics Protocol
 /// `t=t` transfer.
@@ -963,11 +934,11 @@ test "renderPreviewRgbaFile downscales and writes RGBA32 temp file" {
     try std.testing.expectEqual(expected_bytes, stat.size);
 }
 
-test "renderPreviewKittyLocal writes RGBA32 to POSIX shm and cleans up" {
+test "writeSurfaceKittyLocal writes RGBA32 to local transfer and cleans up" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const res = try renderPreviewKittyLocal(
+    const preview = try renderPreviewSurface(
         allocator,
         io,
         .disabled,
@@ -975,6 +946,9 @@ test "renderPreviewKittyLocal writes RGBA32 to POSIX shm and cleans up" {
         .{ .w = 160, .h = 120 },
         NoCancel{},
     );
+    defer preview.deinit();
+
+    const res = try writeSurfaceKittyLocal(io, preview.surface, preview.dims);
     defer res.cleanup(io);
 
     try std.testing.expect(res.dims.w <= 160);
