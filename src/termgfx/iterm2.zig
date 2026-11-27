@@ -1,3 +1,4 @@
+const base64 = @import("base64.zig");
 const geom = @import("geom");
 const std = @import("std");
 
@@ -29,10 +30,7 @@ pub fn writeIterm2Preview(
     var offset: usize = 0;
     while (offset < image_bytes.len) {
         const end = @min(offset +| raw_chunk_bytes, image_bytes.len);
-        const encoded = std.base64.standard.Encoder.encode(
-            &b64_buf,
-            image_bytes[offset..end],
-        );
+        const encoded = base64.encode(&b64_buf, image_bytes[offset..end]);
         try writer.writeAll(encoded);
         offset = end;
     }

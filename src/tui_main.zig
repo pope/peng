@@ -1256,14 +1256,13 @@ fn transmitVaxisKittySurfacePng(
 ) !vaxis.Image {
     const png = try surf.encodePngAlloc(frame_allocator);
     defer frame_allocator.free(png);
-    return vx.transmitImage(
-        frame_allocator,
-        tty_writer,
-        png,
-        w_u16,
-        h_u16,
-        .png,
+    const b64 = try frame_allocator.alloc(
+        u8,
+        termgfx.base64.calcSize(png.len),
     );
+    defer frame_allocator.free(b64);
+    const encoded = termgfx.base64.encode(b64, png);
+    return vx.transmitPreEncodedImage(tty_writer, encoded, w_u16, h_u16, .png);
 }
 
 fn transmitVaxisKittyRgba(
@@ -1284,34 +1283,27 @@ fn transmitVaxisKittyRgba(
     if (required_bytes > readback.pixels.len) return error.BufferTooSmall;
     const total_bytes = std.math.mul(usize, row_bytes, h_usize) catch
         return error.DimensionsTooLarge;
-    if (readback.pitch == row_bytes) {
-        return vx.transmitImage(
-            frame_allocator,
-            tty_writer,
-            readback.pixels[0..total_bytes],
-            w_u16,
-            h_u16,
-            .rgba,
-        );
-    }
-    const packed_rgba = try frame_allocator.alloc(u8, total_bytes);
-    defer frame_allocator.free(packed_rgba);
-    for (0..h_usize) |row| {
-        const src_start = row * readback.pitch;
-        const dst_start = row * row_bytes;
-        @memcpy(
-            packed_rgba[dst_start .. dst_start + row_bytes],
-            readback.pixels[src_start .. src_start + row_bytes],
-        );
-    }
-    return vx.transmitImage(
-        frame_allocator,
-        tty_writer,
-        packed_rgba,
-        w_u16,
-        h_u16,
-        .rgba,
+    const b64 = try frame_allocator.alloc(
+        u8,
+        termgfx.base64.calcSize(total_bytes),
     );
+    defer frame_allocator.free(b64);
+    const encoded = if (readback.pitch == row_bytes)
+        termgfx.base64.encode(b64, readback.pixels[0..total_bytes])
+    else blk: {
+        const packed_rgba = try frame_allocator.alloc(u8, total_bytes);
+        defer frame_allocator.free(packed_rgba);
+        for (0..h_usize) |row| {
+            const src_start = row * readback.pitch;
+            const dst_start = row * row_bytes;
+            @memcpy(
+                packed_rgba[dst_start .. dst_start + row_bytes],
+                readback.pixels[src_start .. src_start + row_bytes],
+            );
+        }
+        break :blk termgfx.base64.encode(b64, packed_rgba);
+    };
+    return vx.transmitPreEncodedImage(tty_writer, encoded, w_u16, h_u16, .rgba);
 }
 
 fn transmitVaxisKittyTransfer(

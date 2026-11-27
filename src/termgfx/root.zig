@@ -5,6 +5,7 @@
 //! Protocol `t=t`, VT340 Sixel, iTerm2 Inline Images OSC 1337, and ANSI
 //! truecolor Unicode half-blocks).
 
+const base64_mod = @import("base64.zig");
 const detect = @import("detect.zig");
 const geom = @import("geom");
 const halfblocks = @import("halfblocks.zig");
@@ -15,6 +16,7 @@ const std = @import("std");
 
 const PositiveDimsU32 = geom.PositiveDimsU32;
 
+pub const base64 = base64_mod;
 pub const CellDims = detect.CellDims;
 pub const CellPixelSize = detect.CellPixelSize;
 pub const cellsToPixels = detect.cellsToPixels;
@@ -419,6 +421,7 @@ test "writePreview formats Kitty t=t, Sixel, iTerm2, and tmux passthrough" {
 }
 
 test {
+    _ = base64_mod;
     _ = detect;
     _ = halfblocks;
     _ = iterm2;

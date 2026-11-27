@@ -1,3 +1,4 @@
+const base64 = @import("base64.zig");
 const detect = @import("detect.zig");
 const geom = @import("geom");
 const std = @import("std");
@@ -158,7 +159,7 @@ fn emitDirectChunk(
 ) !void {
     // Up to 3072 raw bytes encode to at most 4096 base64 characters.
     var b64_buf: [4096]u8 = undefined;
-    const encoded = std.base64.standard.Encoder.encode(&b64_buf, raw_chunk);
+    const encoded = base64.encode(&b64_buf, raw_chunk);
     if (tmux_wrap) {
         if (is_first) {
             try writer.print(
