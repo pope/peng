@@ -510,8 +510,73 @@ fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
     return null;
 }
 
+/// Compares two single path segments using case-insensitive natural ordering.
+///
+/// Contiguous ASCII digit runs are compared by mathematical value (ignoring
+/// leading zeros, with no integer-width overflow limit), while non-digit bytes
+/// compare case-insensitively. Ties fall back to case-insensitive then raw byte
+/// order so the result is a strict total order.
+fn orderNaturalSegment(a: []const u8, b: []const u8) std.math.Order {
+    var ia: usize = 0;
+    var ib: usize = 0;
+
+    while (ia < a.len and ib < b.len) {
+        const ca = a[ia];
+        const cb = b[ib];
+
+        if (std.ascii.isDigit(ca) and std.ascii.isDigit(cb)) {
+            const start_a = ia;
+            while (ia < a.len and std.ascii.isDigit(a[ia])) : (ia += 1) {}
+            const start_b = ib;
+            while (ib < b.len and std.ascii.isDigit(b[ib])) : (ib += 1) {}
+
+            const sig_a = std.mem.trimStart(u8, a[start_a..ia], "0");
+            const sig_b = std.mem.trimStart(u8, b[start_b..ib], "0");
+
+            if (sig_a.len != sig_b.len) {
+                return std.math.order(sig_a.len, sig_b.len);
+            }
+            const dig_ord = std.mem.order(u8, sig_a, sig_b);
+            if (dig_ord != .eq) return dig_ord;
+            continue;
+        }
+
+        const la = std.ascii.toLower(ca);
+        const lb = std.ascii.toLower(cb);
+        if (la != lb) return std.math.order(la, lb);
+
+        ia += 1;
+        ib += 1;
+    }
+
+    if (ia < a.len) return .gt;
+    if (ib < b.len) return .lt;
+
+    const ci_ord = std.ascii.orderIgnoreCase(a, b);
+    if (ci_ord != .eq) return ci_ord;
+    return std.mem.order(u8, a, b);
+}
+
+/// Returns `true` if archive path `a` sorts before `b` using case-insensitive
+/// natural ordering compared segment-by-segment across `'/'` separators.
+fn naturalPathLessThanIgnoreCase(a: []const u8, b: []const u8) bool {
+    var it_a = std.mem.splitScalar(u8, a, '/');
+    var it_b = std.mem.splitScalar(u8, b, '/');
+
+    while (true) {
+        const seg_a = it_a.next();
+        const seg_b = it_b.next();
+        if (seg_a == null and seg_b == null) return false;
+        if (seg_a == null) return true;
+        if (seg_b == null) return false;
+
+        const ord = orderNaturalSegment(seg_a.?, seg_b.?);
+        if (ord != .eq) return ord == .lt;
+    }
+}
+
 /// Scans central directory headers in a CBZ ZIP archive, appending all
-/// discovered image entries to `list`.
+/// discovered image entries to `list` in natural path order.
 pub fn scanCbzImageEntries(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -578,7 +643,7 @@ pub fn scanCbzImageEntries(
 
     std.mem.sort(MediaEntry, entries.items, {}, struct {
         fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
-            return std.ascii.lessThanIgnoreCase(
+            return naturalPathLessThanIgnoreCase(
                 a.getPath(),
                 b.getPath(),
             );
@@ -2379,4 +2444,217 @@ test "scanDirectoryEntries - OOM checkAllAllocationFailures preserves start" {
         testScanDirectoryEntriesOom,
         .{ io, tmp_dir_path },
     );
+}
+
+test "naturalPathLessThanIgnoreCase - numeric pages, spreads, and folders" {
+    var items = [_][]const u8{
+        "10.jpg",
+        "2.jpeg",
+        "1.jpg",
+        "100.png",
+        "12.jpg",
+        "10-11.jpg",
+        "9.jpg",
+        "01.jpg",
+        "ch10/1.jpg",
+        "ch1-extra/1.jpg",
+        "ch2/1.jpg",
+        "ch1/10.jpg",
+        "ch1/2.jpg",
+        "ch1/1.jpg",
+    };
+
+    std.mem.sort([]const u8, &items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return naturalPathLessThanIgnoreCase(a, b);
+        }
+    }.lessThan);
+
+    const expected = [_][]const u8{
+        "01.jpg",
+        "1.jpg",
+        "2.jpeg",
+        "9.jpg",
+        "10-11.jpg",
+        "10.jpg",
+        "12.jpg",
+        "100.png",
+        "ch1/1.jpg",
+        "ch1/2.jpg",
+        "ch1/10.jpg",
+        "ch1-extra/1.jpg",
+        "ch2/1.jpg",
+        "ch10/1.jpg",
+    };
+
+    for (expected, items) |exp, act| {
+        try std.testing.expectEqualStrings(exp, act);
+    }
+
+    // Arbitrary-length digit runs (> u128) compare without overflow.
+    try std.testing.expect(naturalPathLessThanIgnoreCase(
+        "9999999999999999999999999999999999999999.jpg",
+        "10000000000000000000000000000000000000000.jpg",
+    ));
+}
+
+test "naturalPathLessThanIgnoreCase - strict total order invariants" {
+    const corpus = [_][]const u8{
+        "",
+        "0",
+        "00",
+        "01.jpg",
+        "1.jpg",
+        "1.JPG",
+        "1.png",
+        "001.jpg",
+        "2.jpeg",
+        "10.jpg",
+        "a/1.jpg",
+        "a/2.jpg",
+        "a/10.jpg",
+        "a-1/1.jpg",
+        "ch1/1.jpg",
+        "ch1-extra/1.jpg",
+        "ch2/1.jpg",
+        "Page_1.jpg",
+        "page_01.jpg",
+        "page_2.jpg",
+        "page_10.jpg",
+    };
+
+    for (corpus, 0..) |a, i| {
+        // Irreflexive: !(a < a)
+        try std.testing.expect(!naturalPathLessThanIgnoreCase(a, a));
+
+        for (corpus, 0..) |b, j| {
+            const ab = naturalPathLessThanIgnoreCase(a, b);
+            const ba = naturalPathLessThanIgnoreCase(b, a);
+            // Asymmetric & trichotomous for distinct elements
+            if (i == j) {
+                try std.testing.expect(!ab and !ba);
+            } else {
+                try std.testing.expect(ab != ba);
+            }
+
+            if (ab) {
+                for (corpus) |c| {
+                    // Transitive: a < b and b < c => a < c
+                    if (naturalPathLessThanIgnoreCase(b, c)) {
+                        try std.testing.expect(
+                            naturalPathLessThanIgnoreCase(a, c),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn writeTestZipEntry(
+    buf: *std.ArrayList(u8),
+    cd_buf: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    name: []const u8,
+) !void {
+    const local_offset: u32 = @intCast(buf.items.len);
+    const name_len: u16 = @intCast(name.len);
+
+    // Local file header (stored, 0-byte payload)
+    var lfh: [30]u8 = @splat(0);
+    std.mem.writeInt(u32, lfh[0..4], 0x04034b50, .little);
+    std.mem.writeInt(u16, lfh[4..6], 20, .little);
+    std.mem.writeInt(u16, lfh[26..28], name_len, .little);
+    try buf.appendSlice(alloc, &lfh);
+    try buf.appendSlice(alloc, name);
+
+    // Central directory file header
+    var cdfh: [46]u8 = @splat(0);
+    std.mem.writeInt(u32, cdfh[0..4], 0x02014b50, .little);
+    std.mem.writeInt(u16, cdfh[4..6], 20, .little);
+    std.mem.writeInt(u16, cdfh[6..8], 20, .little);
+    std.mem.writeInt(u16, cdfh[28..30], name_len, .little);
+    std.mem.writeInt(u32, cdfh[42..46], local_offset, .little);
+    try cd_buf.appendSlice(alloc, &cdfh);
+    try cd_buf.appendSlice(alloc, name);
+}
+
+test "scanCbzImageEntries - sorts numeric and nested entries naturally" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const names = [_][]const u8{
+        "10.jpg",
+        "2.jpeg",
+        "1.jpg",
+        "ch10/1.jpg",
+        "ch1-extra/1.jpg",
+        "ch2/1.jpg",
+        "ch1/10.jpg",
+        "ch1/2.jpg",
+    };
+
+    var zip_buf: std.ArrayList(u8) = .empty;
+    defer zip_buf.deinit(allocator);
+    var cd_buf: std.ArrayList(u8) = .empty;
+    defer cd_buf.deinit(allocator);
+
+    for (names) |name| {
+        try writeTestZipEntry(&zip_buf, &cd_buf, allocator, name);
+    }
+
+    const cd_offset: u32 = @intCast(zip_buf.items.len);
+    const cd_size: u32 = @intCast(cd_buf.items.len);
+    const count: u16 = @intCast(names.len);
+    try zip_buf.appendSlice(allocator, cd_buf.items);
+
+    var eocd: [22]u8 = @splat(0);
+    std.mem.writeInt(u32, eocd[0..4], 0x06054b50, .little);
+    std.mem.writeInt(u16, eocd[8..10], count, .little);
+    std.mem.writeInt(u16, eocd[10..12], count, .little);
+    std.mem.writeInt(u32, eocd[12..16], cd_size, .little);
+    std.mem.writeInt(u32, eocd[16..20], cd_offset, .little);
+    try zip_buf.appendSlice(allocator, &eocd);
+
+    {
+        var f = try tmp.dir.createFile(io, "numeric.cbz", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, zip_buf.items);
+    }
+
+    var path_buf: [160]u8 = undefined;
+    const cbz_path = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}/numeric.cbz",
+        .{tmp.sub_path},
+    );
+
+    var entries: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (entries.items) |e| e.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    try scanCbzImageEntries(allocator, io, cbz_path, &entries);
+
+    const expected = [_][]const u8{
+        "1.jpg",
+        "2.jpeg",
+        "10.jpg",
+        "ch1/2.jpg",
+        "ch1/10.jpg",
+        "ch1-extra/1.jpg",
+        "ch2/1.jpg",
+        "ch10/1.jpg",
+    };
+    try std.testing.expectEqual(expected.len, entries.items.len);
+    for (expected, entries.items) |exp, entry| {
+        try std.testing.expectEqualStrings(
+            exp,
+            entry.archive_entry.entry_name,
+        );
+    }
 }
