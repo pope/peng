@@ -82,9 +82,74 @@ jobs:
           path: ${{ matrix.artifact_name }}.tar.gz
           if-no-files-found: error
 
+  build-windows:
+    name: Build (x86_64-windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install shader compilers
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-glslang
+            mingw-w64-ucrt-x86_64-spirv-cross
+
+      - name: Expose shader compilers on PATH
+        run: |
+          $ucrtBin = Join-Path "${{ steps.msys2.outputs.msys2-location }}" "ucrt64\bin"
+          Add-Content -Path $env:GITHUB_PATH -Value $ucrtBin
+
+      - name: Build and test binaries
+        env:
+          SDL_VIDEO_DRIVER: dummy
+          TERM: dumb
+        run: |
+          zig build --release=safe -Dcpu=x86_64_v3
+          zig build test-unit --release=safe -Dcpu=x86_64_v3
+
+      - name: Package archive
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/v')
+        run: |
+          $pkgDir = "dist/peng-x86_64-windows"
+          New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+          Copy-Item `
+            zig-out/bin/peng.exe, `
+            zig-out/bin/peng-msg.exe, `
+            zig-out/bin/*.dll, `
+            LICENSE, `
+            README.md `
+            -Destination $pkgDir
+          Compress-Archive `
+            -Path $pkgDir `
+            -DestinationPath "peng-x86_64-windows.zip" `
+            -Force
+
+      - name: Upload artifact
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v7
+        with:
+          name: peng-x86_64-windows
+          path: peng-x86_64-windows.zip
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -100,7 +165,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz > SHA256SUMS.txt
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
 
       - name: Create or update release
         env:
@@ -109,10 +174,11 @@ jobs:
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" \
-              artifacts/*.tar.gz artifacts/SHA256SUMS.txt --clobber
+              artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS.txt \
+              --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
-              artifacts/*.tar.gz artifacts/SHA256SUMS.txt \
+              artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS.txt \
               --title "${GITHUB_REF_NAME}" \
               --generate-notes
           fi
